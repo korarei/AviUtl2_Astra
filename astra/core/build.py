@@ -7,6 +7,8 @@ from typing import Any
 
 from jsonschema import validate, ValidationError
 
+from astra.core import config
+
 
 @dataclass
 class Script():
@@ -25,56 +27,7 @@ class Build():
 
 
 def load(path: Path) -> Build:
-    schema: dict[str, Any] = {
-        "type": "object",
-        "required": ["project", "build"],
-        "properties": {
-            "project": {
-                "type": "object",
-                "required": ["name"],
-                "properties": {
-                    "name": {"type": "string"},
-                    "version": {"type": "string"},
-                    "author": {"type": "string"}
-                }
-            },
-            "build": {
-                "type": "object",
-                "required": ["directory", "scripts"],
-                "properties": {
-                    "clean": {"type": "boolean"},
-                    "directory": {"type": "string"},
-                    "scripts": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["suffix", "source"],
-                            "properties": {
-                                "name": {"type": "string"},
-                                "suffix": {"type": "string"},
-                                "newline": {"type": "string"},
-                                "source": {
-                                    "type": "object",
-                                    "properties": {
-                                        "tag": {"type": "string"},
-                                        "include_directories": {
-                                            "type": "array",
-                                            "items": {"type": "string"}
-                                        },
-                                        "variables": {
-                                            "type": "object",
-                                            "additionalProperties": {"type": "string"}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "additionalProperties": True
-    }
+    schema: dict[str, Any] = config.get_schema(["project", "build"])
 
     try:
         with open(path, encoding="utf-8") as f:

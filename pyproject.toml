@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "astra"
 version = "0.1.0"
-description = "A tool for building, installing, and packaging scripts for AviUtl ExEdit2"
+description = "A build and deployment tool for AviUtl ExEdit2 scripts."
 requires-python = ">=3.11.9"
 authors = [
     { name = "Korarei" }
