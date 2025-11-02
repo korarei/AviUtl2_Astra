@@ -166,6 +166,10 @@ astra build [options]
 
   設定ファイル名を指定する．(デフォルト: `astra.config.json`)
 
+- `-v <version>`，`--version <version>`
+
+  プロジェクトバージョンを設定する．これは設定ファイルより優先される．
+
 ### `install`
 
 ビルドされたものを指定した場所にインストールする．
@@ -278,5 +282,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ## Change Log
+- **v0.2.0**
+  - `build`でバージョン指定できる機能を追加．
+
 - **v0.1.0**
   - Release

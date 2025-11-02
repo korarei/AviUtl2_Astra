@@ -6,7 +6,7 @@ from astra.core import build, install, release, config
 
 
 def _build(args: argparse.Namespace) -> None:
-    build.build(args.source / args.config)
+    build.build(args.source / args.config, args.version)
 
 
 def _install(args: argparse.Namespace) -> None:
@@ -14,7 +14,7 @@ def _install(args: argparse.Namespace) -> None:
 
 
 def _release(args: argparse.Namespace) -> None:
-    release.package(args.source / args.config)
+    release.release(args.source / args.config)
 
 
 def _init(args: argparse.Namespace) -> None:
@@ -66,6 +66,13 @@ def create_parser() -> argparse.ArgumentParser:
         help="Build the project from the config file."
     )
     add_common_args(p_build)
+    p_build.add_argument(
+        "-v", "--version",
+        nargs='?',
+        type=str,
+        default=None,
+        help="Override the project version."
+    )
     p_build.set_defaults(func=_build)
 
     p_install = sub.add_parser(
@@ -78,7 +85,7 @@ def create_parser() -> argparse.ArgumentParser:
         nargs='?',
         type=Path,
         default=None,
-        help="Overwite a destination directory for installation."
+        help="Override a destination directory for installation."
     )
     p_install.set_defaults(func=_install)
 

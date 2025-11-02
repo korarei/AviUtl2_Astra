@@ -176,7 +176,7 @@ def copy(src: list[Path], dst: Path) -> None:
                 shutil.copy2(path, dst)
 
 
-def package(path: Path, tmp: Path = Path("tmp")) -> None:
+def release(path: Path, tmp: Path = Path("tmp")) -> None:
     data: Release = load(path, tmp)
 
     if data.clean and data.directory.exists() and data.directory.is_dir():
