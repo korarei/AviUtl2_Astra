@@ -26,7 +26,7 @@ class Build():
     scripts: list[Script]
 
 
-def load(path: Path) -> Build:
+def load(path: Path, version: str | None) -> Build:
     schema: dict[str, Any] = config.get_schema(["project", "build"])
 
     try:
@@ -44,6 +44,8 @@ def load(path: Path) -> Build:
 
     root: Path = path.parent
     proj_name: str = data["project"]["name"]
+    proj_ver: str | None = data["project"].get("version", None)
+    ver: str | None = version or (proj_ver if proj_ver else None)
     build: Path = root / Path(data["build"]["directory"])
 
     scripts: list[Script] = []
@@ -56,8 +58,8 @@ def load(path: Path) -> Build:
         variables["PROJECT_NAME"] = proj_name
         variables["SCRIPT_NAME"] = name
 
-        if "version" in data["project"]:
-            variables["VERSION"] = data["project"]["version"]
+        if ver:
+            variables["VERSION"] = ver
 
         if "author" in data["project"]:
             variables["AUTHOR"] = data["project"]["author"]
@@ -116,8 +118,8 @@ def run(scripts: list[Script]) -> None:
             content, encoding="utf-8", newline=script.newline)
 
 
-def build(path: Path) -> None:
-    data: Build = load(path)
+def build(path: Path, version: str | None) -> None:
+    data: Build = load(path, version)
 
     if data.clean and data.directory.exists() and data.directory.is_dir():
         shutil.rmtree(data.directory)
