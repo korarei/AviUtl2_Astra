@@ -26,23 +26,23 @@ class Build():
     scripts: list[Script]
 
 
-def load(path: Path, version: str | None) -> Build:
+def load(cfg: Path, version: str | None) -> Build:
     schema: dict[str, Any] = config.get_schema(["project", "build"])
 
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(cfg, encoding="utf-8") as f:
             data: dict[str, Any] = json.load(f)
     except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {path}")
+        raise FileNotFoundError(f"File not found: {cfg}")
     except json.JSONDecodeError:
-        raise ValueError(f"Invalid JSON file: {path}")
+        raise ValueError(f"Invalid JSON file: {cfg}")
 
     try:
         validate(data, schema)
     except ValidationError as e:
         raise ValueError(f"Invalid config file: {e.message}")
 
-    root: Path = path.parent
+    root: Path = cfg.parent
     proj_name: str = data["project"]["name"]
     proj_ver: str | None = data["project"].get("version", None)
     ver: str | None = version or (proj_ver if proj_ver else None)
@@ -73,7 +73,7 @@ def load(path: Path, version: str | None) -> Build:
         ))
 
     return Build(
-        data["build"].get("clean", True),
+        data["build"].get("clean", False),
         build,
         scripts
     )
