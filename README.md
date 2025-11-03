@@ -206,6 +206,30 @@ astra install [options]
   > [!IMPORTANT]
   > Windowsでシンボリックリンクを設置するためには，開発者モードを有効にして標準ユーザー権限でシンボリックリンクを作成可能にする必要がある
 
+### `uninstall`
+
+ビルドされたものとモジュールを指定した場所からアンインストールする．
+
+#### 使用方法
+
+```bash
+astra uninstall [options]
+```
+
+#### オプション
+
+- `-s <directory>`，`--source <directory>`
+
+  設定ファイルが含まれるソースディレクトリを指定する．(デフォルト: カレントディレクトリ)
+
+- `-c <filename>`，`--config <filename>`
+
+  設定ファイル名を指定する．(デフォルト: `astra.config.json`)
+
+- `-t <directory>`，`--target <directory>`
+
+  アンインストール先のディレクトリを指定する．これは設定ファイルより優先される．
+
 ### `release`
 
 プロジェクトをリリース用にパッケージ化する．
@@ -301,6 +325,7 @@ THE SOFTWARE.
   - `install`で初期化フォルダが`Script`のとき，確認するようにした．
   - `install`にシンボリックリンク作成オプションを追加．
   - 書き込み先指定を`-t`，`--target`で統一化．
+  - `uninstall`コマンドを追加
 
 - **v0.2.0**
   - `build`でバージョン指定できる機能を追加．
