@@ -5,11 +5,16 @@ build-backend = "hatchling.build"
 [project]
 name = "astra"
 version = "0.2.0"
-description = "A build and deployment tool for AviUtl ExEdit2 scripts."
-requires-python = ">=3.11.9"
 authors = [
     { name = "Korarei" }
 ]
+description = "A build and deployment tool for AviUtl ExEdit2 scripts."
+readme = "README.md"
+license = "MIT"
+license-files = [
+    "LICENSE"
+]
+requires-python = ">=3.11.9"
 dependencies = [
     "jsonschema>=4.25.1"
 ]
