@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,14 +57,48 @@ def load(cfg: Path, dst: Path | None) -> Install:
     )
 
 
-def install(path: Path, dst: Path | None = None) -> None:
-    data: Install = load(path, dst)
+def install(cfg: Path, dst: Path | None, editable: bool) -> None:
+    data: Install = load(cfg, dst)
 
     if data.directory is None:
         logging.warning("installation failed: target directory not found.")
         return
 
     if data.clean and data.directory.exists() and data.directory.is_dir():
-        shutil.rmtree(data.directory)
+        if data.directory.name.lower() == "script":
+            answer: str = input(
+                f"The directory '{data.directory}' seems important. Delete it? [y/N]: ").strip().lower()
+            if answer == "y":
+                shutil.rmtree(data.directory)
+        else:
+            shutil.rmtree(data.directory)
 
-    utils.copy(data.files, data.directory)
+    if editable:
+        data.directory.mkdir(parents=True, exist_ok=True)
+
+        for path in data.files:
+            if path.is_dir():
+                os.symlink(path, data.directory / path.name, True)
+            else:
+                os.symlink(path, data.directory / path.name)
+    else:
+        utils.copy(data.files, data.directory)
+
+
+def uninstall(cfg: Path, dst: Path | None) -> None:
+    data: Install = load(cfg, dst)
+
+    if data.directory is None:
+        logging.warning("uninstallation failed: target directory not found.")
+        return
+
+    if data.directory.name.lower() == "script":
+        for file in data.files:
+            path: Path = data.directory / file.name
+            if path.exists():
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+    elif data.directory.exists():
+        shutil.rmtree(data.directory)

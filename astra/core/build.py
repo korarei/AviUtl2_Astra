@@ -118,8 +118,8 @@ def run(scripts: list[Script]) -> None:
             content, encoding="utf-8", newline=script.newline)
 
 
-def build(path: Path, version: str | None) -> None:
-    data: Build = load(path, version)
+def build(cfg: Path, version: str | None) -> None:
+    data: Build = load(cfg, version)
 
     if data.clean and data.directory.exists() and data.directory.is_dir():
         shutil.rmtree(data.directory)

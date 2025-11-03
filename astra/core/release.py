@@ -65,8 +65,11 @@ def load(cfg: Path, tmp: Path) -> Release:
     build: Path = root / Path(data["build"]["directory"])
     directory: Path = root / Path(data["release"]["directory"])
 
-    files: list[Path] = [
-        root / Path(f) for f in data["release"]["archive"].get("files", [])]
+    files: list[Path] = []
+    for file in data["release"]["archive"].get("files", []):
+        path: Path = root / file
+        files.extend(path.parent.glob(path.name))
+
     for script in data["build"]["scripts"]:
         name: str = script.get("name", proj_name)
         suffix: str = script["suffix"]
@@ -176,8 +179,8 @@ def download_assets(url: str, dst: Path) -> None:
         data.close()
 
 
-def release(path: Path, tmp: Path = Path("tmp")) -> None:
-    data: Release = load(path, tmp)
+def release(cfg: Path, tmp: Path = Path("tmp")) -> None:
+    data: Release = load(cfg, tmp)
 
     if data.clean and data.directory.exists() and data.directory.is_dir():
         shutil.rmtree(data.directory)
