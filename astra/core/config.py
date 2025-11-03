@@ -51,6 +51,17 @@ def get_schema(required: list[str]) -> dict[str, Any]:
                             },
                             "additionalProperties": False
                         }
+                    },
+                    "modules": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["path"],
+                            "properties": {
+                                "path": {"type": "string"}
+                            },
+                            "additionalProperties": False
+                        }
                     }
                 },
                 "additionalProperties": False
@@ -147,7 +158,7 @@ def create_config(dst: Path, force: bool) -> None:
             "author": "name"
         },
         "build": {
-            "clean": True,
+            "clean": False,
             "directory": "build",
             "scripts": [
                 {
@@ -164,14 +175,19 @@ def create_config(dst: Path, force: bool) -> None:
                         }
                     }
                 }
+            ],
+            "modules": [
+                {
+                    "path": "../dll_src/build/Release/*.mod2"
+                }
             ]
         },
         "install": {
-            "clean": True,
+            "clean": False,
             "directory": "C:/ProgramData/aviutl2/Script"
         },
         "release": {
-            "clean": True,
+            "clean": False,
             "directory": "release",
             "archive": {
                 "files": [

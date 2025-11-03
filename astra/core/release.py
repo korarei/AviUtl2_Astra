@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ from typing import Any
 from jsonschema import validate, ValidationError
 
 from astra.core import config
+from astra.core import utils
 
 
 @dataclass
@@ -42,23 +44,23 @@ class Release():
     notes: Notes
 
 
-def load(path: Path, tmp: Path) -> Release:
+def load(cfg: Path, tmp: Path) -> Release:
     schema: dict[str, Any] = config.get_schema(["project", "build", "release"])
 
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(cfg, encoding="utf-8") as f:
             data: dict[str, Any] = json.load(f)
     except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {path}")
+        raise FileNotFoundError(f"File not found: {cfg}")
     except json.JSONDecodeError:
-        raise ValueError(f"Invalid JSON file: {path}")
+        raise ValueError(f"Invalid JSON file: {cfg}")
 
     try:
         validate(data, schema)
     except ValidationError as e:
         raise ValueError(f"Invalid config file: {e.message}")
 
-    root: Path = path.parent
+    root: Path = cfg.parent
     proj_name: str = data["project"]["name"]
     build: Path = root / Path(data["build"]["directory"])
     directory: Path = root / Path(data["release"]["directory"])
@@ -69,6 +71,10 @@ def load(path: Path, tmp: Path) -> Release:
         name: str = script.get("name", proj_name)
         suffix: str = script["suffix"]
         files.append(build / f"{name}{suffix}")
+
+    for module in data["build"].get("modules", []):
+        path: Path = root / module["path"]
+        files.extend(path.parent.glob(path.name))
 
     assets: list[Assets] = []
     for asset in data["release"]["archive"].get("assets", []):
@@ -92,7 +98,7 @@ def load(path: Path, tmp: Path) -> Release:
     )
 
     return Release(
-        data["release"].get("clean", True),
+        data["release"].get("clean", False),
         directory,
         proj_name,
         files,
@@ -159,21 +165,15 @@ def download_assets(url: str, dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
 
     with urllib.request.urlopen(url) as response:
-        data: bytes = response.read()
+        data: io.BytesIO = io.BytesIO(response.read())
 
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        zf.extractall(dst)
-
-
-def copy(src: list[Path], dst: Path) -> None:
-    dst.mkdir(parents=True, exist_ok=True)
-
-    for path in src:
-        if path.exists():
-            if path.is_dir():
-                shutil.copytree(path, dst / path.name, dirs_exist_ok=True)
-            else:
-                shutil.copy2(path, dst)
+    if zipfile.is_zipfile(data):
+        data.seek(0)
+        with zipfile.ZipFile(data) as zf:
+            zf.extractall(dst)
+    else:
+        logging.warning("download failed: unsupported file format.")
+        data.close()
 
 
 def release(path: Path, tmp: Path = Path("tmp")) -> None:
@@ -184,7 +184,7 @@ def release(path: Path, tmp: Path = Path("tmp")) -> None:
 
     data.directory.mkdir(parents=True, exist_ok=True)
 
-    copy(data.files, data.directory / tmp)
+    utils.copy(data.files, data.directory / tmp)
 
     for asset in data.assets:
         if asset.url:
