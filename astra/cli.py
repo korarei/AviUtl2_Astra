@@ -10,7 +10,11 @@ def _build(args: argparse.Namespace) -> None:
 
 
 def _install(args: argparse.Namespace) -> None:
-    install.install(args.source / args.config, args.destination)
+    install.install(args.source / args.config, args.target, args.editable)
+
+
+def _uninstall(args: argparse.Namespace) -> None:
+    install.uninstall(args.source / args.config, args.target)
 
 
 def _release(args: argparse.Namespace) -> None:
@@ -18,18 +22,18 @@ def _release(args: argparse.Namespace) -> None:
 
 
 def _init(args: argparse.Namespace) -> None:
-    config.create_config(args.output, args.force)
+    config.create_config(args.target, args.force)
 
 
 def _schema(args: argparse.Namespace) -> None:
     if args.build:
-        config.create_schema("build", args.output, args.force)
+        config.create_schema("build", args.target, args.force)
 
     if args.install:
-        config.create_schema("install", args.output, args.force)
+        config.create_schema("install", args.target, args.force)
 
     if args.release:
-        config.create_schema("release", args.output, args.force)
+        config.create_schema("release", args.target, args.force)
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -77,17 +81,36 @@ def create_parser() -> argparse.ArgumentParser:
 
     p_install = sub.add_parser(
         "install",
-        help="Install the built artifacts to a destination."
+        help="Install the built artifacts and the modules to a target directory."
     )
     add_common_args(p_install)
     p_install.add_argument(
-        "-d", "--destination",
+        "-t", "--target",
         nargs='?',
         type=Path,
         default=None,
-        help="Override a destination directory for installation."
+        help="Override a target directory for installation."
+    )
+    p_install.add_argument(
+        "-e", "--editable",
+        action="store_true",
+        help="Install the built artifacts and the modules in editable mode."
     )
     p_install.set_defaults(func=_install)
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="Unistall the built artifacts and modules from a target directory."
+    )
+    add_common_args(p_uninstall)
+    p_uninstall.add_argument(
+        "-t", "--target",
+        nargs='?',
+        type=Path,
+        default=None,
+        help="Override a target directory for installation."
+    )
+    p_uninstall.set_defaults(func=_uninstall)
 
     p_release = sub.add_parser(
         "release",
@@ -101,7 +124,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="Initialize a new astra.config.json."
     )
     p_init.add_argument(
-        "-o", "--output",
+        "-t", "--target",
         nargs='?',
         type=Path,
         default=Path.cwd(),
@@ -119,7 +142,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="Generate JSON schema for configuration files."
     )
     p_schema.add_argument(
-        "-o", "--output",
+        "-t", "--target",
         nargs='?',
         type=Path,
         default=Path.cwd(),

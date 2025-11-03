@@ -9,7 +9,7 @@ AviUtl ExEdit2スクリプト用のビルド，開発支援ツール．
 以下のコマンドを実行する．
 
 ```bash
-pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.2.0
+pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.3.0
 ```
 
 ## 主な機能
@@ -30,7 +30,7 @@ pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.2.0
 
 ### インストール
 
-設定ファイルで指定した場所にビルドしたものをコピーする．コマンドラインでディレクトリを設定した場合，そちらが優先される．
+設定ファイルで指定した場所にビルドしたものと`modules`で指定したものを設置する．コマンドラインでディレクトリを設定した場合，そちらが優先される．
 
 ### リリース
 
@@ -38,7 +38,7 @@ pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.2.0
 
 #### アーカイブ圧縮
 
-ビルドしたものと`files`で指定したもの，外部から入手したアセットファイルを`zip`にする．
+ビルドしたものと`files`で指定したもの，`modules`で指定したもの，外部から入手したアセットファイルを`zip`にする．
 
 #### リリースノート作成
 
@@ -81,6 +81,11 @@ pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.2.0
             "LABEL": "アニメーション効果"
           }
         }
+      }
+    ],
+    "modules": [
+      {
+        "path": "../dll_src/build/Release/*.mod2"
       }
     ]
   },
@@ -138,7 +143,7 @@ astra init [options]
 
 #### オプション
 
-- `-o <directory>`，`--output <directory>`
+- `-t <directory>`，`--target <directory>`
 
   設定ファイルを出力するディレクトリを設定する．(デフォルト: カレントディレクトリ)
 
@@ -172,7 +177,7 @@ astra build [options]
 
 ### `install`
 
-ビルドされたものを指定した場所にインストールする．
+ビルドされたものとモジュールを指定した場所にインストールする．
 
 #### 使用方法
 
@@ -190,9 +195,16 @@ astra install [options]
 
   設定ファイル名を指定する．(デフォルト: `astra.config.json`)
 
-- `-d <directory>`，`--destination <directory>`
+- `-t <directory>`，`--target <directory>`
 
   インストール先のディレクトリを指定する．これは設定ファイルより優先される．
+
+- `-e`，`--editable`
+
+  コピーではなくシンボリックリンクを設置する．(開発用)
+
+  > [!IMPORTANT]
+  > Windowsでシンボリックリンクを設置するためには，開発者モードを有効にして標準ユーザー権限でシンボリックリンクを作成可能にする必要がある
 
 ### `release`
 
@@ -226,7 +238,7 @@ astra schema [options]
 
 #### オプション
 
-- `-o <directory>`，`--output <directory>`
+- `-t <directory>`，`--target <directory>`
 
   スキーマファイルを出力するディレクトリを指定する．(デフォルト: カレントディレクトリ)
 
@@ -282,6 +294,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ## Change Log
+- **v0.3.0**
+  - モジュールパスを設定できる機能を追加．
+  - 一部項目でワイルドカードを使用できる機能を追加．
+  - `clean`項目のデフォルトを`false`に変更．
+  - `install`で初期化フォルダが`Script`のとき，確認するようにした．
+  - `install`にシンボリックリンク作成オプションを追加．
+  - 書き込み先指定を`-t`，`--target`で統一化．
+
 - **v0.2.0**
   - `build`でバージョン指定できる機能を追加．
 
