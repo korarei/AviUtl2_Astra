@@ -1,104 +1,66 @@
-import json
-import logging
-import os
 import shutil
-from dataclasses import dataclass
+from logging import getLogger
+from os import symlink
 from pathlib import Path
-from typing import Any
 
-from jsonschema import validate, ValidationError
+from astra.core.config import Install
 
-from astra.core import config
-from astra.core import utils
+logger = getLogger(__name__)
 
 
-@dataclass
-class Install():
-    clean: bool
-    directory: Path | None
-    files: list[Path]
+def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
+    if not dst.is_dir():
+        raise NotADirectoryError(f"Not a directory: {dst}")
 
+    if not src.is_file():
+        logger.warning("File not found, skipping: %s", src)
+        return None
 
-def load(cfg: Path, dst: Path | None) -> Install:
-    schema: dict[str, Any] = config.get_schema(["project", "build", "install"])
+    src = src.resolve()
+    path = (dst / src.name).resolve()
 
-    try:
-        with open(cfg, "r", encoding="utf-8") as f:
-            data: dict[str, Any] = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {cfg}")
-    except json.JSONDecodeError:
-        raise ValueError(f"Invalid JSON file: {cfg}")
-
-    try:
-        validate(data, schema)
-    except ValidationError as e:
-        raise ValueError(f"Invalid config file: {e.message}")
-
-    root: Path = cfg.parent
-    proj_name: str = data["project"]["name"]
-    build: Path = root / Path(data["build"]["directory"])
-    files: list[Path] = []
-    for script in data["build"]["scripts"]:
-        name: str = script.get("name", proj_name)
-        suffix: str = script["suffix"]
-        files.append(build / f"{name}{suffix}")
-
-    for module in data["build"].get("modules", []):
-        path: Path = root / module["path"]
-        files.extend(path.parent.glob(path.name))
-
-    directory: str | None = data["install"].get("directory", None)
-
-    return Install(
-        data["install"].get("clean", False),
-        dst or (Path(directory).resolve() if directory else None),
-        files
-    )
-
-
-def install(cfg: Path, dst: Path | None, editable: bool) -> None:
-    data: Install = load(cfg, dst)
-
-    if data.directory is None:
-        logging.warning("installation failed: target directory not found.")
-        return
-
-    if data.clean and data.directory.exists() and data.directory.is_dir():
-        if data.directory.name.lower() == "script":
-            answer: str = input(
-                f"The directory '{data.directory}' seems important. Delete it? [y/N]: ").strip().lower()
-            if answer == "y":
-                shutil.rmtree(data.directory)
-        else:
-            shutil.rmtree(data.directory)
+    if path.exists() or path.is_symlink():
+        path.unlink()
 
     if editable:
-        data.directory.mkdir(parents=True, exist_ok=True)
-
-        for path in data.files:
-            if path.is_dir():
-                os.symlink(path, data.directory / path.name, True)
-            else:
-                os.symlink(path, data.directory / path.name)
+        symlink(src, path)
     else:
-        utils.copy(data.files, data.directory)
+        _ = shutil.copy2(src, path)
+
+    return path
 
 
-def uninstall(cfg: Path, dst: Path | None) -> None:
-    data: Install = load(cfg, dst)
+def install(dst: Path, cfg: Install, editable: bool = False) -> list[Path]:
+    logger.info("Installing to: %s", dst)
 
-    if data.directory is None:
-        logging.warning("uninstallation failed: target directory not found.")
-        return
+    dst.mkdir(parents=True, exist_ok=True)
+    dst = dst.resolve()
 
-    if data.directory.name.lower() == "script":
-        for file in data.files:
-            path: Path = data.directory / file.name
-            if path.exists():
-                if path.is_dir():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-    elif data.directory.exists():
-        shutil.rmtree(data.directory)
+    installations: list[Path] = []
+
+    for extension in cfg.extensions:
+        target = dst / extension.directory
+        target.mkdir(parents=True, exist_ok=True)
+        for file in extension.files:
+            path = _copy_file(file, target, editable)
+            if path:
+                installations.append(path)
+
+    logger.info("Install completed: %d files", len(installations))
+
+    return installations
+
+
+def uninstall(installations: list[Path]) -> None:
+    logger.info("Uninstalling from AviUtl2 ExEdit2")
+
+    for path in installations:
+        if path.exists() or path.is_symlink():
+            path.unlink()
+
+            if path.parent.name.lower() not in ("plugin", "script"):
+                answer = input(f"Remove directory '{path.parent}'? [y/N]: ")
+                if answer.lower() in ("y", "yes"):
+                    _ = shutil.rmtree(path.parent, ignore_errors=True)
+
+    logger.info("Uninstall completed")

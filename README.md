@@ -9,7 +9,7 @@ AviUtl ExEdit2スクリプト用のビルド，開発支援ツール．
 以下のコマンドを実行する．
 
 ```bash
-pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.3.0
+pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.0
 ```
 
 ## 主な機能
@@ -20,136 +20,344 @@ pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.3.0
 
 #### 文字置換
 
-`${VAR}`のように書いた場所は`variables`で指定した文字列に置換する．プロジェクト名およびスクリプト名は`${PROJECT_NAME}`および`${SCRIPT_NAME}`として利用可能．また，バージョンや作者を設定した場合，`${VERSION}`や`${AUTHOR}`も利用可能となる．これら変数は`variables`を上書きする形で追加される．
+`${VAR}`のように書いた場所は`variables`等で指定した文字列に置換する．
 
-#### ファイル埋め込み
+置換前
 
-`--#include "a.hlsl"`や`--#include <a.hlsl>`と記載した行はそのファイルの中身で置き換わる．`local a --#include`のように行頭が空白でない場合置換されない．
+```lua
+--information:Effect@${PROJECT_NAME} v{PROJECT_VERSION} by ${PROJECT_AUTHOR}
+```
 
-`" "`で指定した場合，ソースファイルからの相対パスで探索を行う．一方，`< >`で指定した場合，`include_directories`で指定したディレクトリを探索する．
+置換後
 
-### インストール
+```lua
+--information:Effect@Project v0.1.0 by Author
+```
 
-設定ファイルで指定した場所にビルドしたものと`modules`で指定したものを設置する．コマンドラインでディレクトリを設定した場合，そちらが優先される．
+#### ファイル展開
+
+`--#include "a.hlsl"`や`--#include <a.hlsl>`と書かれた行はそのファイルで置換する．
+
+`"`と`<`の違いはC言語と同様である．
+
+展開前
+
+```lua
+--[[pixelshader@a:
+--#include "a.hlsl"
+]]
+```
+
+展開後
+
+```lua
+--[[pixelshader@a:
+Texture2D src : register(t0)
+SamplerState smp : register(s0)
+
+float4
+a(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    return src.Sample(smp, uv);
+}
+]]
+```
+
+下記のように書いた場合，`require`行とその下1行を削除して中身を展開する．
+
+```lua
+--#include "a.lua"
+local a = require("a")
+local add = a.add
+```
+
+`require`するファイルは下記のように記述しておくことを推奨する．
+
+```lua
+--a.lua
+local function add(a, b)
+    return a + b
+end
+
+local function sub(a, b)
+    return a - b
+end
+
+-- そのまま実行すると`...`は`nil`となり，`require`するとモジュール名となる
+
+if (...) then -- Pythonの`if __name__ != "__main__":`
+    return {
+        add = add,
+        sub = sub
+    }
+end
+```
+
+これにより，モジュールとしても利用可能で展開されても動作するようになる．
+
+#### プロパティ項目の正規化
+
+AviUtl ExEdit2の実行時形式をスクリプトとして認識する形式に変換する．
+
+実行時形式
+
+```lua
+--@Effect
+local a = 0 --track@a:A,0,100,0,0.01
+```
+
+正規化後
+
+```lua
+@Effect
+--track@a:A,0,100,0,0.01
+```
+
+#### プラグインのビルド
+
+設定ファイルに実行したいコマンドを追加することでプラグインのビルドを行うことができる．
+
+コマンドは設定ファイルの置かれるディレクトリがカレントディレクトリとして実行される．
+
+`${BUILD_DIRECTORY}`変数を設定ファイル内で利用可能である．
+
+```toml
+commands = [
+    "cmake -S ./plugins -B ${BUILD_DIRECTORY}/Release -G Ninja -DCMAKE_BUILD_TYPE=Release",
+    "cmake --build ${BUILD_DIRECTORY}/Release",
+]
+artifacts = ["${BUILD_DIRECTORY}/Release/*.mod2"]
+```
+
+### AviUtl ExEdit2へのインストール・アンインストール
+
+設定ファイルに基づき，`Plugin`と`Script`に設置されるものを設置する．
+
+シンボリックリンクとして設置すると一回インストールしておけば以降ビルド毎にインストールしなくてよい．
 
 ### リリース
 
-`zip`ファイル作成やリリースノートを作成を行う．
+AviUtl2 ExEdit2パッケージ形式`au2pkg.zip`の作成やリリースノートの作成を行う．
 
 #### アーカイブ圧縮
 
-ビルドしたものと`files`で指定したもの，`modules`で指定したもの，外部から入手したアセットファイルを`zip`にする．
+設定ファイルに基づきAviUtl2 ExEdit2パッケージ形式`au2pkg.zip`を生成する．
 
 #### リリースノート作成
 
+設定ファイルとして設定されたドキュメントのうち拡張子を除く名前が`CHANGELOG`または`README`が存在する場合`release_notes.md`が生成される．
+
+> [!NOTE]
+> READMEを使う場合，# Changelogセクションが必要． (#の数やChangeとlogの間の空白は問わない)
+
+以下の形式に対応している．
+
 ```markdown
-## Change Log
-- **v0.1.0**
-  - Release
+## 1.0.0
+- Release
 
+## v1.0.0
+- Release
+
+## [1.0.0]
+- Release
 ```
-
-のように書かれた部分を抜き取りリリースノートを作成する．
 
 ## 設定ファイル
 
-`astra.config.json`をソースファイルと同じ階層に用意する．
+設定は`astra.toml`に記述する．
 
-設定ファイル内のパスは基本的にこの設定ファイルからの相対パスで指定する．ただし，`assets`のパスはアーカイブパスで指定する．
+設定ファイル内のパスは基本的にこの設定ファイルからの相対パスで指定する．
 
-```JSON
-{
-  "project": {
-    "name": "Project",
-    "version": "v0.1.0",
-    "author": "name"
-  },
-  "build": {
-    "clean": true,
-    "directory": "build",
-    "scripts": [
-      {
-        "name": "Effect",
-        "suffix": ".anm2",
-        "newline": "\r\n",
-        "source": {
-          "tag": ".in",
-          "include_directories": [
-            "includes"
-          ],
-          "variables": {
-            "LABEL": "アニメーション効果"
-          }
-        }
-      }
-    ],
-    "modules": [
-      {
-        "path": "../dll_src/build/Release/*.mod2"
-      }
-    ]
-  },
-  "install": {
-    "clean": true,
-    "directory": "C:/ProgramData/aviutl2/Script"
-  },
-  "release": {
-    "clean": true,
-    "directory": "release",
-    "archive": {
-      "files": [
-        "../README.md",
-        "../LICENSE"
-      ],
-      "assets": [
-        {
-          "directory": "assets",
-          "url": "https://",
-          "texts": [
-            {
-              "file": "credits.txt",
-              "content": "This is a sample asset."
-            }
-          ]
-        }
-      ]
-    },
-    "notes": {
-      "source": "../README.md"
-    }
-  }
-}
+設定ファイルではワイルドカードや変数の利用が可能である．
+
+<details>
+<summary>astra.tomlの例</summary>
+
+```toml
+# プロジェクト設定
+[project]
+# プロジェクト名 (必須)
+name = "Project"
+# プロジェクトバージョン
+version = "0.1.0"
+# プロジェクト作者
+author = "Author"
+# 必要AviUtl ExEdit2バージョン
+requires-aviutl2 = "2003600"
+# 設定ファイル，スクリプト全体で利用できる変数
+variables = { PROJECT_LABEL = "Project" }
+
+# ここで設定されたものは`PROJECT_NAME`のように設定され，valiablesに追加される
+# ここで設定されたものは変数 (${PROJECT_NAME}など) として設定ファイルやスクリプトファイル内で利用可能
+
+# ビルド
+[build]
+# プラグインビルド設定 (複数設定可能)
+[[build.plugins]]
+# プラグイン固有のID (必須)
+id = "core"
+# このテーブル内部で利用できる変数
+variables = { SOURCE = "./plugins" }
+# リリースビルド (必須)
+[build.plugins.release]
+# コマンド
+commands = [
+    "cmake -S ${SOURCE} -B ${BUILD_DIRECTORY} -G \"Ninja Multi-Config\"",
+    "cmake --build ${BUILD_DIRECTORY} --config Release",
+]
+# 生成物
+artifacts = ["${BUILD_DIRECTORY}/Release/*.aux2"]
+# デバッグビルド
+[build.plugins.debug]
+# コマンド
+# ${BUILD_DIRECTORY}は`${build}/plugins/${id}`
+commands = [
+    "cmake -S ${SOURCE} -B ${BUILD_DIRECTORY} -G \"Ninja Multi-Config\"",
+    "cmake --build ${BUILD_DIRECTORY} --config Debug",
+]
+# 生成物
+artifacts = ["${BUILD_DIRECTORY}/Debug/*.aux2"]
+
+# スクリプトビルド設定 (複数設定可能)
+[[build.scripts]]
+# スクリプト固有のID (必須)
+id = "effect"
+# スクリプト名 (設定されない場合，プロジェクト名)
+name = "Effect"
+# ファイル名の頭につける文字
+prefix = "@"
+# 拡張子 (設定されない場合，拡張子なし)
+suffix = ".anm2"
+# 改行コード (設定されない場合，CRLF)
+newline = "\r\n"
+# このテーブルおよびスクリプトで利用できる変数
+variables = { SOURCE = "./script" }
+# `--#include`で検索するフォルダ
+include_directories = ["${SOURCE}/shaders"]
+# ソースファイル (複数設定した場合連結される)
+sources = [
+    # fileは必須 (ワイルドカードの利用も可能)
+    # そのファイル内でしか使えない変数の設定も可能である
+    { file = "effect1.lua", LABEL = "Effect1" },
+    { file = "effect2.lua", LABEL = "Effect2" },
+]
+
+# リリース設定
+[release]
+# パッケージ設定
+[release.package]
+# 生成物の名前 (設定されない場合，プロジェクト名)
+# `.au2pkg.zip`は追加される．
+filename = "${PROJECT_NAME}"
+# `package.ini`のid= (設定されない場合，プロジェクト名)
+id = "${PROJECT_NAME}"
+# `package.ini`のname= (設定されない場合，プロジェクト名)
+# `package.txt`にも記載される
+name = "${PROJECT_NAME}"
+# `package.ini`のinformation= (設定されない場合，追加されない)
+information = "${PROJECT_NAME} v${PROJECT_VERSION} by ${PROJECT_AUTHOR}"
+# `package.txt`に記載ライセンス表記 (設定されない場合，追加されない)
+license = "MIT"
+# `package.txt`に記載される説明 (設定されない場合，追加されない)
+description = "Example plugin package"
+
+# 生成される`package.txt`
+# [ ${name} ]
+# 
+# Version: ${PROJECT_VERSION}
+# Author: ${PROJECT_AUTHOR}
+# License: ${license}
+#
+# ${description}
+
+# 内容物の設定
+[release.contents]
+# Plugin/に設置するもの
+[[release.contents.extensions]]
+# ファイルの設置場所
+directory = "Plugin/${PROJECT_NAME}"
+# ファイル (IDを設定した場合，artifactsに置換される)
+files = ["plugin:core"]
+
+# Script/に設置するもの
+[[release.contents.extensions]]
+directory = "Script/${PROJECT_NAME}"
+# `.mod2`を追加する場合は`"plugin:module"`のようにして追加すること
+files = ["script:effect"]
+
+# directoryはAviUtl ExEdit2 SDKのreadmeを確認すること
+# フォルダは大文字小文字が区別される (`script/`はAviUtl ExEdit2で認識されない)
+
+# ドキュメント
+[[release.contents.documents]]
+# ドキュメントの設置場所
+directory = "Script/${PROJECT_NAME}"
+# ドキュメントファイル
+files = ["./*.md", "./LICENSE"]
+
+# アセット
+[[release.contents.assets]]
+# アセット名 (必須)
+name = "Assets"
+# 設置場所
+directory = "Script/${PROJECT_NAME}"
+
+# 以下`${directory}/${name}`内に設置される
+
+# ソースファイル
+[[release.contents.assets.sources]]
+# ファイルの設置場所 (`${name}/`以下)
+directory = "external/"
+# ファイル
+# https or httpはURL先からダウンロードする
+# ダウンロードしたものがzipなら展開される (rootなどは維持される)
+files = ["https://example.com/archive.zip", "../*.png"]
+
+# ドキュメント (`${name}/`以下に設置)
+[[release.contents.assets.documents]]
+# ファイル名 (`${directory}/${name}`に結合される)
+filename = "readme.txt"
+# 内容
+content = """
+This archive contains additional resources.
+"""
 ```
 
-必須項目についてはスキームを確認してほしい．
+</details>
 
 ## コマンド
 
-```bash
+コマンドは以下の形式で`astra.toml`を認識する場所で実行する．
+
+```pwsh
 astra <command> [options]
 ```
+
+`astra.toml`を認識する場所は以下のいずれかである．
+
+- `./astra.toml`
+- `./config/astra.toml`
+- `./astra/astra.toml`
 
 使用可能なコマンドを以下に示す．`-h`，`--help`でヘルプを表示可能．
 
 ### `init`
 
-`astra.config.json`設定ファイルをカレントディレクトリに作成する．
+`astra.toml`設定ファイルを作成する．
+
+すでに`astra.toml`が存在する場合使用できない．
 
 #### 使用方法
 
-```bash
+```pwsh
 astra init [options]
 ```
 
 #### オプション
 
-- `-t <directory>`，`--target <directory>`
+- `<target>`
 
-  設定ファイルを出力するディレクトリを設定する．(デフォルト: カレントディレクトリ)
-
-- `-f`，`--force`
-
-  既存の`astra.config.json`が存在する場合でも上書きする．
+出力先ディレクトリを指定する．(デフォルト: `.`)
 
 ### `build`
 
@@ -157,178 +365,132 @@ astra init [options]
 
 #### 使用方法
 
-```bash
+```pwsh
 astra build [options]
 ```
 
 #### オプション
 
-- `-s <directory>`，`--source <directory>`
+- `<build>`
 
-  設定ファイルが含まれるソースディレクトリを指定する．(デフォルト: カレントディレクトリ)
+ビルドディレクトリを指定する．(デフォルト: `./build`)
 
-- `-c <filename>`，`--config <filename>`
+- `-c <config>`，`--config <config>`
 
-  設定ファイル名を指定する．(デフォルト: `astra.config.json`)
+ビルド設定 (ReleaseまたはDebug) を指定する．(デフォルト: Debug)
 
 - `-v <version>`，`--version <version>`
 
-  プロジェクトバージョンを設定する．これは設定ファイルより優先される．
-
-### `install`
-
-ビルドされたものとモジュールを指定した場所にインストールする．
-
-#### 使用方法
-
-```bash
-astra install [options]
-```
-
-#### オプション
-
-- `-s <directory>`，`--source <directory>`
-
-  設定ファイルが含まれるソースディレクトリを指定する．(デフォルト: カレントディレクトリ)
-
-- `-c <filename>`，`--config <filename>`
-
-  設定ファイル名を指定する．(デフォルト: `astra.config.json`)
-
-- `-t <directory>`，`--target <directory>`
-
-  インストール先のディレクトリを指定する．これは設定ファイルより優先される．
-
-- `-e`，`--editable`
-
-  コピーではなくシンボリックリンクを設置する．(開発用)
-
-> [!IMPORTANT]
-> Windowsでシンボリックリンクを設置するためには，開発者モードを有効にして標準ユーザー権限でシンボリックリンクを作成可能にする必要がある
-
-### `uninstall`
-
-ビルドされたものとモジュールを指定した場所からアンインストールする．
-
-#### 使用方法
-
-```bash
-astra uninstall [options]
-```
-
-#### オプション
-
-- `-s <directory>`，`--source <directory>`
-
-  設定ファイルが含まれるソースディレクトリを指定する．(デフォルト: カレントディレクトリ)
-
-- `-c <filename>`，`--config <filename>`
-
-  設定ファイル名を指定する．(デフォルト: `astra.config.json`)
-
-- `-t <directory>`，`--target <directory>`
-
-  アンインストール先のディレクトリを指定する．これは設定ファイルより優先される．
+プロジェクトバージョンを指定する．これは設定ファイルより優先される．
 
 ### `release`
 
-プロジェクトをリリース用にパッケージ化する．
+プロジェクトをリリース設定でビルド後，リリース用にパッケージ化する．
 
 #### 使用方法
 
-```bash
+```pwsh
 astra release [options]
 ```
 
 #### オプション
 
-- `-s <directory>`，`--source <directory>`
+- `<target>`
 
-  設定ファイルが含まれるソースディレクトリを指定する．(デフォルト: カレントディレクトリ)
+出力先ディレクトリを指定する．(デフォルト: `./release`)
 
-- `-c <filename>`，`--config <filename>`
+このディレクトリ内にビルドディレクトリを新たに作成する．
 
-  設定ファイル名を指定する．(デフォルト: `astra.config.json`)
+- `-v <version>`，`--version <version>`
 
-### `schema`
+プロジェクトバージョンを指定する．これは設定ファイルより優先される．
 
-設定ファイル (`astra.config.json`) のためのJSONスキーマを生成する．
+### `install`
+
+リリース時に`Plugin/`と`Script/`に置かれるものを設置する．
+
+インストールにはビルドディレクトリが必要．(`build`コマンドで生成したキャッシュが必要)
 
 #### 使用方法
 
-```bash
+```pwsh
+astra install [options]
+```
+
+#### オプション
+
+- `<target>`
+
+設置先ディレクトリを指定する．(デフォルト: `%ProgramData%/aviutl2`)
+
+> [!NOTE]
+> AviUtl ExEdit2の認識する場所以外設置できない．
+
+- `-b <directory>`，`--build <directory>`
+
+ビルドディレクトリを指定する．(デフォルト: `./build`)
+
+- `-e`，`--editable`
+
+コピーではなくシンボリックリンクを設置する．
+
+> [!IMPORTANT]
+> Windowsでシンボリックリンクを設置するためには，開発者モードを有効にして標準ユーザー権限でシンボリックリンクを作成可能にする必要がある．
+
+### `uninstall`
+
+インストールしたものをアンインストールする．
+
+アンインストールにはビルドディレクトリが必要．(`install`コマンドで生成したキャッシュが必要)
+
+#### 使用方法
+
+```pwsh
+astra uninstall [options]
+```
+
+#### オプション
+
+- `-b <directory>`，`--build <directory>`
+
+ビルドディレクトリを指定する．(デフォルト: `./build`)
+
+### `clean`
+
+ビルドディレクトリを削除する．(`rm -rf`と同じ)
+
+#### 使用方法
+
+```pwsh
+astra clean [options]
+```
+
+#### オプション
+
+- `<build>`
+
+ビルドディレクトリを指定する．(デフォルト: `./build`)
+
+### `schema`
+
+`astra.toml`設定ファイルのためのJSONスキーマを生成する．
+
+#### 使用方法
+
+```pwsh
 astra schema [options]
 ```
 
 #### オプション
 
-- `-t <directory>`，`--target <directory>`
+- `<target>`
 
-  スキーマファイルを出力するディレクトリを指定する．(デフォルト: カレントディレクトリ)
+スキーマファイルを出力するディレクトリを指定する．(デフォルト: `.`)
 
-- `-f`，`--force`
+## ライセンス
 
-  既存のスキーマファイルが存在する場合でも強制的に上書きする．
+本プログラムのライセンスは[LICENSE](./LICENSE)を参照されたい．
 
-- `-b`，`--build`
+## 更新履歴
 
-  ビルドコマンドに必要な設定ファイルのスキーマファイルを`astra.build_schema.json`として生成する．
-
-- `-i`，`--install`
-
-  インストールコマンドに必要な設定ファイルのスキーマファイルを`astra.install_schema.json`として生成する．
-
-- `-r`，`--release`
-
-  リリースコマンドに必要な設定ファイルのスキーマファイルを`astra.release_schema.json`として生成する．
-
-
-## License
-
-LICENSEに記載．
-
-## Credits
-
-### jsonschema
-
-https://github.com/python-jsonschema/jsonschema
-
----
-
-The MIT License
-
-Copyright (c) 2013 Julian Berman
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-## Change Log
-- **v0.3.0**
-  - モジュールパスを設定できる機能を追加．
-  - 一部項目でワイルドカードを使用できる機能を追加．
-  - `clean`項目のデフォルトを`false`に変更．
-  - `install`で初期化フォルダが`Script`のとき，確認するようにした．
-  - `install`にシンボリックリンク作成オプションを追加．
-  - 書き込み先指定を`-t`，`--target`で統一化．
-  - `uninstall`コマンドを追加
-
-- **v0.2.0**
-  - `build`でバージョン指定できる機能を追加．
-
-- **v0.1.0**
-  - Release
+[CHANGELOG](./CHANGELOG.md)を参照されたい．
