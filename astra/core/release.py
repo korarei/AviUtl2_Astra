@@ -1,205 +1,263 @@
-import io
-import json
-import logging
-import os
 import re
 import shutil
-import urllib.request
-import zipfile
-from dataclasses import dataclass
+from io import BytesIO
+from logging import getLogger
 from pathlib import Path
-from typing import Any
+from tempfile import mkdtemp
+from typing import BinaryIO, Self, cast
+from urllib.parse import urlparse
+from urllib.request import urlopen
+from zipfile import ZipFile, is_zipfile
 
-from jsonschema import validate, ValidationError
+from astra.core.config import (
+    Release,
+    ReleaseAsset,
+    ReleaseContentContainer,
+    ReleasePackage,
+)
 
-from astra.core import config
-from astra.core import utils
+_CHANGELOG_HEADER_PATTERN = re.compile(
+    r"^\s*\#+\s*change\s*logs?\b", re.IGNORECASE | re.MULTILINE
+)
+_CHANGELOG_SECTION_PATTERN = re.compile(
+    r"""
+    ^\s*(?:\#+|-+\s*\**)\s*(?:v|\[)?\d+(?:\.\d+)*\]?[^\n]*(?:\n|\Z)
+    (?:(?!^\s*(?:\#+|-+\s*\**)\s*(?:v|\[)?\d)[^\n]*(?:\n|\Z))*
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
 
-
-@dataclass
-class Text():
-    file: Path
-    content: str
-
-
-@dataclass
-class Assets():
-    directory: Path
-    url: str | None
-    texts: list[Text]
-
-
-@dataclass
-class Notes():
-    source: Path | None
-
-
-@dataclass
-class Release():
-    clean: bool
-    directory: Path
-    name: str
-    files: list[Path]
-    assets: list[Assets]
-    notes: Notes
+logger = getLogger(__name__)
 
 
-def load(cfg: Path, tmp: Path) -> Release:
-    schema: dict[str, Any] = config.get_schema(["project", "build", "release"])
+class Releaser:
+    _base: Path
+    _dst: Path
 
-    try:
-        with open(cfg, encoding="utf-8") as f:
-            data: dict[str, Any] = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {cfg}")
-    except json.JSONDecodeError:
-        raise ValueError(f"Invalid JSON file: {cfg}")
+    def __init__(self, dst: Path) -> None:
+        if not dst.is_dir():
+            raise NotADirectoryError(f"Not a directory: {dst}")
 
-    try:
-        validate(data, schema)
-    except ValidationError as e:
-        raise ValueError(f"Invalid config file: {e.message}")
+        self._base = dst
+        self._dst = self._base
 
-    root: Path = cfg.parent
-    proj_name: str = data["project"]["name"]
-    build: Path = root / Path(data["build"]["directory"])
-    directory: Path = root / Path(data["release"]["directory"])
+    def __enter__(self) -> Self:
+        self.mkdir()
+        return self
 
-    files: list[Path] = []
-    for file in data["release"]["archive"].get("files", []):
-        path: Path = root / file
-        files.extend(path.parent.glob(path.name))
+    def __exit__(self, *_) -> None:
+        self.cleanup()
 
-    for script in data["build"]["scripts"]:
-        name: str = script.get("name", proj_name)
-        suffix: str = script["suffix"]
-        files.append(build / f"{name}{suffix}")
+    def copy_contents(self, cfg: Release) -> None:
+        logger.info("Copying contents")
 
-    for module in data["build"].get("modules", []):
-        path: Path = root / module["path"]
-        files.extend(path.parent.glob(path.name))
+        contents = cfg.contents
 
-    assets: list[Assets] = []
-    for asset in data["release"]["archive"].get("assets", []):
-        dst: Path = directory / tmp / Path(asset["directory"])
+        for category in contents.categories:
+            for item in category:
+                dst = self._dst / item.directory
+                dst.mkdir(parents=True, exist_ok=True)
+                for file in item.files:
+                    self._copy_file(file, dst)
 
-        texts: list[Text] = []
-        for text in asset.get("texts", []):
-            texts.append(Text(
-                dst / Path(text["file"]),
-                text["content"]
-            ))
+        for doc in contents.documents:
+            dst = self._dst / doc.directory
+            dst.mkdir(parents=True, exist_ok=True)
+            for file in doc.files:
+                self._copy_file(file, dst)
 
-        assets.append(Assets(
-            dst,
-            asset.get("url", None),
-            texts
-        ))
+        for asset in contents.assets:
+            dst = self._dst / asset.directory / asset.name
+            dst.mkdir(parents=True, exist_ok=True)
+            self._copy_asset(dst, asset)
 
-    notes: Notes = Notes(
-        root / Path(data["release"]["notes"]["source"])
-    )
+        logger.info("Contents copied")
 
-    return Release(
-        data["release"].get("clean", False),
-        directory,
-        proj_name,
-        files,
-        assets,
-        notes
-    )
+    def create_manifest(self, package: ReleasePackage) -> None:
+        logger.info("Creating manifest")
+
+        manifest = f"[ {package.name} ]\n\n"
+
+        if package.version:
+            manifest += f"Version: {package.version}\n"
+
+        if package.author:
+            manifest += f"Author: {package.author}\n"
+
+        if package.license:
+            manifest += f"License: {package.license}\n"
+
+        if package.description:
+            manifest += f"\n{package.description}\n"
+
+        path = self._dst / "package.txt"
+        _ = path.write_text(manifest, encoding="utf-8", newline="\r\n")
+
+        logger.info("Manifest created: %s", path)
+
+    def create_config(self, package: ReleasePackage) -> None:
+        logger.info("Creating config")
+
+        config = f"name={package.name}\nid={package.id}\n"
+
+        if package.information:
+            config += f"information={package.information}\n"
+
+        path = self._dst / "package.ini"
+        _ = path.write_text(config, encoding="utf-8", newline="\r\n")
+
+        logger.info("Config created: %s", path)
+
+    def create_archive(self, filename: str) -> None:
+        logger.info("Creating archive")
+
+        _ = shutil.make_archive(
+            str(self._base / (filename + ".au2pkg")),
+            "zip",
+            root_dir=self._dst,
+            base_dir=".",
+        )
+
+        logger.info("Archive created: %s.au2pkg.zip", filename)
+
+    def mkdir(self) -> None:
+        self._dst = Path(mkdtemp(dir=self._base))
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self._dst, ignore_errors=True)
+
+    def _copy_file(self, src: Path, dst: Path) -> None:
+        if not src.is_file():
+            logger.warning("File not found, skipping: %s", src)
+            return
+
+        _ = shutil.copy2(src, dst)
+
+    def _copy_asset(self, dst: Path, asset: ReleaseAsset) -> None:
+        if not dst.is_dir():
+            raise NotADirectoryError(f"Not a directory: {dst}")
+
+        logger.info("Copying asset: %s", asset.name)
+
+        for source in asset.sources:
+            target = dst / source.directory
+            target.mkdir(parents=True, exist_ok=True)
+
+            for item in source.files:
+                if isinstance(item, str):
+                    self._download(item, target)
+                else:
+                    self._copy_file(item, target)
+
+        if asset.documents:
+            for doc in asset.documents:
+                path = dst / doc.filename
+                _ = path.write_text(doc.content, encoding="utf-8")
+
+    def _download(self, url: str, dst: Path) -> None:
+        if not dst.is_dir():
+            raise NotADirectoryError(f"Not a directory: {dst}")
+
+        logger.info("Downloading: %s", url)
+
+        try:
+            req = cast(BinaryIO, urlopen(url))
+            with req as response:
+                data = BytesIO(response.read())
+        except Exception:
+            logger.warning("Download failed: %s", url)
+            return
+
+        _ = data.seek(0)
+        if is_zipfile(data):
+            _ = data.seek(0)
+            with ZipFile(data) as zf:
+                zf.extractall(dst)
+            logger.info("Extracted zip to: %s", dst)
+        else:
+            name = Path(urlparse(url).path).name or "download"
+            path = dst / name
+            _ = data.seek(0)
+            _ = path.write_bytes(data.read())
+            logger.info("Saved file: %s", path)
 
 
-def create_release_notes(src: Path, dst: Path) -> None:
-    if not src.exists():
-        return
+def create_release_notes(dst: Path, contents: ReleaseContentContainer) -> None:
+    if not dst.is_dir():
+        raise NotADirectoryError(f"Not a directory: {dst}")
 
-    try:
-        lines: list[str] = src.read_text(encoding="utf-8").splitlines()
-    except Exception as e:
-        raise RuntimeError(f"Failed to read {src}: {e}")
+    logger.info("Creating release notes")
 
-    try:
-        idx: int = next(i for i, l in enumerate(lines)
-                        if l.strip() == "## Change Log")
-    except StopIteration:
-        raise ValueError("Missing required section: '## Change Log'")
+    changelog: Path | None = None
+    readme: Path | None = None
 
-    log: list[str] = lines[idx + 1:]
-
-    ver_re: re.Pattern[str] = re.compile(r"- \*\*(v[\d.]+)\*\*")
-    chg_re: re.Pattern[str] = re.compile(r"^\s*-\s(.+)")
-
-    changes: list[str] = []
-    in_section: bool = False
-    for l in log:
-        if ver_re.match(l):
-            if in_section:
+    for doc in contents.documents:
+        for file in doc.files:
+            stem = file.stem.upper()
+            if "CHANGELOG" in stem:
+                changelog = file
                 break
-
-            in_section = True
+            elif "README" in stem:
+                readme = file
+        else:
             continue
 
-        if in_section and (m := chg_re.match(l)):
-            changes.append(f"- {m.group(1).strip()}")
+        break
 
-    if not changes:
+    target = changelog or readme
+    if not target:
+        logger.warning("Changelog or readme not found")
         return
 
-    content: str = "## What's Changed\n" + "\n".join(changes) + "\n"
-    (dst / "release_notes.txt").write_text(content, encoding="utf-8", newline="\n")
-
-
-def pack(src: Path, dst: Path, name: str) -> None:
-    if not dst.exists() or not dst.is_dir():
+    if not target.is_file():
+        logger.warning("Target is not a file: %s", target)
         return
 
-    with zipfile.ZipFile(dst / f"{name}.zip", 'w', zipfile.ZIP_DEFLATED) as zf:
-        for curr, _, files in os.walk(src):
-            root: Path = Path(curr)
-            rel: Path = root.relative_to(src)
-            base: Path = Path(name) / rel if rel != Path('.') else Path(name)
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning(
+            "Failed to read %s (%s): %s",
+            "changelog" if target == changelog else "readme",
+            e.__class__.__name__,
+            target,
+        )
+        return
 
-            for f in files:
-                zf.write(root / f, (base / f).as_posix())
+    if target == readme:
+        match = _CHANGELOG_HEADER_PATTERN.search(text)
+        if not match:
+            raise ValueError("Missing required section: '## Change Log'")
+        text = text[match.end() :]
 
-
-def download_assets(url: str, dst: Path) -> None:
-    dst.mkdir(parents=True, exist_ok=True)
-
-    with urllib.request.urlopen(url) as response:
-        data: io.BytesIO = io.BytesIO(response.read())
-
-    if zipfile.is_zipfile(data):
-        data.seek(0)
-        with zipfile.ZipFile(data) as zf:
-            zf.extractall(dst)
+    match = _CHANGELOG_SECTION_PATTERN.search(text)
+    if match:
+        section = match.group(0).strip()
+        changes = re.sub(r"^\s*-", "-", section, flags=re.MULTILINE).split(
+            "\n", 1
+        )[1]
+        content = f"## What's Changed\n{changes}"
     else:
-        logging.warning("download failed: unsupported file format.")
-        data.close()
+        return
+
+    path = dst / "release_notes.md"
+    _ = path.write_text(content, encoding="utf-8", newline="\n")
+
+    logger.info("Release notes created: %s", path)
 
 
-def release(cfg: Path, tmp: Path = Path("tmp")) -> None:
-    data: Release = load(cfg, tmp)
+def release(dst: Path, cfg: Release) -> None:
+    logger.info("Release started: Destination=%s", dst)
 
-    if data.clean and data.directory.exists() and data.directory.is_dir():
-        shutil.rmtree(data.directory)
+    dst.mkdir(parents=True, exist_ok=True)
+    dst = dst.resolve()
 
-    data.directory.mkdir(parents=True, exist_ok=True)
+    with Releaser(dst) as releaser:
+        releaser.copy_contents(cfg)
+        releaser.create_manifest(cfg.package)
+        releaser.create_config(cfg.package)
+        releaser.create_archive(cfg.package.filename)
 
-    utils.copy(data.files, data.directory / tmp)
+    create_release_notes(dst, cfg.contents)
 
-    for asset in data.assets:
-        if asset.url:
-            download_assets(asset.url, asset.directory)
-
-        for text in asset.texts:
-            text.file.parent.mkdir(parents=True, exist_ok=True)
-            text.file.write_text(text.content, encoding="utf-8", newline="\n")
-
-    pack(data.directory / tmp, data.directory, data.name)
-
-    shutil.rmtree(data.directory / tmp)
-
-    if data.notes.source:
-        create_release_notes(data.notes.source, data.directory)
+    logger.info("Release completed")

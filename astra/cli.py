@@ -1,181 +1,305 @@
-import argparse
+import os
+import sys
+from argparse import ArgumentParser
+from logging import getLogger
 from pathlib import Path
-from typing import Any
+from shutil import rmtree
+from tempfile import mkdtemp
+from typing import Callable, Protocol, cast
 
-from astra.core import build, install, release, config
+from astra.core import build, config, init, install, release, schema
+from astra.core.utils import find_config
 
+_DEFAULT_INSTALL_TARGET = (
+    Path(os.getenv("ProgramData", "C:\\ProgramData")) / "aviutl2"
+    if sys.platform == "win32"
+    else None
+)
 
-def _build(args: argparse.Namespace) -> None:
-    build.build(args.source / args.config, args.version)
-
-
-def _install(args: argparse.Namespace) -> None:
-    install.install(args.source / args.config, args.target, args.editable)
-
-
-def _uninstall(args: argparse.Namespace) -> None:
-    install.uninstall(args.source / args.config, args.target)
-
-
-def _release(args: argparse.Namespace) -> None:
-    release.release(args.source / args.config)
+logger = getLogger(__name__)
 
 
-def _init(args: argparse.Namespace) -> None:
-    config.create_config(args.target, args.force)
+class InitArgs(Protocol):
+    command: str
+    target: Path
+    func: Callable[["InitArgs"], None]
 
 
-def _schema(args: argparse.Namespace) -> None:
-    if args.build:
-        config.create_schema("build", args.target, args.force)
-
-    if args.install:
-        config.create_schema("install", args.target, args.force)
-
-    if args.release:
-        config.create_schema("release", args.target, args.force)
+class BuildArgs(Protocol):
+    command: str
+    build: Path
+    config: str | None
+    version: str | None
+    func: Callable[["BuildArgs"], None]
 
 
-def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "-s", "--source",
-        nargs='?',
-        type=Path,
-        default=Path.cwd(),
-        help="Source directory containing the config file (default: current directory)"
-    )
-    parser.add_argument(
-        "-c", "--config",
-        nargs='?',
-        type=str,
-        default="astra.config.json",
-        help="Name of the configuration file (default: astra.config.json)"
-    )
+class ReleaseArgs(Protocol):
+    command: str
+    target: Path
+    version: str | None
+    func: Callable[["ReleaseArgs"], None]
 
 
-def create_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+class InstallArgs(Protocol):
+    command: str
+    target: Path | None
+    build: Path
+    editable: bool
+    func: Callable[["InstallArgs"], None]
+
+
+class UninstallArgs(Protocol):
+    command: str
+    build: Path
+    func: Callable[["UninstallArgs"], None]
+
+
+class CleanArgs(Protocol):
+    command: str
+    build: Path
+    func: Callable[["CleanArgs"], None]
+
+
+class SchemaArgs(Protocol):
+    command: str
+    target: Path | None
+    func: Callable[["SchemaArgs"], None]
+
+
+def _init(args: InitArgs) -> None:
+    init.init(args.target)
+
+
+def _build(args: BuildArgs) -> None:
+    cfg = config.Config(find_config(), args.version).load_build()
+
+    _ = build.build(args.build, cfg, args.config or "debug")
+
+
+def _release(args: ReleaseArgs) -> None:
+    if args.target.exists():
+        if args.target.is_dir():
+            rmtree(args.target)
+        else:
+            args.target.unlink()
+
+    cfg = config.Config(find_config(), args.version)
+    tmp = Path(mkdtemp(dir=args.target))
+
+    artifact = build.build(tmp, cfg.load_build(), "release")
+    release.release(args.target, cfg.load_release(artifact))
+
+    rmtree(tmp, ignore_errors=True)
+
+
+def _install(args: InstallArgs) -> None:
+    if not args.target:
+        logger.error("Install target not specified.")
+        sys.exit(1)
+
+    name = args.target.name.lower()
+    if name not in ("aviutl2", "data"):
+        logger.error("Install target not valid: %s", args.target)
+        sys.exit(1)
+    elif name == "aviutl2" and args.target != _DEFAULT_INSTALL_TARGET:
+        logger.error("Install target not valid: %s", args.target)
+        sys.exit(1)
+    elif name == "data" and not (args.target.parent / "aviutl2.exe").is_file():
+        logger.error("Install target not valid: %s", args.target)
+        sys.exit(1)
+
+    if not args.build.is_dir():
+        logger.error("Build directory not found: %s", args.build)
+        sys.exit(1)
+
+    cache = config.Cache(args.build / "astra.json")
+    artifact = cache.load_artifacts()
+    if artifact is None:
+        logger.error("No artifacts found. Please run 'astra build' first.")
+        sys.exit(1)
+
+    cfg = config.Config(find_config()).load_install(artifact)
+
+    installations = install.install(args.target, cfg, args.editable)
+
+    cache.save_installations(installations)
+
+
+def _uninstall(args: UninstallArgs) -> None:
+    if not args.build.is_dir():
+        logger.error("Build directory not found: %s", args.build)
+        sys.exit(1)
+
+    cache = config.Cache(args.build / "astra.json")
+    installations = cache.load_installations()
+    if installations is None:
+        logger.error("No installation records found.")
+        sys.exit(1)
+
+    install.uninstall(installations)
+
+    cache.save_installations([])
+
+
+def _clean(args: CleanArgs) -> None:
+    if not args.build.exists():
+        logger.info("Already clean: %s", args.build)
+        return
+
+    if args.build.is_dir():
+        if not (args.build / "astra.json").is_file():
+            logger.error("Not a target directory: %s", args.build)
+            sys.exit(1)
+
+        rmtree(args.build)
+    else:
+        args.build.unlink()
+
+    logger.info("Cleaned: %s", args.build)
+
+
+def _schema(args: SchemaArgs) -> None:
+    schema.schema(args.target)
+
+
+def create_parser() -> ArgumentParser:
+    parser = ArgumentParser(
         prog="astra",
-        description="A build and deployment tool for AviUtl ExEdit2 scripts."
+        description="A build and deployment tool for AviUtl2 scripts.",
     )
 
-    sub: Any = parser.add_subparsers(
-        dest="command",
-        required=True,
-        help="The command to execute."
+    sub = parser.add_subparsers(
+        dest="command", required=True, help="The command to execute."
     )
+
+    p_init = sub.add_parser(
+        "init", help="Initialize a new project with a default astra.toml."
+    )
+    _ = p_init.add_argument(
+        "target",
+        type=Path,
+        nargs="?",
+        default=Path("."),
+        help="Project directory to initialize (default: .)",
+    )
+    p_init.set_defaults(func=_init)
 
     p_build = sub.add_parser(
-        "build",
-        help="Build the project from the config file."
+        "build", help="Build the project from the config file."
     )
-    add_common_args(p_build)
-    p_build.add_argument(
-        "-v", "--version",
-        nargs='?',
+    _ = p_build.add_argument(
+        "build",
+        type=Path,
+        nargs="?",
+        default=Path("build"),
+        help="Build destination directory (default: build)",
+    )
+    _ = p_build.add_argument(
+        "--config",
+        "-c",
+        type=str,
+        default="Debug",
+        help="Build configuration (e.g. Release, Debug).",
+    )
+    _ = p_build.add_argument(
+        "--version",
+        "-v",
         type=str,
         default=None,
-        help="Override the project version."
+        help='Override the project version. (e.g. "1.0.0")',
     )
     p_build.set_defaults(func=_build)
 
+    p_release = sub.add_parser(
+        "release", help="Package the project for release."
+    )
+    _ = p_release.add_argument(
+        "target",
+        type=Path,
+        nargs="?",
+        default=Path("release"),
+        help="Build directory (default: release)",
+    )
+    _ = p_release.add_argument(
+        "--version",
+        "-v",
+        type=str,
+        default=None,
+        help='Override the project version. (e.g. "1.0.0")',
+    )
+    p_release.set_defaults(func=_release)
+
     p_install = sub.add_parser(
         "install",
-        help="Install the built artifacts and the modules to a target directory."
+        help="Install the built artifacts and modules to a target dir.",
     )
-    add_common_args(p_install)
-    p_install.add_argument(
-        "-t", "--target",
-        nargs='?',
+    _ = p_install.add_argument(
+        "target",
         type=Path,
-        default=None,
-        help="Override a target directory for installation."
+        nargs="?",
+        default=_DEFAULT_INSTALL_TARGET,
+        help="Target directory for installation.",
     )
-    p_install.add_argument(
-        "-e", "--editable",
+    _ = p_install.add_argument(
+        "-b",
+        "--build",
+        type=Path,
+        default=Path("build"),
+        help="Build directory (default: build)",
+    )
+    _ = p_install.add_argument(
+        "-e",
+        "--editable",
         action="store_true",
-        help="Install the built artifacts and the modules in editable mode."
+        help="Install the built artifacts in editable mode.",
     )
     p_install.set_defaults(func=_install)
 
     p_uninstall = sub.add_parser(
         "uninstall",
-        help="Unistall the built artifacts and modules from a target directory."
+        help="Uninstall the built artifacts and modules from a target dir.",
     )
-    add_common_args(p_uninstall)
-    p_uninstall.add_argument(
-        "-t", "--target",
-        nargs='?',
+    _ = p_uninstall.add_argument(
+        "-b",
+        "--build",
         type=Path,
-        default=None,
-        help="Override a target directory for installation."
+        default=Path("build"),
+        help="Build directory (default: build)",
     )
     p_uninstall.set_defaults(func=_uninstall)
 
-    p_release = sub.add_parser(
-        "release",
-        help="Package the project for release."
-    )
-    add_common_args(p_release)
-    p_release.set_defaults(func=_release)
-
-    p_init = sub.add_parser(
-        "init",
-        help="Initialize a new astra.config.json."
-    )
-    p_init.add_argument(
-        "-t", "--target",
-        nargs='?',
+    p_clean = sub.add_parser("clean", help="Clean the build directory.")
+    _ = p_clean.add_argument(
+        "build",
         type=Path,
-        default=Path.cwd(),
-        help="Output directory for the config file (default: current directory)"
+        nargs="?",
+        default=Path("build"),
+        help="Build directory to clean (default: build)",
     )
-    p_init.add_argument(
-        "-f", "--force",
-        action="store_true",
-        help="Overwrite an existing config file."
-    )
-    p_init.set_defaults(func=_init)
+    p_clean.set_defaults(func=_clean)
 
     p_schema = sub.add_parser(
-        "schema",
-        help="Generate JSON schema for configuration files."
+        "schema", help="Output the JSON schema for astra.toml."
     )
-    p_schema.add_argument(
-        "-t", "--target",
-        nargs='?',
+    _ = p_schema.add_argument(
+        "target",
         type=Path,
-        default=Path.cwd(),
-        help="Output directory for the schema file (default: current directory)"
-    )
-    p_schema.add_argument(
-        "-f", "--force",
-        action="store_true",
-        help="Overwrite an existing schema file."
-    )
-    p_schema.add_argument(
-        "-b", "--build",
-        action="store_true",
-        help="Generate the build schema."
-    )
-    p_schema.add_argument(
-        "-i", "--install",
-        action="store_true",
-        help="Generate the install schema."
-    )
-    p_schema.add_argument(
-        "-r", "--release",
-        action="store_true",
-        help="Generate the release schema."
+        nargs="?",
+        default=None,
+        help="Output directory path (default: stdout)",
     )
     p_schema.set_defaults(func=_schema)
 
     return parser
 
 
+class CommandArgs(Protocol):
+    func: Callable[["CommandArgs"], None]
+
+
 def main() -> None:
     parser = create_parser()
-    args = parser.parse_args()
+    args = cast(CommandArgs, cast(object, parser.parse_args()))
     args.func(args)
 
 
