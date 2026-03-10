@@ -1,4 +1,5 @@
 import re
+import sys
 from logging import getLogger
 from pathlib import Path
 from subprocess import run
@@ -28,10 +29,10 @@ class Builder:
         r"""
         ^\s*--\#include\s+(?:"([^"]+)"|<([^>]+)>)
         [^\n]*
-        (?:\n\s*require\s*
+        (?:\n[^\n]*?require\s*
         (?:\(\s*([^\n]+?)\s*\)|([^\s\n]+))
         [^\n]*
-        \n[^\n]*)?
+        (?:\n[^\n]*)?)?
         """,
         re.MULTILINE | re.VERBOSE,
     )
@@ -49,7 +50,8 @@ class Builder:
         elif config == "debug":
             target = cfg.debug
         else:
-            raise ValueError(f"Unknown configuration: {configuration}")
+            logger.error("Unknown configuration: %s", configuration)
+            sys.exit(1)
 
         if not target.commands:
             logger.warning("Plugin '%s' has no commands, skipping", cfg.id)
@@ -81,7 +83,8 @@ class Builder:
         for source in cfg.sources:
             for src in source.files:
                 if not src.is_file():
-                    raise FileNotFoundError(f"Script source not found: {src}")
+                    logger.warning("Script source not found: %s", src)
+                    continue
 
                 try:
                     content = src.read_text(encoding="utf-8")
@@ -130,6 +133,8 @@ class Builder:
                 capture_output=True,
                 text=True,
                 check=False,
+                encoding="utf-8",
+                errors="replace",
             )
 
             if result.returncode != 0:
@@ -139,11 +144,11 @@ class Builder:
                     f"Plugin '{plugin_id}' command failed\n"
                     f"  Command:   {cmd}\n"
                     f"  Exit code: {result.returncode}\n"
-                    f"  Stdout:\n{stdout}\n"
-                    f"  Stderr:\n{stderr}"
+                    f"  Standard Output:\n{stdout}\n"
+                    f"  Standard Error:\n{stderr}"
                 )
                 logger.error(msg)
-                raise RuntimeError(msg)
+                sys.exit(1)
 
     def _restore_section_directives(self, text: str) -> str:
         return self._SECTION_PATTERN.sub("@", text)

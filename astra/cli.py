@@ -1,9 +1,9 @@
 import os
+import shutil
 import sys
 from argparse import ArgumentParser
 from logging import getLogger
 from pathlib import Path
-from shutil import rmtree
 from tempfile import mkdtemp
 from typing import Callable, Protocol, cast
 
@@ -79,7 +79,7 @@ def _build(args: BuildArgs) -> None:
 def _release(args: ReleaseArgs) -> None:
     if args.target.exists():
         if args.target.is_dir():
-            rmtree(args.target)
+            shutil.rmtree(args.target)
         else:
             args.target.unlink()
 
@@ -89,7 +89,7 @@ def _release(args: ReleaseArgs) -> None:
     artifact = build.build(tmp, cfg.load_build(), "release")
     release.release(args.target, cfg.load_release(artifact))
 
-    rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _install(args: InstallArgs) -> None:
@@ -151,7 +151,7 @@ def _clean(args: CleanArgs) -> None:
             logger.error("Not a target directory: %s", args.build)
             sys.exit(1)
 
-        rmtree(args.build)
+        shutil.rmtree(args.build)
     else:
         args.build.unlink()
 
