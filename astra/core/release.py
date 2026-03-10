@@ -53,12 +53,11 @@ class Releaser:
 
         contents = cfg.contents
 
-        for category in contents.categories:
-            for item in category:
-                dst = self._dst / item.directory
-                dst.mkdir(parents=True, exist_ok=True)
-                for file in item.files:
-                    self._copy_file(file, dst)
+        for extension in contents.extensions:
+            dst = self._dst / extension.directory
+            dst.mkdir(parents=True, exist_ok=True)
+            for file in extension.files:
+                self._copy_file(file, dst)
 
         for doc in contents.documents:
             dst = self._dst / doc.directory

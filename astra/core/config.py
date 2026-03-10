@@ -348,15 +348,20 @@ class ReleaseAsset:
 
 
 @dataclass(frozen=True)
-class ReleaseContent:
+class ReleaseExtension:
     directory: str = ""
     files: list[Path] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
+class ReleaseDocument(ReleaseExtension):
+    pass
+
+
+@dataclass(frozen=True)
 class ReleaseContentContainer:
-    categories: list[list[ReleaseContent]] = field(default_factory=list)
-    documents: list[ReleaseContent] = field(default_factory=list)
+    extensions: list[ReleaseExtension] = field(default_factory=list)
+    documents: list[ReleaseDocument] = field(default_factory=list)
     assets: list[ReleaseAsset] = field(default_factory=list)
 
 
@@ -368,8 +373,7 @@ class Release:
 
 @dataclass(frozen=True)
 class Install:
-    plugins: list[ReleaseContent] = field(default_factory=list)
-    scripts: list[ReleaseContent] = field(default_factory=list)
+    extensions: list[ReleaseExtension] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -417,10 +421,7 @@ class Config:
         if contents is None:
             raise ValueError("[release.contents] section is required")
 
-        return Install(
-            self._load_release_plugins(contents, artifact),
-            self._load_release_scripts(contents, artifact),
-        )
+        return Install(self._load_release_extension(contents, artifact))
 
     @staticmethod
     def _load_project(data: Toml, version: str | None = None) -> Project:
@@ -578,95 +579,59 @@ class Config:
             raise ValueError("[release.contents] section is required")
 
         return ReleaseContentContainer(
-            [
-                self._load_release_plugins(contents, artifact),
-                self._load_release_scripts(contents, artifact),
-                self._load_release_content(contents, "Language"),
-                self._load_release_content(contents, "Alias", "es"),
-                self._load_release_content(contents, "Figure"),
-                self._load_release_content(contents, "Transition"),
-                self._load_release_content(contents, "Preset"),
-                self._load_release_content(contents, "Default"),
-            ],
+            self._load_release_extension(contents, artifact),
             self._load_release_documents(contents),
             self._load_release_assets(contents),
         )
 
-    def _load_release_plugins(
+    def _load_release_extension(
         self, contents: Toml, artifact: Artifact
-    ) -> list[ReleaseContent]:
-        entries = contents.tables("plugins")
+    ) -> list[ReleaseExtension]:
+        entries = contents.tables("extensions")
         if entries is None:
             return []
 
         env = self._project.variables
-
-        plugins: list[ReleaseContent] = []
-        for entry in entries:
-            folder = _exp(entry.string("directory", ""), env)
-            files: list[Path] = []
-            for file in entry.list_of("files", str, []):
-                files.extend(self._resolve_package(file, env, artifact))
-
-            plugins.append(ReleaseContent(f"Plugin/{folder}", files))
-
-        return plugins
-
-    def _load_release_scripts(
-        self, contents: Toml, artifact: Artifact
-    ) -> list[ReleaseContent]:
-        entries = contents.tables("scripts")
-        if entries is None:
-            return []
-
-        env = self._project.variables
-
-        scripts: list[ReleaseContent] = []
-        for entry in entries:
-            folder = _exp(entry.string("directory", ""), env)
-            files: list[Path] = []
-            for file in entry.list_of("files", str, []):
-                files.extend(self._resolve_package(file, env, artifact))
-
-            scripts.append(ReleaseContent(f"Script/{folder}", files))
-
-        return scripts
-
-    def _load_release_content(
-        self, contents: Toml, target: str, suffix: str = "s"
-    ) -> list[ReleaseContent]:
-        entries = contents.tables(target.lower() + suffix)
-        if entries is None:
-            return []
-
-        env = self._project.variables
-        items: list[ReleaseContent] = []
+        items: list[ReleaseExtension] = []
 
         for entry in entries:
-            folder = _exp(entry.string("directory", ""), env)
             files: list[Path] = []
             for file in entry.list_of("files", str, []):
-                files.extend(self._resolve_glob(file, env))
+                prefix, _, identifier = file.partition(":")
 
-            items.append(ReleaseContent(f"{target}/{folder}", files))
+                if prefix == "script" and identifier in artifact.script:
+                    files.extend(artifact.script[identifier])
+                elif prefix == "plugin" and identifier in artifact.plugin:
+                    files.extend(artifact.plugin[identifier])
+                else:
+                    files.extend(self._resolve_glob(file, env))
+
+            items.append(
+                ReleaseExtension(
+                    _exp(entry.string("directory", ""), env), files
+                )
+            )
 
         return items
 
-    def _load_release_documents(self, contents: Toml) -> list[ReleaseContent]:
+    def _load_release_documents(self, contents: Toml) -> list[ReleaseDocument]:
         entries = contents.tables("documents")
         if entries is None:
             return []
 
         env = self._project.variables
-        docs: list[ReleaseContent] = []
+        docs: list[ReleaseDocument] = []
 
         for entry in entries:
-            folder = _exp(entry.string("directory", ""), env)
             files: list[Path] = []
             for file in entry.list_of("files", str, []):
                 files.extend(self._resolve_glob(file, env))
 
-            docs.append(ReleaseContent(folder, files))
+            docs.append(
+                ReleaseDocument(
+                    _exp(entry.string("directory", ""), env), files
+                )
+            )
 
         return docs
 
@@ -685,8 +650,6 @@ class Config:
 
             sources: list[AssetSource] = []
             for src in entry.tables("sources", []):
-                folder = _exp(src.string("directory", ""), env)
-
                 files: list[Path | str] = []
                 for path in src.list_of("files", str, []):
                     if path.startswith(("http://", "https://")):
@@ -694,7 +657,9 @@ class Config:
                     else:
                         files.extend(self._resolve_glob(path, env))
 
-                sources.append(AssetSource(folder, files))
+                sources.append(
+                    AssetSource(_exp(src.string("directory", ""), env), files)
+                )
 
             docs: list[AssetDocument] = []
             for doc in entry.tables("documents", []):
@@ -719,19 +684,6 @@ class Config:
             )
 
         return assets
-
-    def _resolve_package(
-        self, file: str, env: dict[str, str], artifact: Artifact
-    ) -> list[Path]:
-        prefix, _, identifier = file.partition(":")
-
-        if prefix == "script" and identifier in artifact.script:
-            return artifact.script[identifier]
-
-        if prefix == "plugin" and identifier in artifact.plugin:
-            return artifact.plugin[identifier]
-
-        return self._resolve_glob(file, env)
 
     def _resolve_glob(self, path: str, env: dict[str, str]) -> list[Path]:
         path = expand_variables(path, env)

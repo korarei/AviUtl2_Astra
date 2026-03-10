@@ -176,7 +176,7 @@ class Schema:
                                     "additionalProperties": False,
                                 },
                             },
-                            "scripts": {
+                            "extensions": {
                                 "type": "array",
                                 "items": {
                                     "type": "object",
@@ -191,90 +191,6 @@ class Schema:
                                 },
                             },
                             "documents": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "directory": {"type": "string"},
-                                        "files": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "languages": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "directory": {"type": "string"},
-                                        "files": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "aliases": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "directory": {"type": "string"},
-                                        "files": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "figures": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "directory": {"type": "string"},
-                                        "files": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "transitions": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "directory": {"type": "string"},
-                                        "files": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "presets": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "directory": {"type": "string"},
-                                        "files": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "defaults": {
                                 "type": "array",
                                 "items": {
                                     "type": "object",

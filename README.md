@@ -273,26 +273,20 @@ description = "Example plugin package"
 # 内容物の設定
 [release.contents]
 # Plugin/に設置するもの
-[[release.contents.plugins]]
-# ファイルの設置場所 (Plugin/以下)
-directory = "${PROJECT_NAME}"
+[[release.contents.extensions]]
+# ファイルの設置場所
+directory = "Plugin/${PROJECT_NAME}"
 # ファイル (IDを設定した場合，artifactsに置換される)
 files = ["plugin:core"]
 
 # Script/に設置するもの
-[[release.contents.scripts]]
-# ファイルの設置場所 (Script/以下)
-directory = "${PROJECT_NAME}"
-# `.mod2`を追加する場合は"plugin:module"のようにして追加すること
+[[release.contents.extensions]]
+directory = "Script/${PROJECT_NAME}"
+# `.mod2`を追加する場合は`"plugin:module"`のようにして追加すること
 files = ["script:effect"]
 
-# 同様に以下の項目が利用可能である (フォルダも設定できるがAviUtl ExEdit2は認識できない)
-# [[release.contents.languages]]
-# [[release.contents.aliases]]
-# [[release.contents.figures]]
-# [[release.contents.transitions]]
-# [[release.contents.presets]]
-# [[release.contents.defaults]]
+# directoryはAviUtl ExEdit2 SDKのreadmeを確認すること
+# フォルダは大文字小文字が区別される (`script/`はAviUtl ExEdit2で認識されない)
 
 # ドキュメント
 [[release.contents.documents]]
@@ -306,7 +300,7 @@ files = ["./*.md", "./LICENSE"]
 # アセット名 (必須)
 name = "Assets"
 # 設置場所
-directory = "Script/"
+directory = "Script/${PROJECT_NAME}"
 
 # 以下`${directory}/${name}`内に設置される
 

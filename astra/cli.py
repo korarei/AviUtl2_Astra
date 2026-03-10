@@ -83,6 +83,7 @@ def _release(args: ReleaseArgs) -> None:
         else:
             args.target.unlink()
 
+    args.target.mkdir(parents=True, exist_ok=True)
     cfg = config.Config(find_config(), args.version)
     tmp = Path(mkdtemp(dir=args.target))
 

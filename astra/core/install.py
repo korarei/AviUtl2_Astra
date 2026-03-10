@@ -38,18 +38,10 @@ def install(dst: Path, cfg: Install, editable: bool = False) -> list[Path]:
 
     installations: list[Path] = []
 
-    for plugin in cfg.plugins:
-        target = dst / plugin.directory
+    for extension in cfg.extensions:
+        target = dst / extension.directory
         target.mkdir(parents=True, exist_ok=True)
-        for file in plugin.files:
-            path = _copy_file(file, target, editable)
-            if path:
-                installations.append(path)
-
-    for script in cfg.scripts:
-        target = dst / script.directory
-        target.mkdir(parents=True, exist_ok=True)
-        for file in script.files:
+        for file in extension.files:
             path = _copy_file(file, target, editable)
             if path:
                 installations.append(path)

@@ -37,8 +37,8 @@ information = "${PROJECT_NAME} v${PROJECT_VERSION} by ${PROJECT_AUTHOR}"
 license = "MIT"
 description = "Example plugin package"
 
-[[release.contents.scripts]]
-directory = "${PROJECT_NAME}"
+[[release.contents.extensions]]
+directory = "Script/${PROJECT_NAME}"
 files = ["script:effect", "plugin:core"]
 
 [[release.contents.documents]]
