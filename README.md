@@ -6,11 +6,14 @@ AviUtl ExEdit2スクリプト用のビルド，開発支援ツール．
 
 ### pip
 
-以下のコマンドを実行する．
+以下のコマンドを実行する．更新は`-U`付きで実行する．
 
 ```bash
 pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.1
 ```
+
+> [!NOTE]
+> 場合によっては環境変数に`astra.exe`のパスを設定する必要がある．
 
 ## 主な機能
 
