@@ -1,5 +1,6 @@
 import re
 import sys
+from textwrap import indent
 from logging import getLogger
 from pathlib import Path
 from subprocess import run
@@ -21,13 +22,13 @@ class Builder:
     )
 
     _PROPERTY_PATTERN: Final[re.Pattern[str]] = re.compile(
-        r"^.*?(--[^@]*@)",
+        r"^[^\n]*?(--\w+@[^\n]*)",
         re.MULTILINE,
     )
 
     _INCLUDE_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"""
-        ^\s*--\#include\s+(?:"([^"]+)"|<([^>]+)>)
+        ^(\s*)--\#include\s+(?:"([^"]+)"|<([^>]+)>)
         [^\n]*
         (?:\n[^\n]*?require\s*
         (?:\(\s*([^\n]+?)\s*\)|([^\s\n]+))
@@ -158,9 +159,10 @@ class Builder:
 
     def _expand_includes(self, text: str, includes: list[Path]) -> str:
         def _replacer(match: re.Match[str]) -> str:
-            quoted = match.group(1)
-            angled = match.group(2)
-            module = match.group(3) or match.group(4)
+            sp = match.group(1) or ""
+            quoted = match.group(2)
+            angled = match.group(3)
+            module = match.group(4) or match.group(5)
 
             path = quoted or angled
             if path is None:
@@ -180,7 +182,7 @@ class Builder:
                         continue
 
                 try:
-                    return candidate.read_text(encoding="utf-8")
+                    return indent(candidate.read_text(encoding="utf-8"), sp)
                 except (OSError, UnicodeDecodeError) as e:
                     logger.warning(
                         "Failed to read include (%s): %s",
