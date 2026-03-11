@@ -9,7 +9,7 @@ AviUtl ExEdit2スクリプト用のビルド，開発支援ツール．
 以下のコマンドを実行する．更新は`-U`付きで実行する．
 
 ```bash
-pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.1
+pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.2
 ```
 
 > [!NOTE]
