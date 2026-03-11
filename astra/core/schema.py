@@ -48,6 +48,7 @@ class Schema:
                         "items": {
                             "type": "object",
                             "properties": {
+                                "enabled": {"type": "boolean"},
                                 "id": {
                                     "type": "string",
                                     "description": "Plugin ID",
@@ -98,6 +99,7 @@ class Schema:
                         "items": {
                             "type": "object",
                             "properties": {
+                                "enabled": {"type": "boolean"},
                                 "id": {
                                     "type": "string",
                                     "description": "Script ID",
@@ -209,6 +211,7 @@ class Schema:
                                 "items": {
                                     "type": "object",
                                     "properties": {
+                                        "enabled": {"type": "boolean"},
                                         "name": {"type": "string"},
                                         "directory": {"type": "string"},
                                         "sources": {
