@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astra"
-version = "0.4.1"
+version = "0.4.2"
 authors = [{ name = "Korarei" }]
 description = "A build and deployment tool for AviUtl ExEdit2 scripts."
 readme = "README.md"
