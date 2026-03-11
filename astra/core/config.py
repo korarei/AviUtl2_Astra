@@ -193,6 +193,16 @@ class Toml:
         return v if type(v) is str else default
 
     @overload
+    def boolean(self, key: str) -> bool | None: ...
+
+    @overload
+    def boolean(self, key: str, default: bool) -> bool: ...
+
+    def boolean(self, key: str, default: bool | None = None) -> bool | None:
+        v = self._data.get(key)
+        return v if type(v) is bool else default
+
+    @overload
     def table(self, key: str) -> Toml | None: ...
 
     @overload
@@ -457,6 +467,9 @@ class Config:
 
         configs: list[Plugin] = []
         for entry in entries:
+            if not entry.boolean("enabled", True):
+                continue
+
             plugin_id = entry.string("id")
             if plugin_id is None:
                 raise ValueError("build.plugins.id is required")
@@ -497,6 +510,9 @@ class Config:
 
         configs: list[Script] = []
         for entry in entries:
+            if not entry.boolean("enabled", True):
+                continue
+
             script_id = entry.string("id")
             if script_id is None:
                 raise ValueError("build.scripts.id is required")
@@ -644,6 +660,9 @@ class Config:
 
         assets: list[ReleaseAsset] = []
         for entry in entries:
+            if not entry.boolean("enabled", True):
+                continue
+
             name = entry.string("name")
             if name is None:
                 raise ValueError("release.contents.assets.name is required")
