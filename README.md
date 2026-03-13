@@ -9,7 +9,7 @@ AviUtl ExEdit2スクリプト用のビルド，開発支援ツール．
 以下のコマンドを実行する．更新は`-U`付きで実行する．
 
 ```bash
-pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.2
+pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.3
 ```
 
 > [!NOTE]
@@ -361,8 +361,8 @@ astra <command> [options]
 `astra.toml`を認識する場所は以下のいずれかである．
 
 - `./astra.toml`
-- `./config/astra.toml`
-- `./astra/astra.toml`
+- `./.config/astra.toml`
+- `./.astra/astra.toml`
 
 使用可能なコマンドを以下に示す．`-h`，`--help`でヘルプを表示可能．
 

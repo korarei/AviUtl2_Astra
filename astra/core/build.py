@@ -1,9 +1,9 @@
 import re
+import subprocess
 import sys
-from textwrap import indent
+import textwrap
 from logging import getLogger
 from pathlib import Path
-from subprocess import run
 from typing import Final
 
 from astra.core.config import Artifact, Build, Cache, Plugin, Script
@@ -17,7 +17,7 @@ class Builder:
     _root: Path
 
     _SECTION_PATTERN: Final[re.Pattern[str]] = re.compile(
-        r"^\s*--\s*@",
+        r"^[^\S\n]*--[^\S\n]*@",
         re.MULTILINE,
     )
 
@@ -28,10 +28,10 @@ class Builder:
 
     _INCLUDE_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"""
-        ^(\s*)--\#include\s+(?:"([^"]+)"|<([^>]+)>)
+        ^([^\S\n]*)--[^\S\n]*\#include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)
         [^\n]*
         (?:\n[^\n]*?require\s*
-        (?:\(\s*([^\n]+?)\s*\)|([^\s\n]+))
+        (?:\(\s*([^\n]+?)\s*\)|([^\s]+))
         [^\n]*
         (?:\n[^\n]*)?)?
         """,
@@ -127,7 +127,7 @@ class Builder:
         for cmd in commands:
             cmd = expand_variables(cmd, variables)
             logger.info("Running: %s", cmd)
-            result = run(
+            result = subprocess.run(
                 cmd,
                 shell=True,
                 cwd=self._root,
@@ -159,7 +159,7 @@ class Builder:
 
     def _expand_includes(self, text: str, includes: list[Path]) -> str:
         def _replacer(match: re.Match[str]) -> str:
-            sp = match.group(1) or ""
+            indent = match.group(1) or ""
             quoted = match.group(2)
             angled = match.group(3)
             module = match.group(4) or match.group(5)
@@ -182,7 +182,8 @@ class Builder:
                         continue
 
                 try:
-                    return indent(candidate.read_text(encoding="utf-8"), sp)
+                    content = candidate.read_text(encoding="utf-8")
+                    return textwrap.indent(content, indent)
                 except (OSError, UnicodeDecodeError) as e:
                     logger.warning(
                         "Failed to read include (%s): %s",
