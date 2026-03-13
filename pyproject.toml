@@ -10,7 +10,7 @@ description = "A build and deployment tool for AviUtl ExEdit2 scripts."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 
 [project.scripts]
 astra = "astra.cli:main"
