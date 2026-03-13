@@ -67,35 +67,56 @@ class SchemaArgs(Protocol):
 
 
 def _init(args: InitArgs) -> None:
-    init.init(args.target)
+    try:
+        init.init(args.target)
+    except Exception as e:
+        logger.error("Failed to initialize (%s): %s", e.__class__.__name__, e)
+        sys.exit(1)
 
 
 def _build(args: BuildArgs) -> None:
-    cfg = config.Config(find_config(), args.version).load_build()
+    try:
+        cfg = config.Config(find_config(), args.version).load_build()
 
-    _ = build.build(args.build, cfg, args.config or "debug")
+        _ = build.build(args.build, cfg, args.config or "debug")
+    except Exception as e:
+        logger.error("Failed to build (%s): %s", e.__class__.__name__, e)
+        sys.exit(1)
 
 
 def _release(args: ReleaseArgs) -> None:
-    if args.target.exists():
-        if args.target.is_dir():
-            shutil.rmtree(args.target)
-        else:
-            args.target.unlink()
+    try:
+        if args.target.exists():
+            if args.target.is_dir():
+                shutil.rmtree(args.target)
+            else:
+                args.target.unlink()
 
-    args.target.mkdir(parents=True, exist_ok=True)
-    cfg = config.Config(find_config(), args.version)
-    tmp = Path(mkdtemp(dir=args.target))
+        args.target.mkdir(parents=True, exist_ok=True)
 
-    artifact = build.build(tmp, cfg.load_build(), "release")
-    release.release(args.target, cfg.load_release(artifact))
+        cfg = config.Config(find_config(), args.version)
+        tmp = Path(mkdtemp(dir=args.target))
 
-    shutil.rmtree(tmp, ignore_errors=True)
+        artifact = build.build(tmp, cfg.load_build(), "release")
+        release.release(args.target, cfg.load_release(artifact))
+
+        shutil.rmtree(tmp, ignore_errors=True)
+    except Exception as e:
+        logger.error("Failed to release (%s): %s", e.__class__.__name__, e)
+        sys.exit(1)
 
 
 def _install(args: InstallArgs) -> None:
     if not args.target:
         logger.error("Install target not specified.")
+        sys.exit(1)
+
+    if not args.target.is_dir():
+        logger.error("Install target not a directory: %s", args.target)
+        sys.exit(1)
+
+    if not args.build.is_dir():
+        logger.error("Build directory not found: %s", args.build)
         sys.exit(1)
 
     name = args.target.name.lower()
@@ -109,21 +130,21 @@ def _install(args: InstallArgs) -> None:
         logger.error("Install target not valid: %s", args.target)
         sys.exit(1)
 
-    if not args.build.is_dir():
-        logger.error("Build directory not found: %s", args.build)
+    try:
+        cache = config.Cache(args.build / "astra.json")
+        artifact = cache.load_artifacts()
+        if artifact is None:
+            logger.error("No artifacts found. Please run 'astra build' first.")
+            sys.exit(1)
+
+        cfg = config.Config(find_config()).load_install(artifact)
+
+        installations = install.install(args.target, cfg, args.editable)
+
+        cache.save_installations(installations)
+    except Exception as e:
+        logger.error("Failed to install (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
-
-    cache = config.Cache(args.build / "astra.json")
-    artifact = cache.load_artifacts()
-    if artifact is None:
-        logger.error("No artifacts found. Please run 'astra build' first.")
-        sys.exit(1)
-
-    cfg = config.Config(find_config()).load_install(artifact)
-
-    installations = install.install(args.target, cfg, args.editable)
-
-    cache.save_installations(installations)
 
 
 def _uninstall(args: UninstallArgs) -> None:
@@ -131,15 +152,19 @@ def _uninstall(args: UninstallArgs) -> None:
         logger.error("Build directory not found: %s", args.build)
         sys.exit(1)
 
-    cache = config.Cache(args.build / "astra.json")
-    installations = cache.load_installations()
-    if installations is None:
-        logger.error("No installation records found.")
+    try:
+        cache = config.Cache(args.build / "astra.json")
+        installations = cache.load_installations()
+        if installations is None:
+            logger.error("No installation records found.")
+            sys.exit(1)
+
+        install.uninstall(installations)
+
+        cache.save_installations([])
+    except Exception as e:
+        logger.error("Failed to uninstall (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
-
-    install.uninstall(installations)
-
-    cache.save_installations([])
 
 
 def _clean(args: CleanArgs) -> None:
@@ -147,20 +172,30 @@ def _clean(args: CleanArgs) -> None:
         logger.info("Already clean: %s", args.build)
         return
 
-    if args.build.is_dir():
-        if not (args.build / "astra.json").is_file():
-            logger.error("Not a target directory: %s", args.build)
-            sys.exit(1)
+    try:
+        if args.build.is_dir():
+            if not (args.build / "astra.json").is_file():
+                logger.error("Not a target directory: %s", args.build)
+                sys.exit(1)
 
-        shutil.rmtree(args.build)
-    else:
-        args.build.unlink()
+            shutil.rmtree(args.build)
+        else:
+            args.build.unlink()
 
-    logger.info("Cleaned: %s", args.build)
+        logger.info("Cleaned: %s", args.build)
+    except Exception as e:
+        logger.error("Failed to clean (%s): %s", e.__class__.__name__, e)
+        sys.exit(1)
 
 
 def _schema(args: SchemaArgs) -> None:
-    schema.schema(args.target)
+    try:
+        schema.schema(args.target)
+    except Exception as e:
+        logger.error(
+            "Failed to generate schema (%s): %s", e.__class__.__name__, e
+        )
+        sys.exit(1)
 
 
 def create_parser() -> ArgumentParser:

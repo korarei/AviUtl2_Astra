@@ -9,7 +9,7 @@ AviUtl ExEdit2スクリプト用のビルド，開発支援ツール．
 以下のコマンドを実行する．更新は`-U`付きで実行する．
 
 ```bash
-pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.2
+pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.3
 ```
 
 > [!NOTE]
@@ -253,6 +253,11 @@ prefix = "@"
 suffix = ".anm2"
 # 改行コード (設定されない場合，CRLF)
 newline = "\r\n"
+# ソースファイルのエンコーディング (設定されない場合，UTF-8)
+source-encoding = "utf-8"
+# ターゲットファイルのエンコーディング (設定されない場合，UTF-8)
+# 旧スクリプトファイルを作成する場合cp932 (Shift JIS) を指定する
+target-encoding = "utf-8"
 # このテーブルおよびスクリプトで利用できる変数
 variables = { SOURCE = "./script" }
 # `--#include`で検索するフォルダ
@@ -281,15 +286,25 @@ name = "${PROJECT_NAME}"
 information = "${PROJECT_NAME} v${PROJECT_VERSION} by ${PROJECT_AUTHOR}"
 # `package.txt`に記載ライセンス表記 (設定されない場合，追加されない)
 license = "MIT"
+# `package.txt`に記載される概要 (設定されない場合，追加されない)
+summary = "Example plugin package summary"
 # `package.txt`に記載される説明 (設定されない場合，追加されない)
-description = "Example plugin package"
+description = "Example plugin package description"
+# `package.txt`に記載されるウェブサイト (設定されない場合，追加されない)
+website = "https://example.com"
+# `package.txt`に記載されるIssue報告先 (設定されない場合，追加されない)
+report-issue = "https://example.com/issues"
 
 # 生成される`package.txt`
 # [ ${name} ]
-# 
+#
+# ${summary}
+#
 # Version: ${PROJECT_VERSION}
-# Author: ${PROJECT_AUTHOR}
 # License: ${license}
+# Author: ${PROJECT_AUTHOR}
+# Website: ${website}
+# Report Issue: ${report-issue}
 #
 # ${description}
 
@@ -361,8 +376,8 @@ astra <command> [options]
 `astra.toml`を認識する場所は以下のいずれかである．
 
 - `./astra.toml`
-- `./config/astra.toml`
-- `./astra/astra.toml`
+- `./.config/astra.toml`
+- `./.astra/astra.toml`
 
 使用可能なコマンドを以下に示す．`-h`，`--help`でヘルプを表示可能．
 

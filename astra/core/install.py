@@ -31,10 +31,10 @@ def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
 
 
 def install(dst: Path, cfg: Install, editable: bool = False) -> list[Path]:
-    logger.info("Installing to: %s", dst)
+    if not dst.is_dir():
+        raise NotADirectoryError(f"Not a directory: {dst}")
 
-    dst.mkdir(parents=True, exist_ok=True)
-    dst = dst.resolve()
+    logger.info("Installing to: %s", dst)
 
     installations: list[Path] = []
 
@@ -54,11 +54,22 @@ def install(dst: Path, cfg: Install, editable: bool = False) -> list[Path]:
 def uninstall(installations: list[Path]) -> None:
     logger.info("Uninstalling from AviUtl2 ExEdit2")
 
+    data = (
+        "plugin",
+        "script",
+        "language",
+        "alias",
+        "default",
+        "figure",
+        "preset",
+        "transition",
+    )
+
     for path in installations:
         if path.exists() or path.is_symlink():
             path.unlink()
 
-            if path.parent.name.lower() not in ("plugin", "script"):
+            if path.parent.name.lower() not in data:
                 answer = input(f"Remove directory '{path.parent}'? [y/N]: ")
                 if answer.lower() in ("y", "yes"):
                     _ = shutil.rmtree(path.parent, ignore_errors=True)

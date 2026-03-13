@@ -108,6 +108,8 @@ class Schema:
                                 "prefix": {"type": "string"},
                                 "suffix": {"type": "string"},
                                 "newline": {"type": "string"},
+                                "source-encoding": {"type": "string"},
+                                "target-encoding": {"type": "string"},
                                 "include_directories": {
                                     "type": "array",
                                     "items": {"type": "string"},
@@ -157,7 +159,10 @@ class Schema:
                             "version": {"type": "string"},
                             "author": {"type": "string"},
                             "license": {"type": "string"},
+                            "summary": {"type": "string"},
                             "description": {"type": "string"},
+                            "website": {"type": "string"},
+                            "report-issue": {"type": "string"},
                         },
                         "additionalProperties": False,
                     },
@@ -270,8 +275,7 @@ class Schema:
 
     def save(self, dst: Path, indent: int = 4) -> None:
         if dst.exists() and not dst.is_dir():
-            logger.error("Destination is not a directory: %s", dst)
-            return
+            raise NotADirectoryError(f"Destination is not a directory: {dst}")
 
         dst.mkdir(parents=True, exist_ok=True)
         path = dst / "astra.schema.json"

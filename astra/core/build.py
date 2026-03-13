@@ -1,9 +1,8 @@
 import re
-import sys
-from textwrap import indent
+import subprocess
+import textwrap
 from logging import getLogger
 from pathlib import Path
-from subprocess import run
 from typing import Final
 
 from astra.core.config import Artifact, Build, Cache, Plugin, Script
@@ -17,7 +16,7 @@ class Builder:
     _root: Path
 
     _SECTION_PATTERN: Final[re.Pattern[str]] = re.compile(
-        r"^\s*--\s*@",
+        r"^[^\S\n]*--[^\S\n]*@",
         re.MULTILINE,
     )
 
@@ -28,10 +27,10 @@ class Builder:
 
     _INCLUDE_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"""
-        ^(\s*)--\#include\s+(?:"([^"]+)"|<([^>]+)>)
+        ^([^\S\n]*)--[^\S\n]*\#include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)
         [^\n]*
         (?:\n[^\n]*?require\s*
-        (?:\(\s*([^\n]+?)\s*\)|([^\s\n]+))
+        (?:\(\s*([^\n]+?)\s*\)|([^\s]+))
         [^\n]*
         (?:\n[^\n]*)?)?
         """,
@@ -39,6 +38,12 @@ class Builder:
     )
 
     def __init__(self, dst: Path, root: Path) -> None:
+        if not dst.is_dir():
+            raise NotADirectoryError(f"Not a directory: {dst}")
+
+        if not root.is_dir():
+            raise NotADirectoryError(f"Not a directory: {root}")
+
         self._dst = dst
         self._root = root
 
@@ -51,8 +56,7 @@ class Builder:
         elif config == "debug":
             target = cfg.debug
         else:
-            logger.error("Unknown configuration: %s", configuration)
-            sys.exit(1)
+            raise ValueError(f"Unknown configuration: {configuration}")
 
         if not target.commands:
             logger.warning("Plugin '%s' has no commands, skipping", cfg.id)
@@ -60,7 +64,13 @@ class Builder:
 
         env = {"BUILD_DIRECTORY": str(self._dst / "plugins" / cfg.id)}
 
-        self._run_commands(target.commands, env, cfg.id)
+        try:
+            self._run_commands(target.commands, env)
+        except Exception as e:
+            cls = e.__class__.__name__
+            raise RuntimeError(
+                f"Plugin '{cfg.id}' command failed ({cls}): {e}"
+            ) from e
 
         artifacts: list[Path] = []
         for a in target.artifacts:
@@ -88,14 +98,12 @@ class Builder:
                     continue
 
                 try:
-                    content = src.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError) as e:
-                    logger.warning(
-                        "Failed to read script source (%s): %s",
-                        e.__class__.__name__,
-                        src,
-                    )
-                    continue
+                    content = src.read_text(encoding=cfg.source_encoding)
+                except Exception as e:
+                    cls = e.__class__.__name__
+                    raise RuntimeError(
+                        f"Failed to read script source ({cls}): {src}"
+                    ) from e
 
                 env = {**cfg.variables, **source.variables}
                 includes = [src.parent, *cfg.include_directories]
@@ -103,13 +111,23 @@ class Builder:
                 content = self._restore_section_directives(content)
                 content = self._normalize_properties(content)
                 content = expand_variables(content, env)
-                content = self._expand_includes(content, includes)
+                content = self._expand_includes(
+                    content, includes, cfg.source_encoding
+                )
 
                 script += content + "\n"
 
         target = self._dst / "scripts" / cfg.id / cfg.name
         target.parent.mkdir(parents=True, exist_ok=True)
-        _ = target.write_text(script, encoding="utf-8", newline=cfg.newline)
+        try:
+            _ = target.write_text(
+                script, encoding=cfg.target_encoding, newline=cfg.newline
+            )
+        except Exception as e:
+            cls = e.__class__.__name__
+            raise RuntimeError(
+                f"Failed to write script ({cls}): {target}"
+            ) from e
 
         logger.info("Script '%s' written to %s", cfg.id, target)
 
@@ -121,35 +139,16 @@ class Builder:
 
         return artifacts
 
-    def _run_commands(
-        self, commands: list[str], variables: dict[str, str], plugin_id: str
-    ) -> None:
+    def _run_commands(self, commands: list[str], env: dict[str, str]) -> None:
         for cmd in commands:
-            cmd = expand_variables(cmd, variables)
+            cmd = expand_variables(cmd, env)
             logger.info("Running: %s", cmd)
-            result = run(
+            _ = subprocess.run(
                 cmd,
                 shell=True,
                 cwd=self._root,
-                capture_output=True,
-                text=True,
-                check=False,
-                encoding="utf-8",
-                errors="replace",
+                check=True,
             )
-
-            if result.returncode != 0:
-                stdout = result.stdout.rstrip() if result.stdout else ""
-                stderr = result.stderr.rstrip() if result.stderr else ""
-                msg = (
-                    f"Plugin '{plugin_id}' command failed\n"
-                    f"  Command:   {cmd}\n"
-                    f"  Exit code: {result.returncode}\n"
-                    f"  Standard Output:\n{stdout}\n"
-                    f"  Standard Error:\n{stderr}"
-                )
-                logger.error(msg)
-                sys.exit(1)
 
     def _restore_section_directives(self, text: str) -> str:
         return self._SECTION_PATTERN.sub("@", text)
@@ -157,9 +156,11 @@ class Builder:
     def _normalize_properties(self, text: str) -> str:
         return self._PROPERTY_PATTERN.sub(r"\1", text)
 
-    def _expand_includes(self, text: str, includes: list[Path]) -> str:
+    def _expand_includes(
+        self, text: str, includes: list[Path], encoding: str = "utf-8"
+    ) -> str:
         def _replacer(match: re.Match[str]) -> str:
-            sp = match.group(1) or ""
+            indent = match.group(1) or ""
             quoted = match.group(2)
             angled = match.group(3)
             module = match.group(4) or match.group(5)
@@ -182,14 +183,14 @@ class Builder:
                         continue
 
                 try:
-                    return indent(candidate.read_text(encoding="utf-8"), sp)
-                except (OSError, UnicodeDecodeError) as e:
-                    logger.warning(
-                        "Failed to read include (%s): %s",
-                        e.__class__.__name__,
-                        candidate,
-                    )
-                    break
+                    content = candidate.read_text(encoding=encoding)
+                except Exception as e:
+                    cls = e.__class__.__name__
+                    raise RuntimeError(
+                        f"Failed to read include ({cls}): {candidate}"
+                    ) from e
+
+                return textwrap.indent(content, indent)
 
             logger.warning("Include not found: %s", match.group(0).strip())
             return match.group(0)

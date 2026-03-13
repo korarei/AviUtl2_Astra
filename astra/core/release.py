@@ -12,7 +12,7 @@ from zipfile import ZipFile, is_zipfile
 from astra.core.config import (
     Release,
     ReleaseAsset,
-    ReleaseContentContainer,
+    ReleaseDocument,
     ReleasePackage,
 )
 
@@ -77,14 +77,23 @@ class Releaser:
 
         manifest = f"[ {package.name} ]\n\n"
 
+        if package.summary:
+            manifest += f"{package.summary}\n\n"
+
         if package.version:
             manifest += f"Version: {package.version}\n"
+
+        if package.license:
+            manifest += f"License: {package.license}\n"
 
         if package.author:
             manifest += f"Author: {package.author}\n"
 
-        if package.license:
-            manifest += f"License: {package.license}\n"
+        if package.website:
+            manifest += f"Website: {package.website}\n"
+
+        if package.report_issue:
+            manifest += f"Report Issue: {package.report_issue}\n"
 
         if package.description:
             manifest += f"\n{package.description}\n"
@@ -172,6 +181,7 @@ class Releaser:
             _ = data.seek(0)
             with ZipFile(data) as zf:
                 zf.extractall(dst)
+
             logger.info("Extracted zip to: %s", dst)
         else:
             name = Path(urlparse(url).path).name or "download"
@@ -181,7 +191,7 @@ class Releaser:
             logger.info("Saved file: %s", path)
 
 
-def create_release_notes(dst: Path, contents: ReleaseContentContainer) -> None:
+def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
     if not dst.is_dir():
         raise NotADirectoryError(f"Not a directory: {dst}")
 
@@ -190,7 +200,7 @@ def create_release_notes(dst: Path, contents: ReleaseContentContainer) -> None:
     changelog: Path | None = None
     readme: Path | None = None
 
-    for doc in contents.documents:
+    for doc in documents:
         for file in doc.files:
             stem = file.stem.upper()
             if "CHANGELOG" in stem:
@@ -214,19 +224,17 @@ def create_release_notes(dst: Path, contents: ReleaseContentContainer) -> None:
 
     try:
         text = target.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        logger.warning(
-            "Failed to read %s (%s): %s",
-            "changelog" if target == changelog else "readme",
-            e.__class__.__name__,
-            target,
-        )
-        return
+    except Exception as e:
+        filename = "changelog" if target == changelog else "readme"
+        raise RuntimeError(
+            f"Failed to read {filename} ({e.__class__.__name__}): {target}"
+        ) from e
 
     if target == readme:
         match = _CHANGELOG_HEADER_PATTERN.search(text)
         if not match:
             raise ValueError("Missing required section: '## Change Log'")
+
         text = text[match.end() :]
 
     match = _CHANGELOG_SECTION_PATTERN.search(text)
@@ -257,6 +265,7 @@ def release(dst: Path, cfg: Release) -> None:
         releaser.create_config(cfg.package)
         releaser.create_archive(cfg.package.filename)
 
-    create_release_notes(dst, cfg.contents)
+    if cfg.contents.documents:
+        create_release_notes(dst, cfg.contents.documents)
 
     logger.info("Release completed")

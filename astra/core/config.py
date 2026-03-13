@@ -9,7 +9,7 @@ from typing import TypeVar, cast, overload
 
 from astra.core.utils import expand_variables
 
-T = TypeVar("T")
+T = TypeVar("T", str, bool)
 
 
 def _exp(text: str, env: dict[str, str]) -> str:
@@ -17,7 +17,7 @@ def _exp(text: str, env: dict[str, str]) -> str:
 
 
 def _exp_opt(text: str | None, env: dict[str, str]) -> str | None:
-    return expand_variables(text, env) if text else None
+    return expand_variables(text, env) if text is not None else None
 
 
 def _exp_list(items: list[str], env: dict[str, str]) -> list[str]:
@@ -69,23 +69,24 @@ class Json:
         return None
 
     @overload
-    def dict_of(self, key: str, typename: type[T]) -> dict[str, T] | None: ...
+    def dict_of(self, key: str, cls: type[T]) -> dict[str, T] | None: ...
 
     @overload
     def dict_of(
-        self, key: str, typename: type[T], default: dict[str, T]
+        self, key: str, cls: type[T], default: dict[str, T]
     ) -> dict[str, T]: ...
 
     def dict_of(
-        self, key: str, typename: type[T], default: dict[str, T] | None = None
+        self, key: str, cls: type[T], default: dict[str, T] | None = None
     ) -> dict[str, T] | None:
         v = self._data.get(key)
         if type(v) is dict:
             return {
                 k: val
                 for k, val in cast("dict[str, object]", v).items()
-                if type(k) is str and isinstance(val, typename)
+                if isinstance(val, cls)
             }
+
         return default
 
     @overload
@@ -99,18 +100,11 @@ class Json:
     ) -> list[Json] | None:
         v = self._data.get(key)
         if type(v) is list:
-            objs: list[Json] = []
-            for i in cast("list[object]", v):
-                if type(i) is dict:
-                    objs.append(Json(cast("dict[str, object]", i)))
-                else:
-                    objs = []
-                    break
-            if objs:
-                return objs
-
-            if not v:
-                return objs
+            return [
+                Json(cast("dict[str, object]", i))
+                for i in cast("list[object]", v)
+                if type(i) is dict
+            ]
 
         if default is not None:
             self._data[key] = [i._data for i in default]
@@ -119,40 +113,45 @@ class Json:
         return None
 
     @overload
-    def list_of(self, key: str, typename: type[T]) -> list[T] | None: ...
+    def list_of(self, key: str, cls: type[T]) -> list[T] | None: ...
 
     @overload
-    def list_of(
-        self, key: str, typename: type[T], default: list[T]
-    ) -> list[T]: ...
+    def list_of(self, key: str, cls: type[T], default: list[T]) -> list[T]: ...
 
     def list_of(
-        self, key: str, typename: type[T], default: list[T] | None = None
+        self, key: str, cls: type[T], default: list[T] | None = None
     ) -> list[T] | None:
         v = self._data.get(key)
         if type(v) is list:
-            return [
-                i for i in cast("list[object]", v) if isinstance(i, typename)
-            ]
+            return [i for i in cast("list[object]", v) if isinstance(i, cls)]
+
         return default
 
     def items(self) -> ItemsView[str, object]:
         return self._data.items()
 
+    @overload
+    def set(self, key: str, value: T | Json) -> None: ...
+
+    @overload
+    def set(self, key: str, value: dict[str, T] | dict[str, Json]) -> None: ...
+
+    @overload
+    def set(self, key: str, value: list[T] | list[Json]) -> None: ...
+
     def set(self, key: str, value: object) -> None:
         if type(value) is Json:
             self._data[key] = value._data
+        elif type(value) is dict:
+            self._data[key] = {
+                k: v._data if type(v) is Json else v
+                for k, v in cast("dict[str, object]", value).items()
+            }
         elif type(value) is list:
-            value = cast("list[object]", value)
-
-            if all(type(i) is Json for i in value):
-                self._data[key] = [i._data for i in cast("list[Json]", value)]
-            elif all(isinstance(i, Path) for i in value):
-                self._data[key] = [str(i) for i in cast("list[Path]", value)]
-            else:
-                self._data[key] = value
-        elif isinstance(value, Path):
-            self._data[key] = str(value)
+            self._data[key] = [
+                v._data if type(v) is Json else v
+                for v in cast("list[object]", value)
+            ]
         else:
             self._data[key] = value
 
@@ -212,26 +211,28 @@ class Toml:
         v = self._data.get(key)
         if type(v) is dict:
             return Toml(cast("dict[str, object]", v))
+
         return default
 
     @overload
-    def dict_of(self, key: str, typename: type[T]) -> dict[str, T] | None: ...
+    def dict_of(self, key: str, cls: type[T]) -> dict[str, T] | None: ...
 
     @overload
     def dict_of(
-        self, key: str, typename: type[T], default: dict[str, T]
+        self, key: str, cls: type[T], default: dict[str, T]
     ) -> dict[str, T]: ...
 
     def dict_of(
-        self, key: str, typename: type[T], default: dict[str, T] | None = None
+        self, key: str, cls: type[T], default: dict[str, T] | None = None
     ) -> dict[str, T] | None:
         v = self._data.get(key)
         if type(v) is dict:
             return {
                 k: val
                 for k, val in cast("dict[str, object]", v).items()
-                if type(k) is str and isinstance(val, typename)
+                if isinstance(val, cls)
             }
+
         return default
 
     @overload
@@ -245,33 +246,27 @@ class Toml:
     ) -> list[Toml] | None:
         v = self._data.get(key)
         if type(v) is list:
-            objs: list[Toml] = []
-            for i in cast("list[object]", v):
-                if type(i) is dict:
-                    objs.append(Toml(cast("dict[str, object]", i)))
-                else:
-                    objs = []
-                    break
-            if objs or not v:
-                return objs
+            return [
+                Toml(cast("dict[str, object]", i))
+                for i in cast("list[object]", v)
+                if type(i) is dict
+            ]
+
         return default
 
     @overload
-    def list_of(self, key: str, typename: type[T]) -> list[T] | None: ...
+    def list_of(self, key: str, cls: type[T]) -> list[T] | None: ...
 
     @overload
-    def list_of(
-        self, key: str, typename: type[T], default: list[T]
-    ) -> list[T]: ...
+    def list_of(self, key: str, cls: type[T], default: list[T]) -> list[T]: ...
 
     def list_of(
-        self, key: str, typename: type[T], default: list[T] | None = None
+        self, key: str, cls: type[T], default: list[T] | None = None
     ) -> list[T] | None:
         v = self._data.get(key)
         if type(v) is list:
-            return [
-                i for i in cast("list[object]", v) if isinstance(i, typename)
-            ]
+            return [i for i in cast("list[object]", v) if isinstance(i, cls)]
+
         return default
 
     def items(self) -> ItemsView[str, object]:
@@ -311,6 +306,8 @@ class Script:
     id: str
     name: str
     newline: str = "\r\n"
+    source_encoding: str = "utf-8"
+    target_encoding: str = "utf-8"
     include_directories: list[Path] = field(default_factory=list)
     variables: dict[str, str] = field(default_factory=dict)
     sources: list[ScriptSource] = field(default_factory=list)
@@ -334,7 +331,10 @@ class ReleasePackage:
     version: str | None = None
     author: str | None = None
     license: str | None = None
+    summary: str | None = None
     description: str | None = None
+    website: str | None = None
+    report_issue: str | None = None
 
 
 @dataclass(frozen=True)
@@ -558,6 +558,8 @@ class Config:
                     script_id,
                     prefix + name + suffix,
                     entry.string("newline", "\r\n"),
+                    entry.string("source-encoding", "utf-8"),
+                    entry.string("target-encoding", "utf-8"),
                     includes,
                     env,
                     sources,
@@ -584,7 +586,10 @@ class Config:
             self._project.version,
             self._project.author,
             _exp_opt(pkg.string("license"), env),
+            _exp_opt(pkg.string("summary"), env),
             _exp_opt(pkg.string("description"), env),
+            _exp_opt(pkg.string("website"), env),
+            _exp_opt(pkg.string("report-issue"), env),
         )
 
     def _load_release_contents(
@@ -733,7 +738,7 @@ class Cache:
         plugins: dict[str, list[Path]] = {}
         scripts: dict[str, list[Path]] = {}
 
-        for k, v in artifacts.object("plugins", default=Json()).items():
+        for k, v in artifacts.object("plugins", Json()).items():
             if isinstance(v, list):
                 plugins[k] = [
                     Path(p)
@@ -741,7 +746,7 @@ class Cache:
                     if isinstance(p, str)
                 ]
 
-        for k, v in artifacts.object("scripts", default=Json()).items():
+        for k, v in artifacts.object("scripts", Json()).items():
             if isinstance(v, list):
                 scripts[k] = [
                     Path(p)
@@ -754,16 +759,16 @@ class Cache:
         return Artifact(plugins, scripts)
 
     def save_artifacts(self, artifact: Artifact) -> None:
-        build = self._data.object("build", default=Json())
-        artifacts = build.object("artifacts", default=Json())
+        build = self._data.object("build", Json())
+        artifacts = build.object("artifacts", Json())
 
         plugins = Json()
         for k, v in artifact.plugin.items():
-            plugins.set(k, v)
+            plugins.set(k, [str(p) for p in v])
 
         scripts = Json()
         for k, v in artifact.script.items():
-            scripts.set(k, v)
+            scripts.set(k, [str(p) for p in v])
 
         artifacts.set("plugins", plugins)
         artifacts.set("scripts", scripts)
@@ -782,6 +787,6 @@ class Cache:
         return [Path(p) for p in installations]
 
     def save_installations(self, installations: list[Path]) -> None:
-        install = self._data.object("install", default=Json())
+        install = self._data.object("install", Json())
         install.set("installations", [str(p) for p in installations])
         self._data.save(self._path)
