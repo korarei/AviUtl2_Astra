@@ -98,7 +98,7 @@ class Builder:
                     continue
 
                 try:
-                    content = src.read_text(encoding="utf-8")
+                    content = src.read_text(encoding=cfg.source_encoding)
                 except Exception as e:
                     cls = e.__class__.__name__
                     raise RuntimeError(
@@ -111,13 +111,23 @@ class Builder:
                 content = self._restore_section_directives(content)
                 content = self._normalize_properties(content)
                 content = expand_variables(content, env)
-                content = self._expand_includes(content, includes)
+                content = self._expand_includes(
+                    content, includes, cfg.source_encoding
+                )
 
                 script += content + "\n"
 
         target = self._dst / "scripts" / cfg.id / cfg.name
         target.parent.mkdir(parents=True, exist_ok=True)
-        _ = target.write_text(script, encoding="utf-8", newline=cfg.newline)
+        try:
+            _ = target.write_text(
+                script, encoding=cfg.target_encoding, newline=cfg.newline
+            )
+        except Exception as e:
+            cls = e.__class__.__name__
+            raise RuntimeError(
+                f"Failed to write script ({cls}): {target}"
+            ) from e
 
         logger.info("Script '%s' written to %s", cfg.id, target)
 
@@ -146,7 +156,9 @@ class Builder:
     def _normalize_properties(self, text: str) -> str:
         return self._PROPERTY_PATTERN.sub(r"\1", text)
 
-    def _expand_includes(self, text: str, includes: list[Path]) -> str:
+    def _expand_includes(
+        self, text: str, includes: list[Path], encoding: str = "utf-8"
+    ) -> str:
         def _replacer(match: re.Match[str]) -> str:
             indent = match.group(1) or ""
             quoted = match.group(2)
@@ -171,7 +183,7 @@ class Builder:
                         continue
 
                 try:
-                    content = candidate.read_text(encoding="utf-8")
+                    content = candidate.read_text(encoding=encoding)
                 except Exception as e:
                     cls = e.__class__.__name__
                     raise RuntimeError(

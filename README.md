@@ -253,6 +253,11 @@ prefix = "@"
 suffix = ".anm2"
 # 改行コード (設定されない場合，CRLF)
 newline = "\r\n"
+# ソースファイルのエンコーディング (設定されない場合，UTF-8)
+source-encoding = "utf-8"
+# ターゲットファイルのエンコーディング (設定されない場合，UTF-8)
+# 旧スクリプトファイルを作成する場合cp932 (Shift JIS) を指定する
+target-encoding = "utf-8"
 # このテーブルおよびスクリプトで利用できる変数
 variables = { SOURCE = "./script" }
 # `--#include`で検索するフォルダ

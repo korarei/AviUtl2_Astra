@@ -6,7 +6,8 @@
 - プラグインをビルドしたときのメッセージをバイパスするように修正．
 - スクリプトビルド時の空行の扱いを修正．
 - ドキュメントが指定されていないときリリースノートを作成しないように修正．
-- `package.txt`でSummary，Website，Report Issueの項目を追加．
+- 設定ファイルに`package.txt`でSummary，Website，Report Issueの項目を追加．
+- 設定ファイルにスクリプトファイルのエンコーディングを追加．(exedit.auf向け)
 
 ## v0.4.2
 

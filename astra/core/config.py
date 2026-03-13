@@ -306,6 +306,8 @@ class Script:
     id: str
     name: str
     newline: str = "\r\n"
+    source_encoding: str = "utf-8"
+    target_encoding: str = "utf-8"
     include_directories: list[Path] = field(default_factory=list)
     variables: dict[str, str] = field(default_factory=dict)
     sources: list[ScriptSource] = field(default_factory=list)
@@ -556,6 +558,8 @@ class Config:
                     script_id,
                     prefix + name + suffix,
                     entry.string("newline", "\r\n"),
+                    entry.string("source-encoding", "utf-8"),
+                    entry.string("target-encoding", "utf-8"),
                     includes,
                     env,
                     sources,

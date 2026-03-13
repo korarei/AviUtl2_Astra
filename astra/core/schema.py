@@ -108,6 +108,8 @@ class Schema:
                                 "prefix": {"type": "string"},
                                 "suffix": {"type": "string"},
                                 "newline": {"type": "string"},
+                                "source-encoding": {"type": "string"},
+                                "target-encoding": {"type": "string"},
                                 "include_directories": {
                                     "type": "array",
                                     "items": {"type": "string"},
