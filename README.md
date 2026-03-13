@@ -281,15 +281,25 @@ name = "${PROJECT_NAME}"
 information = "${PROJECT_NAME} v${PROJECT_VERSION} by ${PROJECT_AUTHOR}"
 # `package.txt`に記載ライセンス表記 (設定されない場合，追加されない)
 license = "MIT"
+# `package.txt`に記載される概要 (設定されない場合，追加されない)
+summary = "Example plugin package summary"
 # `package.txt`に記載される説明 (設定されない場合，追加されない)
-description = "Example plugin package"
+description = "Example plugin package description"
+# `package.txt`に記載されるウェブサイト (設定されない場合，追加されない)
+website = "https://example.com"
+# `package.txt`に記載されるIssue報告先 (設定されない場合，追加されない)
+report-issue = "https://example.com/issues"
 
 # 生成される`package.txt`
 # [ ${name} ]
-# 
+#
+# ${summary}
+#
 # Version: ${PROJECT_VERSION}
-# Author: ${PROJECT_AUTHOR}
 # License: ${license}
+# Author: ${PROJECT_AUTHOR}
+# Website: ${website}
+# Report Issue: ${report-issue}
 #
 # ${description}
 

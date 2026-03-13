@@ -17,7 +17,7 @@ def _exp(text: str, env: dict[str, str]) -> str:
 
 
 def _exp_opt(text: str | None, env: dict[str, str]) -> str | None:
-    return expand_variables(text, env) if text else None
+    return expand_variables(text, env) if text is not None else None
 
 
 def _exp_list(items: list[str], env: dict[str, str]) -> list[str]:
@@ -329,7 +329,10 @@ class ReleasePackage:
     version: str | None = None
     author: str | None = None
     license: str | None = None
+    summary: str | None = None
     description: str | None = None
+    website: str | None = None
+    report_issue: str | None = None
 
 
 @dataclass(frozen=True)
@@ -579,7 +582,10 @@ class Config:
             self._project.version,
             self._project.author,
             _exp_opt(pkg.string("license"), env),
+            _exp_opt(pkg.string("summary"), env),
             _exp_opt(pkg.string("description"), env),
+            _exp_opt(pkg.string("website"), env),
+            _exp_opt(pkg.string("report-issue"), env),
         )
 
     def _load_release_contents(

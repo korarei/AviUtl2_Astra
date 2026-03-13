@@ -77,14 +77,23 @@ class Releaser:
 
         manifest = f"[ {package.name} ]\n\n"
 
+        if package.summary:
+            manifest += f"{package.summary}\n\n"
+
         if package.version:
             manifest += f"Version: {package.version}\n"
+
+        if package.license:
+            manifest += f"License: {package.license}\n"
 
         if package.author:
             manifest += f"Author: {package.author}\n"
 
-        if package.license:
-            manifest += f"License: {package.license}\n"
+        if package.website:
+            manifest += f"Website: {package.website}\n"
+
+        if package.report_issue:
+            manifest += f"Report Issue: {package.report_issue}\n"
 
         if package.description:
             manifest += f"\n{package.description}\n"
