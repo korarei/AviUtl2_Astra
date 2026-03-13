@@ -50,13 +50,11 @@ files = ["./*.md", "./LICENSE"]
 
 def init(dst: Path) -> None:
     if dst.exists() and not dst.is_dir():
-        logger.error("Destination is not a directory: %s", dst)
-        return
+        raise NotADirectoryError(f"Destination is not a directory: {dst}")
 
     path = dst / "astra.toml"
     if path.exists():
-        logger.error("Config file already exists: %s", path)
-        return
+        raise FileExistsError(f"Config file already exists: {path}")
 
     dst.mkdir(parents=True, exist_ok=True)
 

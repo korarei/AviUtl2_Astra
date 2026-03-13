@@ -270,8 +270,7 @@ class Schema:
 
     def save(self, dst: Path, indent: int = 4) -> None:
         if dst.exists() and not dst.is_dir():
-            logger.error("Destination is not a directory: %s", dst)
-            return
+            raise NotADirectoryError(f"Destination is not a directory: {dst}")
 
         dst.mkdir(parents=True, exist_ok=True)
         path = dst / "astra.schema.json"

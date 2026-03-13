@@ -1,6 +1,5 @@
 import re
 import subprocess
-import sys
 import textwrap
 from logging import getLogger
 from pathlib import Path
@@ -39,6 +38,12 @@ class Builder:
     )
 
     def __init__(self, dst: Path, root: Path) -> None:
+        if not dst.is_dir():
+            raise NotADirectoryError(f"Not a directory: {dst}")
+
+        if not root.is_dir():
+            raise NotADirectoryError(f"Not a directory: {root}")
+
         self._dst = dst
         self._root = root
 
@@ -51,8 +56,7 @@ class Builder:
         elif config == "debug":
             target = cfg.debug
         else:
-            logger.error("Unknown configuration: %s", configuration)
-            sys.exit(1)
+            raise ValueError(f"Unknown configuration: {configuration}")
 
         if not target.commands:
             logger.warning("Plugin '%s' has no commands, skipping", cfg.id)
@@ -60,7 +64,13 @@ class Builder:
 
         env = {"BUILD_DIRECTORY": str(self._dst / "plugins" / cfg.id)}
 
-        self._run_commands(target.commands, env, cfg.id)
+        try:
+            self._run_commands(target.commands, env)
+        except Exception as e:
+            cls = e.__class__.__name__
+            raise RuntimeError(
+                f"Plugin '{cfg.id}' command failed ({cls}): {e}"
+            ) from e
 
         artifacts: list[Path] = []
         for a in target.artifacts:
@@ -89,13 +99,11 @@ class Builder:
 
                 try:
                     content = src.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError) as e:
-                    logger.warning(
-                        "Failed to read script source (%s): %s",
-                        e.__class__.__name__,
-                        src,
-                    )
-                    continue
+                except Exception as e:
+                    cls = e.__class__.__name__
+                    raise RuntimeError(
+                        f"Failed to read script source ({cls}): {src}"
+                    ) from e
 
                 env = {**cfg.variables, **source.variables}
                 includes = [src.parent, *cfg.include_directories]
@@ -121,35 +129,16 @@ class Builder:
 
         return artifacts
 
-    def _run_commands(
-        self, commands: list[str], variables: dict[str, str], plugin_id: str
-    ) -> None:
+    def _run_commands(self, commands: list[str], env: dict[str, str]) -> None:
         for cmd in commands:
-            cmd = expand_variables(cmd, variables)
+            cmd = expand_variables(cmd, env)
             logger.info("Running: %s", cmd)
-            result = subprocess.run(
+            _ = subprocess.run(
                 cmd,
                 shell=True,
                 cwd=self._root,
-                capture_output=True,
-                text=True,
-                check=False,
-                encoding="utf-8",
-                errors="replace",
+                check=True,
             )
-
-            if result.returncode != 0:
-                stdout = result.stdout.rstrip() if result.stdout else ""
-                stderr = result.stderr.rstrip() if result.stderr else ""
-                msg = (
-                    f"Plugin '{plugin_id}' command failed\n"
-                    f"  Command:   {cmd}\n"
-                    f"  Exit code: {result.returncode}\n"
-                    f"  Standard Output:\n{stdout}\n"
-                    f"  Standard Error:\n{stderr}"
-                )
-                logger.error(msg)
-                sys.exit(1)
 
     def _restore_section_directives(self, text: str) -> str:
         return self._SECTION_PATTERN.sub("@", text)
@@ -183,14 +172,13 @@ class Builder:
 
                 try:
                     content = candidate.read_text(encoding="utf-8")
-                    return textwrap.indent(content, indent)
-                except (OSError, UnicodeDecodeError) as e:
-                    logger.warning(
-                        "Failed to read include (%s): %s",
-                        e.__class__.__name__,
-                        candidate,
-                    )
-                    break
+                except Exception as e:
+                    cls = e.__class__.__name__
+                    raise RuntimeError(
+                        f"Failed to read include ({cls}): {candidate}"
+                    ) from e
+
+                return textwrap.indent(content, indent)
 
             logger.warning("Include not found: %s", match.group(0).strip())
             return match.group(0)

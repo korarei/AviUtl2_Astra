@@ -31,10 +31,10 @@ def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
 
 
 def install(dst: Path, cfg: Install, editable: bool = False) -> list[Path]:
-    logger.info("Installing to: %s", dst)
+    if not dst.is_dir():
+        raise NotADirectoryError(f"Not a directory: {dst}")
 
-    dst.mkdir(parents=True, exist_ok=True)
-    dst = dst.resolve()
+    logger.info("Installing to: %s", dst)
 
     installations: list[Path] = []
 
