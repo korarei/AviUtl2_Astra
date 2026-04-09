@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import importlib.metadata as metadata
 import json
 import tomllib
 from collections.abc import ItemsView
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar, cast, overload
+
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 from astra.core.utils import expand_variables
 
@@ -395,6 +399,8 @@ class Config:
 
     def __init__(self, path: Path, version: str | None = None) -> None:
         self._data = Toml(path)
+        self._load_astra(self._data)
+
         self._root = path.parent
         self._project = self._load_project(self._data, version)
 
@@ -428,6 +434,18 @@ class Config:
             raise ValueError("[release.contents] section is required")
 
         return Install(self._load_release_extension(contents, artifact))
+
+    @staticmethod
+    def _load_astra(data: Toml) -> None:
+        if astra := data.table("astra"):
+            if version := astra.string("version"):
+                try:
+                    __version__ = metadata.version("astra")
+                except metadata.PackageNotFoundError as e:
+                    raise ValueError("Version not found") from e
+
+                if Version(__version__) not in SpecifierSet(version):
+                    raise ValueError("Version mismatch")
 
     @staticmethod
     def _load_project(data: Toml, version: str | None = None) -> Project:
