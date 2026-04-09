@@ -383,9 +383,27 @@ astra <command> [options]
 
 ### `init`
 
-`astra.toml`設定ファイルを作成する．
+`astra.toml`設定ファイルと`.editorconfig`ファイルを作成する．
 
 すでに`astra.toml`が存在する場合使用できない．
+
+<details>
+<summary>生成される.editorconfig</summary>
+
+```toml
+root = true
+
+[*]  
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+```
+
+</details>
 
 #### 使用方法
 
