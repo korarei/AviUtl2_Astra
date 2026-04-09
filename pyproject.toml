@@ -4,9 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astra"
-version = "0.4.3"
+version = "0.5.0"
 authors = [{ name = "Korarei" }]
-description = "A build and deployment tool for AviUtl ExEdit2 scripts."
+description = "A build and deployment tool for AviUtl ExEdit2 scripts and plugins."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

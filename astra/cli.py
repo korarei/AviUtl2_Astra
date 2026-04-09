@@ -178,6 +178,10 @@ def _clean(args: CleanArgs) -> None:
                 logger.error("Not a target directory: %s", args.build)
                 sys.exit(1)
 
+            cache = config.Cache(args.build / "astra.json")
+            if installations := cache.load_installations():
+                install.uninstall(installations)
+
             shutil.rmtree(args.build)
         else:
             args.build.unlink()
