@@ -107,7 +107,7 @@ class Releaser:
     def create_config(self, package: ReleasePackage) -> None:
         logger.info("Creating config")
 
-        config = f"name={package.name}\nid={package.id}\n"
+        config = f"[package]\nname={package.name}\nid={package.id}\n"
 
         if package.information:
             config += f"information={package.information}\n"
