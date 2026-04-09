@@ -491,6 +491,7 @@ class Config:
             env = {
                 **self._project.variables,
                 **entry.dict_of("variables", str, {}),
+                "BUILD_DIRECTORY": "${BUILD_DIRECTORY}",
             }
 
             release = entry.table("release")

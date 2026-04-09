@@ -1,5 +1,4 @@
 import re
-import sys
 from logging import getLogger
 from pathlib import Path
 
@@ -23,13 +22,16 @@ def find_config() -> Path:
         if candidate.is_file():
             return candidate.resolve()
 
-    logger.error("astra.toml not found.")
-    sys.exit(1)
+    raise FileNotFoundError("astra.toml not found.")
 
 
 def expand_variables(text: str, variables: dict[str, str]) -> str:
     def _replacer(match: re.Match[str]) -> str:
         key = match.group(1)
-        return variables.get(key, match.group(0))
+        if val := variables.get(key):
+            return val
+        else:
+            logger.warning("Variable %s not found", key)
+            return match.group(0)
 
     return _VAR_PATTERN.sub(_replacer, text)
