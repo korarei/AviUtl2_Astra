@@ -63,7 +63,7 @@ trim_trailing_whitespace = true
 
 
 def init(dst: Path) -> None:
-    if dst.exists() and not dst.is_dir():
+    if not dst.is_dir():
         raise NotADirectoryError(f"Destination is not a directory: {dst}")
 
     path = dst / "astra.toml"

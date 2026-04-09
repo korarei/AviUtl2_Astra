@@ -275,7 +275,7 @@ class Schema:
         return json.dumps(self.data, ensure_ascii=False, indent=indent)
 
     def save(self, dst: Path, indent: int = 4) -> None:
-        if dst.exists() and not dst.is_dir():
+        if not dst.is_dir():
             raise NotADirectoryError(f"Destination is not a directory: {dst}")
 
         dst.mkdir(parents=True, exist_ok=True)

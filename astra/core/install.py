@@ -64,15 +64,30 @@ def uninstall(installations: list[Path]) -> None:
         "figure",
         "preset",
         "transition",
+        "data",
+        "aviutl2",
     )
 
     for path in installations:
         if path.exists() or path.is_symlink():
             path.unlink()
 
-            if path.parent.name.lower() not in data:
-                answer = input(f"Remove directory '{path.parent}'? [y/N]: ")
-                if answer.lower() in ("y", "yes"):
-                    _ = shutil.rmtree(path.parent, ignore_errors=True)
+        while True:
+            parent = path.parent
+            if parent == path:
+                break
+
+            path = path.parent
+
+            if not path.is_dir():
+                break
+
+            if path.name.lower() in data:
+                break
+
+            try:
+                path.rmdir()
+            except Exception:
+                break
 
     logger.info("Uninstall completed")
