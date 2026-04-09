@@ -8,6 +8,7 @@ from typing import Final
 from astra.core.config import Artifact, Build, Cache, Plugin, Script
 from astra.core.utils import expand_variables
 
+
 logger = getLogger(__name__)
 
 
@@ -68,9 +69,7 @@ class Builder:
             self._run_commands(target.commands, env)
         except Exception as e:
             cls = e.__class__.__name__
-            raise RuntimeError(
-                f"Plugin '{cfg.id}' command failed ({cls}): {e}"
-            ) from e
+            raise RuntimeError(f"Plugin '{cfg.id}' command failed ({cls}): {e}") from e
 
         artifacts: list[Path] = []
         for a in target.artifacts:
@@ -78,9 +77,7 @@ class Builder:
             matched = sorted(path.parent.glob(path.name))
             artifacts.extend(matched if matched else [path])
 
-        logger.info(
-            "Plugin '%s' produced %d artifact(s)", cfg.id, len(artifacts)
-        )
+        logger.info("Plugin '%s' produced %d artifact(s)", cfg.id, len(artifacts))
         return artifacts
 
     def build_script(self, cfg: Script) -> list[Path]:
@@ -111,9 +108,7 @@ class Builder:
                 content = self._restore_section_directives(content)
                 content = self._normalize_properties(content)
                 content = expand_variables(content, env)
-                content = self._expand_includes(
-                    content, includes, cfg.source_encoding
-                )
+                content = self._expand_includes(content, includes, cfg.source_encoding)
 
                 script += content + "\n"
 
@@ -125,17 +120,13 @@ class Builder:
             )
         except Exception as e:
             cls = e.__class__.__name__
-            raise RuntimeError(
-                f"Failed to write script ({cls}): {target}"
-            ) from e
+            raise RuntimeError(f"Failed to write script ({cls}): {target}") from e
 
         logger.info("Script '%s' written to %s", cfg.id, target)
 
         artifacts = [target, *cfg.artifacts]
 
-        logger.info(
-            "Script '%s' produced %d artifact(s)", cfg.id, len(artifacts)
-        )
+        logger.info("Script '%s' produced %d artifact(s)", cfg.id, len(artifacts))
 
         return artifacts
 
@@ -203,9 +194,7 @@ def build(dst: Path, cfg: Build, configuration: str = "release") -> Artifact:
         logger.warning("No plugins or scripts to build")
         return Artifact()
 
-    logger.info(
-        "Build started: Destination=%s, Configuration=%s", dst, configuration
-    )
+    logger.info("Build started: Destination=%s, Configuration=%s", dst, configuration)
 
     dst.mkdir(parents=True, exist_ok=True)
     dst = dst.resolve()

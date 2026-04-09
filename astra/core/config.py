@@ -9,6 +9,7 @@ from typing import TypeVar, cast, overload
 
 from astra.core.utils import expand_variables
 
+
 T = TypeVar("T", str, bool)
 
 
@@ -95,9 +96,7 @@ class Json:
     @overload
     def objects(self, key: str, default: list[Json]) -> list[Json]: ...
 
-    def objects(
-        self, key: str, default: list[Json] | None = None
-    ) -> list[Json] | None:
+    def objects(self, key: str, default: list[Json] | None = None) -> list[Json] | None:
         v = self._data.get(key)
         if type(v) is list:
             return [
@@ -149,8 +148,7 @@ class Json:
             }
         elif type(value) is list:
             self._data[key] = [
-                v._data if type(v) is Json else v
-                for v in cast("list[object]", value)
+                v._data if type(v) is Json else v for v in cast("list[object]", value)
             ]
         else:
             self._data[key] = value
@@ -241,9 +239,7 @@ class Toml:
     @overload
     def tables(self, key: str, default: list[Toml]) -> list[Toml]: ...
 
-    def tables(
-        self, key: str, default: list[Toml] | None = None
-    ) -> list[Toml] | None:
+    def tables(self, key: str, default: list[Toml] | None = None) -> list[Toml] | None:
         v = self._data.get(key)
         if type(v) is list:
             return [
@@ -628,9 +624,7 @@ class Config:
                     files.extend(self._resolve_glob(file, env))
 
             items.append(
-                ReleaseExtension(
-                    _exp(entry.string("directory", ""), env), files
-                )
+                ReleaseExtension(_exp(entry.string("directory", ""), env), files)
             )
 
         return items
@@ -649,9 +643,7 @@ class Config:
                 files.extend(self._resolve_glob(file, env))
 
             docs.append(
-                ReleaseDocument(
-                    _exp(entry.string("directory", ""), env), files
-                )
+                ReleaseDocument(_exp(entry.string("directory", ""), env), files)
             )
 
         return docs
@@ -693,9 +685,7 @@ class Config:
                         "release.contents.assets.documents.name is required"
                     )
                 docs.append(
-                    AssetDocument(
-                        filename, _exp(doc.string("content", ""), env)
-                    )
+                    AssetDocument(filename, _exp(doc.string("content", ""), env))
                 )
 
             assets.append(
@@ -741,17 +731,13 @@ class Cache:
         for k, v in artifacts.object("plugins", Json()).items():
             if isinstance(v, list):
                 plugins[k] = [
-                    Path(p)
-                    for p in cast("list[object]", v)
-                    if isinstance(p, str)
+                    Path(p) for p in cast("list[object]", v) if isinstance(p, str)
                 ]
 
         for k, v in artifacts.object("scripts", Json()).items():
             if isinstance(v, list):
                 scripts[k] = [
-                    Path(p)
-                    for p in cast("list[object]", v)
-                    if isinstance(p, str)
+                    Path(p) for p in cast("list[object]", v) if isinstance(p, str)
                 ]
 
         self._data.save(self._path)  # 雑な破損ファイルの修正

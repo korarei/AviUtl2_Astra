@@ -3,6 +3,7 @@ import sys
 from logging import getLogger
 from pathlib import Path
 
+
 _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 logger = getLogger(__name__)

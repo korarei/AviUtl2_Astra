@@ -10,6 +10,7 @@ from typing import Callable, Protocol, cast
 from astra.core import build, config, init, install, release, schema
 from astra.core.utils import find_config
 
+
 _DEFAULT_INSTALL_TARGET = (
     Path(os.getenv("ProgramData", "C:\\ProgramData")) / "aviutl2"
     if sys.platform == "win32"
@@ -196,9 +197,7 @@ def _schema(args: SchemaArgs) -> None:
     try:
         schema.schema(args.target)
     except Exception as e:
-        logger.error(
-            "Failed to generate schema (%s): %s", e.__class__.__name__, e
-        )
+        logger.error("Failed to generate schema (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
 
 
@@ -224,9 +223,7 @@ def create_parser() -> ArgumentParser:
     )
     p_init.set_defaults(func=_init)
 
-    p_build = sub.add_parser(
-        "build", help="Build the project from the config file."
-    )
+    p_build = sub.add_parser("build", help="Build the project from the config file.")
     _ = p_build.add_argument(
         "build",
         type=Path,
@@ -250,9 +247,7 @@ def create_parser() -> ArgumentParser:
     )
     p_build.set_defaults(func=_build)
 
-    p_release = sub.add_parser(
-        "release", help="Package the project for release."
-    )
+    p_release = sub.add_parser("release", help="Package the project for release.")
     _ = p_release.add_argument(
         "target",
         type=Path,
@@ -318,9 +313,7 @@ def create_parser() -> ArgumentParser:
     )
     p_clean.set_defaults(func=_clean)
 
-    p_schema = sub.add_parser(
-        "schema", help="Output the JSON schema for astra.toml."
-    )
+    p_schema = sub.add_parser("schema", help="Output the JSON schema for astra.toml.")
     _ = p_schema.add_argument(
         "target",
         type=Path,

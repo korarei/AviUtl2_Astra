@@ -3,6 +3,7 @@ from logging import getLogger
 from pathlib import Path
 from typing import ClassVar
 
+
 logger = getLogger(__name__)
 
 
@@ -13,6 +14,16 @@ class Schema:
         "description": "JSON schema for astra.toml configuration file.",
         "type": "object",
         "properties": {
+            "astra": {
+                "type": "object",
+                "properties": {
+                    "requires-astra": {
+                        "type": "string",
+                        "description": "Required Astra version",
+                    },
+                },
+                "additionalProperties": False,
+            },
             "project": {
                 "type": "object",
                 "properties": {
@@ -129,9 +140,7 @@ class Schema:
                                             }
                                         },
                                         "required": ["file"],
-                                        "additionalProperties": {
-                                            "type": "string"
-                                        },
+                                        "additionalProperties": {"type": "string"},
                                     },
                                 },
                                 "artifacts": {
@@ -224,14 +233,10 @@ class Schema:
                                             "items": {
                                                 "type": "object",
                                                 "properties": {
-                                                    "directory": {
-                                                        "type": "string"
-                                                    },
+                                                    "directory": {"type": "string"},
                                                     "files": {
                                                         "type": "array",
-                                                        "items": {
-                                                            "type": "string"
-                                                        },
+                                                        "items": {"type": "string"},
                                                     },
                                                 },
                                                 "additionalProperties": False,
@@ -242,12 +247,8 @@ class Schema:
                                             "items": {
                                                 "type": "object",
                                                 "properties": {
-                                                    "filename": {
-                                                        "type": "string"
-                                                    },
-                                                    "content": {
-                                                        "type": "string"
-                                                    },
+                                                    "filename": {"type": "string"},
+                                                    "content": {"type": "string"},
                                                 },
                                                 "required": ["filename"],
                                                 "additionalProperties": False,
