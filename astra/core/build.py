@@ -30,8 +30,9 @@ class Builder:
     _DEFINE_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"""
         ^[^\S\n]*--[^\S\n]*
-        (?:\[\[\s*\#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+(?s:(.+?))[^\S\n]*\]\][^\n]*|
-        \#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+([^\n]+))
+        (?:\[\[\s*\#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+(?s:(.+?))[^\S\n]*\]\]
+        [^\n]*(?:\n|$)|
+        \#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+([^\n]+)(?:\n|$))
         """,
         re.MULTILINE | re.VERBOSE,
     )
@@ -43,18 +44,18 @@ class Builder:
         (?:\n[^\n]*?require\s*
         (?:\(\s*([^\n]+?)\s*\)|([^\s]+))
         [^\n]*
-        (?:\n[^\n]*)?)?
+        (?:\n[^\n]*)?)?(?:\n|$)
         """,
         re.MULTILINE | re.VERBOSE,
     )
 
     _INCLUDE_HLSL_PATTERN: Final[re.Pattern[str]] = re.compile(
-        r'^([^\S\n]*)#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)[^\n]*',
+        r'^([^\S\n]*)#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)[^\n]*(?:\n|$)',
         re.MULTILINE,
     )
 
     _IF_PATTERN: Final[re.Pattern[str]] = re.compile(
-        r"^[^\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*.+?\s*end[^\n]*",
+        r"^[^\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*.+?\s*end[^\n]*(?:\n|$)",
         re.MULTILINE | re.DOTALL,
     )
 
