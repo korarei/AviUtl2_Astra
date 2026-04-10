@@ -26,6 +26,10 @@ uv tool update-shell
 
 ## 主な機能
 
+### 仮想環境の構築
+
+指定したバージョンのAviUtl ExEdit2をダウンロードし，仮想環境を構築する．(`.venv/aviutl2`にインストールされる)
+
 ### ビルド
 
 ソースファイルをAviUtl ExEdit2が認識する形式に変換する．
