@@ -27,6 +27,15 @@ class Builder:
         re.MULTILINE,
     )
 
+    _DEFINE_PATTERN: Final[re.Pattern[str]] = re.compile(
+        r"""
+        ^[^\S\n]*--[^\S\n]*
+        (?:\[\[\s*\#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+(?s:(.+?))[^\S\n]*\]\][^\n]*|
+        \#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+([^\n]+))
+        """,
+        re.MULTILINE | re.VERBOSE,
+    )
+
     _INCLUDE_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"""
         ^([^\S\n]*)--[^\S\n]*\#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)
@@ -119,6 +128,7 @@ class Builder:
                 env = {**cfg.variables, **source.variables}
                 includes = [src.parent, *cfg.include_directories]
 
+                content = self._gather_defines(content, env)
                 content = self._restore_section_directives(content)
                 content = self._normalize_properties(content)
                 content = expand_variables(content, env)
@@ -154,6 +164,15 @@ class Builder:
                 cwd=self._root,
                 check=True,
             )
+
+    def _gather_defines(self, text: str, env: dict[str, str]) -> str:
+        def _replacer(match: re.Match[str]) -> str:
+            key = match.group(1) or match.group(3)
+            val = match.group(2) or match.group(4)
+            env[key] = val
+            return ""
+
+        return self._DEFINE_PATTERN.sub(_replacer, text)
 
     def _restore_section_directives(self, text: str) -> str:
         return self._SECTION_PATTERN.sub("@", text)

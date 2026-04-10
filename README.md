@@ -48,28 +48,28 @@ uv tool update-shell
 
 #### ファイル展開
 
-`--#include "a.hlsl"`や`--#include <a.hlsl>`と書かれた行はそのファイルで置換する．
+`--#include "psmain.hlsl"`や`--#include <psmain.hlsl>`と書かれた行はそのファイルで置換する．
 
 `"`と`<`の違いはC言語と同様である．
 
 展開前
 
 ```lua
---[[pixelshader@a:
---#include "a.hlsl"
+--[[pixelshader@psmain:
+--#include "psmain.hlsl"
 ]]
 ```
 
 展開後
 
 ```lua
---[[pixelshader@a:
-Texture2D src : register(t0)
+--[[pixelshader@psmain:
+Texture2D tex : register(t0)
 SamplerState smp : register(s0)
 
 float4
-a(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
-    return src.Sample(smp, uv);
+psmain(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target {
+    return tex.Sample(smp, uv);
 }
 ]]
 ```
@@ -96,7 +96,7 @@ end
 
 -- そのまま実行すると`...`は`nil`となり，`require`するとモジュール名となる
 
-if (...) then -- Pythonの`if __name__ != "__main__":`
+if ... then
     return {
         add = add,
         sub = sub
@@ -104,7 +104,36 @@ if (...) then -- Pythonの`if __name__ != "__main__":`
 end
 ```
 
-これにより，モジュールとしても利用可能で展開されても動作するようになる．
+展開時，この実行されないif文は削除される．
+
+#### スクリプト内変数定義
+
+`--#define`または`--[[#define]]`を使用することでスクリプトファイル内で変数定義を行うことができる．
+
+展開前
+
+```lua
+--#define ITEMS Hoge=0,Huga=1,Piyo=2
+--select@list:List,${ITEMS}
+
+--[[#define DEBUG if ... then
+    print("Debug")
+end]]
+print([[${DEBUG}]])
+```
+
+展開後
+
+```lua
+--select@list:List,Hoge=0,Huga=1,Piyo=2
+
+print([[if ... then
+    print("Debug")
+end]])
+```
+
+> [!NOTE]
+> `--#define`等で定義した変数は`variables`等で指定した変数を上書きしながら追加される．
 
 #### プロパティ項目の正規化
 
@@ -114,14 +143,14 @@ AviUtl ExEdit2の実行時形式をスクリプトとして認識する形式に
 
 ```lua
 --@Effect
-local a = 0 --track@a:A,0,100,0,0.01
+local hoge = 0 --track@hoge:Hoge,0,100,0,0.01
 ```
 
 正規化後
 
 ```lua
 @Effect
---track@a:A,0,100,0,0.01
+--track@hoge:Hoge,0,100,0,0.01
 ```
 
 #### プラグインのビルド
@@ -324,6 +353,9 @@ report-issue = "https://example.com/issues"
 
 # 内容物の設定
 [release.contents]
+# directoryはAviUtl ExEdit2 SDKのreadmeを確認すること (認識されないものは除外される)
+# フォルダは大文字小文字が区別される (`script/`はAviUtl ExEdit2で認識されない)
+
 # Plugin/に設置するもの
 [[release.contents.extensions]]
 # ファイルの設置場所
@@ -336,9 +368,6 @@ files = ["plugin:core"]
 directory = "Script/${PROJECT_NAME}"
 # `.mod2`を追加する場合は`"plugin:module"`のようにして追加すること
 files = ["script:effect"]
-
-# directoryはAviUtl ExEdit2 SDKのreadmeを確認すること
-# フォルダは大文字小文字が区別される (`script/`はAviUtl ExEdit2で認識されない)
 
 # ドキュメント
 [[release.contents.documents]]
