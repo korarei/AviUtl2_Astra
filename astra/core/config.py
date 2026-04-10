@@ -445,7 +445,7 @@ class Config:
     @staticmethod
     def _load_astra(data: Toml) -> None:
         if astra := data.table("astra"):
-            if version := astra.string("version"):
+            if version := astra.string("requires-astra"):
                 try:
                     __version__ = metadata.version("astra")
                 except metadata.PackageNotFoundError as e:

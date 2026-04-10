@@ -25,7 +25,7 @@ class BuildArgs(Protocol):
     build: Path
     config: str
     version: str | None
-    defines: list[list[str]]
+    define: list[list[str]]
     func: Callable[["BuildArgs"], None]
 
 
@@ -33,7 +33,7 @@ class ReleaseArgs(Protocol):
     command: str
     target: Path
     version: str | None
-    defines: list[list[str]]
+    define: list[list[str]]
     func: Callable[["ReleaseArgs"], None]
 
 
@@ -42,7 +42,7 @@ class InstallArgs(Protocol):
     target: Path | None
     build: Path
     editable: bool
-    defines: list[list[str]]
+    define: list[list[str]]
     func: Callable[["InstallArgs"], None]
 
 
@@ -81,7 +81,7 @@ def _init(args: InitArgs) -> None:
 
 def _build(args: BuildArgs) -> None:
     try:
-        env = {k: v for k, v in args.defines}
+        env = {k: v for k, v in args.define}
         cfg = config.Config(find_config(), args.version, env).load_build()
 
         _ = build.build(args.build, cfg, args.config)
@@ -100,7 +100,7 @@ def _release(args: ReleaseArgs) -> None:
 
         args.target.mkdir(parents=True, exist_ok=True)
 
-        env = {k: v for k, v in args.defines}
+        env = {k: v for k, v in args.define}
         cfg = config.Config(find_config(), args.version, env)
         tmp = Path(mkdtemp(dir=args.target))
 
@@ -158,7 +158,7 @@ def _install(args: InstallArgs) -> None:
             logger.error("No artifacts found. Please run 'astra build' first.")
             sys.exit(1)
 
-        env = {k: v for k, v in args.defines}
+        env = {k: v for k, v in args.define}
         cfg = config.Config(find_config(), defines=env).load_install(artifact)
 
         installations = install.install(target, cfg, args.editable)
@@ -281,8 +281,8 @@ def create_parser() -> ArgumentParser:
         help='Override the project version. (e.g., "1.0.0")',
     )
     _ = p_build.add_argument(
-        "--define",
         "-d",
+        "--define",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,
@@ -307,8 +307,8 @@ def create_parser() -> ArgumentParser:
         help='Override the project version. (e.g., "1.0.0")',
     )
     _ = p_release.add_argument(
-        "--define",
         "-d",
+        "--define",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,
@@ -343,8 +343,8 @@ def create_parser() -> ArgumentParser:
         help="Install the built artifacts in editable mode.",
     )
     _ = p_install.add_argument(
-        "--define",
         "-d",
+        "--define",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,

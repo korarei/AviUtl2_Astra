@@ -48,8 +48,7 @@ files = ["./*.md", "./LICENSE"]
 
 """
 
-_DEFAULT_EDITOR_CONFIG = """
-root = true
+_DEFAULT_EDITOR_CONFIG = """root = true
 
 [*]
 charset = utf-8
