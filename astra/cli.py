@@ -1,3 +1,4 @@
+import importlib.metadata as metadata
 import os
 import shutil
 import sys
@@ -12,6 +13,11 @@ from astra.core.utils import find_config
 
 
 logger = getLogger(__name__)
+
+try:
+    __version__ = metadata.version("astra")
+except metadata.PackageNotFoundError:
+    __version__ = "unknown"
 
 
 class InitArgs(Protocol):
@@ -242,12 +248,23 @@ def create_parser() -> ArgumentParser:
         description="A build and deployment tool for AviUtl2 scripts.",
     )
 
+    _ = parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Show the version of the program.",
+    )
+
     sub = parser.add_subparsers(
-        dest="command", required=True, help="The command to execute."
+        dest="command",
+        required=True,
+        help="The command to execute.",
     )
 
     p_init = sub.add_parser(
-        "init", help="Initialize a new project with a default astra.toml."
+        "init",
+        help="Initialize a new project with a default astra.toml.",
     )
     _ = p_init.add_argument(
         "target",
@@ -258,7 +275,10 @@ def create_parser() -> ArgumentParser:
     )
     p_init.set_defaults(func=_init)
 
-    p_build = sub.add_parser("build", help="Build the project from the config file.")
+    p_build = sub.add_parser(
+        "build",
+        help="Build the project from the config file.",
+    )
     _ = p_build.add_argument(
         "build",
         type=Path,
@@ -281,8 +301,8 @@ def create_parser() -> ArgumentParser:
         help='Override the project version. (e.g., "1.0.0")',
     )
     _ = p_build.add_argument(
-        "-d",
         "--define",
+        "-d",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,
@@ -291,7 +311,10 @@ def create_parser() -> ArgumentParser:
     )
     p_build.set_defaults(func=_build)
 
-    p_release = sub.add_parser("release", help="Package the project for release.")
+    p_release = sub.add_parser(
+        "release",
+        help="Package the project for release.",
+    )
     _ = p_release.add_argument(
         "target",
         type=Path,
@@ -307,8 +330,8 @@ def create_parser() -> ArgumentParser:
         help='Override the project version. (e.g., "1.0.0")',
     )
     _ = p_release.add_argument(
-        "-d",
         "--define",
+        "-d",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,
@@ -330,21 +353,21 @@ def create_parser() -> ArgumentParser:
         + "if .venv exists, otherwise %ProgramData%/aviutl2)",
     )
     _ = p_install.add_argument(
-        "-b",
         "--build",
+        "-b",
         type=Path,
         default=Path("build"),
         help="Build directory (default: build)",
     )
     _ = p_install.add_argument(
-        "-e",
         "--editable",
+        "-e",
         action="store_true",
         help="Install the built artifacts in editable mode.",
     )
     _ = p_install.add_argument(
-        "-d",
         "--define",
+        "-d",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,
@@ -358,15 +381,18 @@ def create_parser() -> ArgumentParser:
         help="Uninstall the built artifacts and modules from a target dir.",
     )
     _ = p_uninstall.add_argument(
-        "-b",
         "--build",
+        "-b",
         type=Path,
         default=Path("build"),
         help="Build directory (default: build)",
     )
     p_uninstall.set_defaults(func=_uninstall)
 
-    p_clean = sub.add_parser("clean", help="Clean the build directory.")
+    p_clean = sub.add_parser(
+        "clean",
+        help="Clean the build directory.",
+    )
     _ = p_clean.add_argument(
         "build",
         type=Path,
@@ -376,7 +402,10 @@ def create_parser() -> ArgumentParser:
     )
     p_clean.set_defaults(func=_clean)
 
-    p_schema = sub.add_parser("schema", help="Output the JSON schema for astra.toml.")
+    p_schema = sub.add_parser(
+        "schema",
+        help="Output the JSON schema for astra.toml.",
+    )
     _ = p_schema.add_argument(
         "target",
         type=Path,
@@ -386,7 +415,10 @@ def create_parser() -> ArgumentParser:
     )
     p_schema.set_defaults(func=_schema)
 
-    p_venv = sub.add_parser("venv", help="Setup virtual environment.")
+    p_venv = sub.add_parser(
+        "venv",
+        help="Setup virtual environment.",
+    )
     _ = p_venv.add_argument(
         "target",
         type=Path,

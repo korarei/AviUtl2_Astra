@@ -242,8 +242,9 @@ requires-aviutl2 = "2003600"
 # 設定ファイル，スクリプト全体で利用できる変数
 variables = { PROJECT_LABEL = "Project" }
 
-# ここで設定されたものは`PROJECT_NAME`のように設定され，valiablesに追加される
+# ここで設定されたものは`PROJECT_NAME`のように設定され，`variables`に追加される
 # ここで設定されたものは変数として設定ファイルやスクリプトファイル内で利用可能
+# `-d`または`--define`オプションで`variables`へ変数を追加可能
 
 # 変数一覧 (設定されたものだけ追加される)
 # PROJECT_NAME
@@ -407,6 +408,16 @@ This archive contains additional resources.
 ```
 
 </details>
+
+## オプション
+
+- `-h`, `--help`
+
+ヘルプを表示する．
+
+- `-v`, `--version`
+
+astraバージョンを表示する．
 
 ## コマンド
 
