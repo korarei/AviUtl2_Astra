@@ -1,13 +1,9 @@
 import re
 import shutil
-from io import BytesIO
 from logging import getLogger
 from pathlib import Path
 from tempfile import mkdtemp
-from typing import BinaryIO, Self, cast
-from urllib.parse import urlparse
-from urllib.request import urlopen
-from zipfile import ZipFile, is_zipfile
+from typing import Self
 
 from astra.core.config import (
     Release,
@@ -15,6 +11,7 @@ from astra.core.config import (
     ReleaseDocument,
     ReleasePackage,
 )
+from astra.core.utils import download
 
 
 _CHANGELOG_HEADER_PATTERN = re.compile(
@@ -154,7 +151,10 @@ class Releaser:
 
             for item in source.files:
                 if isinstance(item, str):
-                    self._download(item, target)
+                    try:
+                        download(item, target)
+                    except Exception:
+                        logger.warning("Failed to download asset: %s", item)
                 else:
                     self._copy_file(item, target)
 
@@ -162,34 +162,6 @@ class Releaser:
             for doc in asset.documents:
                 path = dst / doc.filename
                 _ = path.write_text(doc.content, encoding="utf-8")
-
-    def _download(self, url: str, dst: Path) -> None:
-        if not dst.is_dir():
-            raise NotADirectoryError(f"Not a directory: {dst}")
-
-        logger.info("Downloading: %s", url)
-
-        try:
-            req = cast(BinaryIO, urlopen(url))
-            with req as response:
-                data = BytesIO(response.read())
-        except Exception:
-            logger.warning("Download failed: %s", url)
-            return
-
-        _ = data.seek(0)
-        if is_zipfile(data):
-            _ = data.seek(0)
-            with ZipFile(data) as zf:
-                zf.extractall(dst)
-
-            logger.info("Extracted zip to: %s", dst)
-        else:
-            name = Path(urlparse(url).path).name or "download"
-            path = dst / name
-            _ = data.seek(0)
-            _ = path.write_bytes(data.read())
-            logger.info("Saved file: %s", path)
 
 
 def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
@@ -253,7 +225,7 @@ def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
 
 
 def release(dst: Path, cfg: Release) -> None:
-    logger.info("Release started: Destination=%s", dst)
+    logger.info("Making package to: %s", dst)
 
     dst.mkdir(parents=True, exist_ok=True)
     dst = dst.resolve()
@@ -267,4 +239,4 @@ def release(dst: Path, cfg: Release) -> None:
     if cfg.contents.documents:
         create_release_notes(dst, cfg.contents.documents)
 
-    logger.info("Release completed")
+    logger.info("Making package completed")

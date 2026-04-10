@@ -265,7 +265,11 @@ def build(dst: Path, cfg: Build, configuration: str = "release") -> Artifact:
         logger.warning("No plugins or scripts to build")
         return Artifact()
 
-    logger.info("Build started: Destination=%s, Configuration=%s", dst, configuration)
+    logger.info(
+        "Building plugins and scripts to: %s (Configuration=%s)",
+        dst,
+        configuration,
+    )
 
     dst.mkdir(parents=True, exist_ok=True)
     dst = dst.resolve()

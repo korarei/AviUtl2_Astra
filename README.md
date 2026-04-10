@@ -525,7 +525,8 @@ astra install [options]
 設置先ディレクトリを指定する．(デフォルト: `%ProgramData%/aviutl2`)
 
 > [!NOTE]
-> AviUtl ExEdit2の認識する場所以外設置できない．
+> - AviUtl ExEdit2の認識する場所以外設置できない．
+> - カレントディレクトリに`.venv/`が存在する場合は`.venv/aviutl2/data/`がデフォルトの設置先となる．
 
 - `-b <directory>`，`--build <directory>`
 
@@ -558,7 +559,7 @@ astra uninstall [options]
 
 ### `clean`
 
-アンインストール実行後，ビルドディレクトリを削除する．
+アンインストール実行後，ビルドディレクトリを削除する．カレントディレクトリに`.venv`が存在する場合はそれも削除する．
 
 #### 使用方法
 
@@ -586,9 +587,32 @@ astra schema [options]
 
 - `<target>`
 
-スキーマファイルを出力するディレクトリを指定する．(デフォルト: None)
+スキーマファイルを出力するディレクトリを指定する．(デフォルト: Stdout)
 
 指定されない場合標準出力に出力される．
+
+### `venv`
+
+仮想環境を構築する．(`.venv/aviutl2/`にポータブル版が配置される．)
+
+#### 使用方法
+
+```pwsh
+astra venv [options]
+```
+
+#### オプション
+
+- `<target>`
+
+仮想環境を構築するディレクトリを指定する．(デフォルト: `.`)
+
+- `--aviutl2 <version>`
+
+AviUtl2のバージョンを指定する．(デフォルト: `latest`)
+
+> [!NOTE]
+> 最新版は[AviUtl2 カタログ](https://github.com/Neosku/aviutl2-catalog)の[データ](https://raw.githubusercontent.com/Neosku/aviutl2-catalog-data/main/index.json)から取得する．
 
 ## ライセンス
 

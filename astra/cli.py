@@ -7,15 +7,9 @@ from pathlib import Path
 from tempfile import mkdtemp
 from typing import Callable, Protocol, cast
 
-from astra.core import build, config, init, install, release, schema
+from astra.core import build, config, init, install, release, schema, venv
 from astra.core.utils import find_config
 
-
-_DEFAULT_INSTALL_TARGET = (
-    Path(os.getenv("ProgramData", "C:\\ProgramData")) / "aviutl2"
-    if sys.platform == "win32"
-    else None
-)
 
 logger = getLogger(__name__)
 
@@ -67,6 +61,13 @@ class SchemaArgs(Protocol):
     func: Callable[["SchemaArgs"], None]
 
 
+class VenvArgs(Protocol):
+    command: str
+    target: Path
+    aviutl2: str | None
+    func: Callable[["VenvArgs"], None]
+
+
 def _init(args: InitArgs) -> None:
     try:
         init.init(args.target)
@@ -108,27 +109,41 @@ def _release(args: ReleaseArgs) -> None:
 
 
 def _install(args: InstallArgs) -> None:
-    if not args.target:
-        logger.error("Install target not specified.")
-        sys.exit(1)
+    default = (
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "aviutl2"
+        if sys.platform == "win32"
+        else None
+    )
 
-    if not args.target.is_dir():
-        logger.error("Install target not a directory: %s", args.target)
+    if args.target is None:
+        venv = Path(".venv")
+        if venv.exists():
+            target = venv / "aviutl2/data"
+        elif default is not None:
+            target = default
+        else:
+            logger.error("Install target not specified.")
+            sys.exit(1)
+    else:
+        target = args.target
+
+    if not target.is_dir():
+        logger.error("Install target not a directory: %s", target)
         sys.exit(1)
 
     if not args.build.is_dir():
         logger.error("Build directory not found: %s", args.build)
         sys.exit(1)
 
-    name = args.target.name.lower()
+    name = target.name.lower()
     if name not in ("aviutl2", "data"):
-        logger.error("Install target not valid: %s", args.target)
+        logger.error("Install target not valid: %s", target)
         sys.exit(1)
-    elif name == "aviutl2" and args.target != _DEFAULT_INSTALL_TARGET:
-        logger.error("Install target not valid: %s", args.target)
+    elif name == "aviutl2" and default is not None and target != default:
+        logger.error("Install target not valid: %s", target)
         sys.exit(1)
-    elif name == "data" and not (args.target.parent / "aviutl2.exe").is_file():
-        logger.error("Install target not valid: %s", args.target)
+    elif name == "data" and not (target.parent / "aviutl2.exe").is_file():
+        logger.error("Install target not valid: %s", target)
         sys.exit(1)
 
     try:
@@ -140,7 +155,7 @@ def _install(args: InstallArgs) -> None:
 
         cfg = config.Config(find_config()).load_install(artifact)
 
-        installations = install.install(args.target, cfg, args.editable)
+        installations = install.install(target, cfg, args.editable)
 
         cache.save_installations(installations)
     except Exception as e:
@@ -169,6 +184,10 @@ def _uninstall(args: UninstallArgs) -> None:
 
 
 def _clean(args: CleanArgs) -> None:
+    venv = Path(".venv")
+    if venv.exists():
+        shutil.rmtree(venv)
+
     if not args.build.exists():
         logger.info("Already clean: %s", args.build)
         return
@@ -198,6 +217,16 @@ def _schema(args: SchemaArgs) -> None:
         schema.schema(args.target)
     except Exception as e:
         logger.error("Failed to generate schema (%s): %s", e.__class__.__name__, e)
+        sys.exit(1)
+
+
+def _venv(args: VenvArgs) -> None:
+    try:
+        venv.venv(args.target, args.aviutl2)
+    except Exception as e:
+        logger.error(
+            "Failed to setup virtual environment (%s): %s", e.__class__.__name__, e
+        )
         sys.exit(1)
 
 
@@ -243,7 +272,7 @@ def create_parser() -> ArgumentParser:
         "-v",
         type=str,
         default=None,
-        help='Override the project version. (e.g. "1.0.0")',
+        help='Override the project version. (e.g., "1.0.0")',
     )
     p_build.set_defaults(func=_build)
 
@@ -260,7 +289,7 @@ def create_parser() -> ArgumentParser:
         "-v",
         type=str,
         default=None,
-        help='Override the project version. (e.g. "1.0.0")',
+        help='Override the project version. (e.g., "1.0.0")',
     )
     p_release.set_defaults(func=_release)
 
@@ -272,8 +301,9 @@ def create_parser() -> ArgumentParser:
         "target",
         type=Path,
         nargs="?",
-        default=_DEFAULT_INSTALL_TARGET,
-        help="Target directory for installation.",
+        default=None,
+        help="Target directory for installation (default: .venv/aviutl2/data "
+        + "if .venv exists, otherwise %ProgramData%/aviutl2)",
     )
     _ = p_install.add_argument(
         "-b",
@@ -322,6 +352,22 @@ def create_parser() -> ArgumentParser:
         help="Output directory path (default: stdout)",
     )
     p_schema.set_defaults(func=_schema)
+
+    p_venv = sub.add_parser("venv", help="Setup virtual environment.")
+    _ = p_venv.add_argument(
+        "target",
+        type=Path,
+        nargs="?",
+        default=Path("."),
+        help="Target directory for virtual environment (default: .)",
+    )
+    _ = p_venv.add_argument(
+        "--aviutl2",
+        type=str,
+        default=None,
+        help='AviUtl2 version (e.g., "beta40a"). [default: latest]',
+    )
+    p_venv.set_defaults(func=_venv)
 
     return parser
 
