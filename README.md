@@ -8,12 +8,21 @@ AviUtl ExEdit2スクリプト用のビルド，開発支援ツール．
 
 以下のコマンドを実行する．更新は`-U`付きで実行する．
 
-```bash
-pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.4.3
+```pwsh
+pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.5.0
 ```
 
 > [!NOTE]
 > 場合によっては環境変数に`astra.exe`のパスを設定する必要がある．
+
+### uv
+
+以下のコマンドを実行する．更新は`uv tool upgrade --all`または`uv tool install --upgrade <package>`で実行する．
+
+```pwsh
+uv tool install git+https://github.com/korarei/AviUtl2_Astra.git@v0.5.0
+uv tool update-shell
+```
 
 ## 主な機能
 
