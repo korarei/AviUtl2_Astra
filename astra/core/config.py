@@ -399,12 +399,17 @@ class Config:
     _root: Path
     _project: Project
 
-    def __init__(self, path: Path, version: str | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        version: str | None = None,
+        defines: dict[str, str] | None = None,
+    ) -> None:
         self._data = Toml(path)
         self._load_astra(self._data)
 
         self._root = path.parent
-        self._project = self._load_project(self._data, version)
+        self._project = self._load_project(self._data, version, defines)
 
     def load_build(self) -> Build:
         build = self._data.table("build")
@@ -450,7 +455,11 @@ class Config:
                     raise ValueError("Version mismatch")
 
     @staticmethod
-    def _load_project(data: Toml, version: str | None = None) -> Project:
+    def _load_project(
+        data: Toml,
+        version: str | None = None,
+        defines: dict[str, str] | None = None,
+    ) -> Project:
         project = data.table("project")
         if project is None:
             raise ValueError("[project] section is required")
@@ -473,6 +482,9 @@ class Config:
 
         if requires_aviutl2:
             variables["PROJECT_REQUIRES_AVIUTL2"] = requires_aviutl2
+
+        if defines:
+            variables |= defines
 
         return Project(name, version, author, requires_aviutl2, variables)
 

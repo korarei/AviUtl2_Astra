@@ -23,8 +23,9 @@ class InitArgs(Protocol):
 class BuildArgs(Protocol):
     command: str
     build: Path
-    config: str | None
+    config: str
     version: str | None
+    defines: list[list[str]]
     func: Callable[["BuildArgs"], None]
 
 
@@ -32,6 +33,7 @@ class ReleaseArgs(Protocol):
     command: str
     target: Path
     version: str | None
+    defines: list[list[str]]
     func: Callable[["ReleaseArgs"], None]
 
 
@@ -40,6 +42,7 @@ class InstallArgs(Protocol):
     target: Path | None
     build: Path
     editable: bool
+    defines: list[list[str]]
     func: Callable[["InstallArgs"], None]
 
 
@@ -78,9 +81,10 @@ def _init(args: InitArgs) -> None:
 
 def _build(args: BuildArgs) -> None:
     try:
-        cfg = config.Config(find_config(), args.version).load_build()
+        env = {k: v for k, v in args.defines}
+        cfg = config.Config(find_config(), args.version, env).load_build()
 
-        _ = build.build(args.build, cfg, args.config or "debug")
+        _ = build.build(args.build, cfg, args.config)
     except Exception as e:
         logger.error("Failed to build (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
@@ -96,7 +100,8 @@ def _release(args: ReleaseArgs) -> None:
 
         args.target.mkdir(parents=True, exist_ok=True)
 
-        cfg = config.Config(find_config(), args.version)
+        env = {k: v for k, v in args.defines}
+        cfg = config.Config(find_config(), args.version, env)
         tmp = Path(mkdtemp(dir=args.target))
 
         artifact = build.build(tmp, cfg.load_build(), "release")
@@ -153,7 +158,8 @@ def _install(args: InstallArgs) -> None:
             logger.error("No artifacts found. Please run 'astra build' first.")
             sys.exit(1)
 
-        cfg = config.Config(find_config()).load_install(artifact)
+        env = {k: v for k, v in args.defines}
+        cfg = config.Config(find_config(), defines=env).load_install(artifact)
 
         installations = install.install(target, cfg, args.editable)
 
@@ -274,6 +280,15 @@ def create_parser() -> ArgumentParser:
         default=None,
         help='Override the project version. (e.g., "1.0.0")',
     )
+    _ = p_build.add_argument(
+        "--define",
+        "-d",
+        metavar=("KEY", "VALUE"),
+        action="append",
+        nargs=2,
+        default=[],
+        help="Define a variable. (e.g., '-d DEBUG 1')",
+    )
     p_build.set_defaults(func=_build)
 
     p_release = sub.add_parser("release", help="Package the project for release.")
@@ -290,6 +305,15 @@ def create_parser() -> ArgumentParser:
         type=str,
         default=None,
         help='Override the project version. (e.g., "1.0.0")',
+    )
+    _ = p_release.add_argument(
+        "--define",
+        "-d",
+        metavar=("KEY", "VALUE"),
+        action="append",
+        nargs=2,
+        default=[],
+        help="Define a variable. (e.g., '-d DEBUG 1')",
     )
     p_release.set_defaults(func=_release)
 
@@ -317,6 +341,15 @@ def create_parser() -> ArgumentParser:
         "--editable",
         action="store_true",
         help="Install the built artifacts in editable mode.",
+    )
+    _ = p_install.add_argument(
+        "--define",
+        "-d",
+        metavar=("KEY", "VALUE"),
+        action="append",
+        nargs=2,
+        default=[],
+        help="Define a variable. (e.g., '-d DEBUG 1')",
     )
     p_install.set_defaults(func=_install)
 
