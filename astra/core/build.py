@@ -15,6 +15,7 @@ logger = getLogger(__name__)
 class Builder:
     _dst: Path
     _root: Path
+    _encoding: str
 
     _SECTION_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"^[^\S\n]*--[^\S\n]*@",
@@ -43,6 +44,11 @@ class Builder:
         re.MULTILINE,
     )
 
+    _IF_PATTERN: Final[re.Pattern[str]] = re.compile(
+        r"^[^\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*.+?\s*end[^\n]*",
+        re.MULTILINE | re.DOTALL,
+    )
+
     def __init__(self, dst: Path, root: Path) -> None:
         if not dst.is_dir():
             raise NotADirectoryError(f"Not a directory: {dst}")
@@ -52,6 +58,7 @@ class Builder:
 
         self._dst = dst
         self._root = root
+        self._encoding = "utf-8"
 
     def build_plugin(self, cfg: Plugin, configuration: str) -> list[Path]:
         logger.info("Building plugin '%s' (%s)", cfg.id, configuration)
@@ -92,6 +99,8 @@ class Builder:
             logger.warning("Script '%s' has no sources, skipping", cfg.id)
             return []
 
+        self._encoding = cfg.source_encoding
+
         script = ""
         for source in cfg.sources:
             for src in source.files:
@@ -100,7 +109,7 @@ class Builder:
                     continue
 
                 try:
-                    content = src.read_text(encoding=cfg.source_encoding)
+                    content = src.read_text(encoding=self._encoding)
                 except Exception as e:
                     cls = e.__class__.__name__
                     raise RuntimeError(
@@ -113,7 +122,7 @@ class Builder:
                 content = self._restore_section_directives(content)
                 content = self._normalize_properties(content)
                 content = expand_variables(content, env)
-                content = self._expand_includes(content, includes, cfg.source_encoding)
+                content = self._expand_includes(content, includes)
 
                 script += content + "\n"
 
@@ -152,9 +161,7 @@ class Builder:
     def _normalize_properties(self, text: str) -> str:
         return self._PROPERTY_PATTERN.sub(r"\1", text)
 
-    def _expand_includes(
-        self, text: str, includes: list[Path], encoding: str = "utf-8"
-    ) -> str:
+    def _expand_includes(self, text: str, includes: list[Path]) -> str:
         def _replacer(match: re.Match[str]) -> str:
             indent = match.group(1) or ""
             quoted = match.group(2)
@@ -179,15 +186,18 @@ class Builder:
                         continue
 
                 try:
-                    content = candidate.read_text(encoding=encoding)
+                    content = candidate.read_text(encoding=self._encoding)
                 except Exception as e:
                     cls = e.__class__.__name__
                     raise RuntimeError(
                         f"Failed to read include ({cls}): {candidate}"
                     ) from e
 
-                if candidate.suffix.lower() == ".hlsl":
-                    content = self._expand_includes_hlsl(content, includes, encoding)
+                suffix = candidate.suffix.lower()
+                if suffix == ".hlsl":
+                    content = self._expand_includes_hlsl(content, includes)
+                elif suffix == ".lua" and module:
+                    content = self._IF_PATTERN.sub("", content)
 
                 return textwrap.indent(content, indent)
 
@@ -196,9 +206,7 @@ class Builder:
 
         return self._INCLUDE_PATTERN.sub(_replacer, text)
 
-    def _expand_includes_hlsl(
-        self, text: str, includes: list[Path], encoding: str = "utf-8"
-    ) -> str:
+    def _expand_includes_hlsl(self, text: str, includes: list[Path]) -> str:
         def _replacer(match: re.Match[str]) -> str:
             indent = match.group(1) or ""
             quoted = match.group(2)
@@ -218,7 +226,7 @@ class Builder:
                     continue
 
                 try:
-                    content = candidate.read_text(encoding=encoding)
+                    content = candidate.read_text(encoding=self._encoding)
                 except Exception as e:
                     cls = e.__class__.__name__
                     raise RuntimeError(
