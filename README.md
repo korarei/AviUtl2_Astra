@@ -444,7 +444,7 @@ astra <command> [options]
 <details>
 <summary>生成される.editorconfig</summary>
 
-```toml
+```editorconfig
 root = true
 
 [*]  
