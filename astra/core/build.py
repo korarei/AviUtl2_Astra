@@ -28,7 +28,7 @@ class Builder:
 
     _INCLUDE_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"""
-        ^([^\S\n]*)--[^\S\n]*\#include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)
+        ^([^\S\n]*)--[^\S\n]*\#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)
         [^\n]*
         (?:\n[^\n]*?require\s*
         (?:\(\s*([^\n]+?)\s*\)|([^\s]+))
@@ -36,6 +36,11 @@ class Builder:
         (?:\n[^\n]*)?)?
         """,
         re.MULTILINE | re.VERBOSE,
+    )
+
+    _INCLUDE_HLSL_PATTERN: Final[re.Pattern[str]] = re.compile(
+        r'^([^\S\n]*)#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)[^\n]*',
+        re.MULTILINE,
     )
 
     def __init__(self, dst: Path, root: Path) -> None:
@@ -181,12 +186,51 @@ class Builder:
                         f"Failed to read include ({cls}): {candidate}"
                     ) from e
 
+                if candidate.suffix.lower() == ".hlsl":
+                    content = self._expand_includes_hlsl(content, includes, encoding)
+
                 return textwrap.indent(content, indent)
 
             logger.warning("Include not found: %s", match.group(0).strip())
             return match.group(0)
 
         return self._INCLUDE_PATTERN.sub(_replacer, text)
+
+    def _expand_includes_hlsl(
+        self, text: str, includes: list[Path], encoding: str = "utf-8"
+    ) -> str:
+        def _replacer(match: re.Match[str]) -> str:
+            indent = match.group(1) or ""
+            quoted = match.group(2)
+            angled = match.group(3)
+
+            path = quoted or angled
+            if path is None:
+                logger.warning("Malformed include: %s", match.group(0).strip())
+                return match.group(0)
+
+            candidates = [d / path for d in includes]
+            if angled:
+                candidates = candidates[1:]
+
+            for candidate in candidates:
+                if not candidate.is_file():
+                    continue
+
+                try:
+                    content = candidate.read_text(encoding=encoding)
+                except Exception as e:
+                    cls = e.__class__.__name__
+                    raise RuntimeError(
+                        f"Failed to read include ({cls}): {candidate}"
+                    ) from e
+
+                return textwrap.indent(content, indent)
+
+            logger.warning("Include not found: %s", match.group(0).strip())
+            return match.group(0)
+
+        return self._INCLUDE_HLSL_PATTERN.sub(_replacer, text)
 
 
 def build(dst: Path, cfg: Build, configuration: str = "release") -> Artifact:
