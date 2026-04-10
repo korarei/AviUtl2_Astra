@@ -3,6 +3,7 @@ from logging import getLogger
 from pathlib import Path
 from typing import ClassVar
 
+
 logger = getLogger(__name__)
 
 
@@ -13,6 +14,16 @@ class Schema:
         "description": "JSON schema for astra.toml configuration file.",
         "type": "object",
         "properties": {
+            "astra": {
+                "type": "object",
+                "properties": {
+                    "requires-astra": {
+                        "type": "string",
+                        "description": "Required Astra version",
+                    },
+                },
+                "additionalProperties": False,
+            },
             "project": {
                 "type": "object",
                 "properties": {
@@ -129,9 +140,7 @@ class Schema:
                                             }
                                         },
                                         "required": ["file"],
-                                        "additionalProperties": {
-                                            "type": "string"
-                                        },
+                                        "additionalProperties": {"type": "string"},
                                     },
                                 },
                                 "artifacts": {
@@ -169,20 +178,6 @@ class Schema:
                     "contents": {
                         "type": "object",
                         "properties": {
-                            "plugins": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "directory": {"type": "string"},
-                                        "files": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "additionalProperties": False,
-                                },
-                            },
                             "extensions": {
                                 "type": "array",
                                 "items": {
@@ -194,6 +189,7 @@ class Schema:
                                             "items": {"type": "string"},
                                         },
                                     },
+                                    "required": ["directory", "files"],
                                     "additionalProperties": False,
                                 },
                             },
@@ -208,6 +204,7 @@ class Schema:
                                             "items": {"type": "string"},
                                         },
                                     },
+                                    "required": ["directory", "files"],
                                     "additionalProperties": False,
                                 },
                             },
@@ -224,14 +221,10 @@ class Schema:
                                             "items": {
                                                 "type": "object",
                                                 "properties": {
-                                                    "directory": {
-                                                        "type": "string"
-                                                    },
+                                                    "directory": {"type": "string"},
                                                     "files": {
                                                         "type": "array",
-                                                        "items": {
-                                                            "type": "string"
-                                                        },
+                                                        "items": {"type": "string"},
                                                     },
                                                 },
                                                 "additionalProperties": False,
@@ -242,19 +235,15 @@ class Schema:
                                             "items": {
                                                 "type": "object",
                                                 "properties": {
-                                                    "filename": {
-                                                        "type": "string"
-                                                    },
-                                                    "content": {
-                                                        "type": "string"
-                                                    },
+                                                    "filename": {"type": "string"},
+                                                    "content": {"type": "string"},
                                                 },
                                                 "required": ["filename"],
                                                 "additionalProperties": False,
                                             },
                                         },
                                     },
-                                    "required": ["name"],
+                                    "required": ["name", "directory"],
                                     "additionalProperties": False,
                                 },
                             },
@@ -274,7 +263,7 @@ class Schema:
         return json.dumps(self.data, ensure_ascii=False, indent=indent)
 
     def save(self, dst: Path, indent: int = 4) -> None:
-        if dst.exists() and not dst.is_dir():
+        if not dst.is_dir():
             raise NotADirectoryError(f"Destination is not a directory: {dst}")
 
         dst.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG = """[project]
@@ -47,9 +48,21 @@ files = ["./*.md", "./LICENSE"]
 
 """
 
+_DEFAULT_EDITOR_CONFIG = """root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+"""
+
 
 def init(dst: Path) -> None:
-    if dst.exists() and not dst.is_dir():
+    if not dst.is_dir():
         raise NotADirectoryError(f"Destination is not a directory: {dst}")
 
     path = dst / "astra.toml"
@@ -59,4 +72,6 @@ def init(dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
 
     _ = path.write_text(_DEFAULT_CONFIG, encoding="utf-8")
+    _ = (dst / ".editorconfig").write_text(_DEFAULT_EDITOR_CONFIG, encoding="utf-8")
+
     logger.info("Created config file: %s", path)

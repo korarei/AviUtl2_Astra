@@ -8,12 +8,14 @@ from typing import Final
 from astra.core.config import Artifact, Build, Cache, Plugin, Script
 from astra.core.utils import expand_variables
 
+
 logger = getLogger(__name__)
 
 
 class Builder:
     _dst: Path
     _root: Path
+    _encoding: str
 
     _SECTION_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"^[^\S\n]*--[^\S\n]*@",
@@ -25,16 +27,36 @@ class Builder:
         re.MULTILINE,
     )
 
+    _DEFINE_PATTERN: Final[re.Pattern[str]] = re.compile(
+        r"""
+        ^[^\S\n]*--[^\S\n]*
+        (?:\[\[\s*\#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+(?s:(.+?))[^\S\n]*\]\]
+        [^\n]*(?:\n|$)|
+        \#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+([^\n]+)(?:\n|$))
+        """,
+        re.MULTILINE | re.VERBOSE,
+    )
+
     _INCLUDE_PATTERN: Final[re.Pattern[str]] = re.compile(
         r"""
-        ^([^\S\n]*)--[^\S\n]*\#include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)
+        ^([^\S\n]*)--[^\S\n]*\#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)
         [^\n]*
         (?:\n[^\n]*?require\s*
         (?:\(\s*([^\n]+?)\s*\)|([^\s]+))
         [^\n]*
-        (?:\n[^\n]*)?)?
+        (?:\n[^\n]*)?)?(?:\n|$)
         """,
         re.MULTILINE | re.VERBOSE,
+    )
+
+    _INCLUDE_HLSL_PATTERN: Final[re.Pattern[str]] = re.compile(
+        r'^([^\S\n]*)#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)[^\n]*(?:\n|$)',
+        re.MULTILINE,
+    )
+
+    _IF_PATTERN: Final[re.Pattern[str]] = re.compile(
+        r"^[^\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*.+?\s*end[^\n]*(?:\n|$)",
+        re.MULTILINE | re.DOTALL,
     )
 
     def __init__(self, dst: Path, root: Path) -> None:
@@ -46,6 +68,7 @@ class Builder:
 
         self._dst = dst
         self._root = root
+        self._encoding = "utf-8"
 
     def build_plugin(self, cfg: Plugin, configuration: str) -> list[Path]:
         logger.info("Building plugin '%s' (%s)", cfg.id, configuration)
@@ -68,9 +91,7 @@ class Builder:
             self._run_commands(target.commands, env)
         except Exception as e:
             cls = e.__class__.__name__
-            raise RuntimeError(
-                f"Plugin '{cfg.id}' command failed ({cls}): {e}"
-            ) from e
+            raise RuntimeError(f"Plugin '{cfg.id}' command failed ({cls}): {e}") from e
 
         artifacts: list[Path] = []
         for a in target.artifacts:
@@ -78,9 +99,7 @@ class Builder:
             matched = sorted(path.parent.glob(path.name))
             artifacts.extend(matched if matched else [path])
 
-        logger.info(
-            "Plugin '%s' produced %d artifact(s)", cfg.id, len(artifacts)
-        )
+        logger.info("Plugin '%s' produced %d artifact(s)", cfg.id, len(artifacts))
         return artifacts
 
     def build_script(self, cfg: Script) -> list[Path]:
@@ -90,6 +109,8 @@ class Builder:
             logger.warning("Script '%s' has no sources, skipping", cfg.id)
             return []
 
+        self._encoding = cfg.source_encoding
+
         script = ""
         for source in cfg.sources:
             for src in source.files:
@@ -98,7 +119,7 @@ class Builder:
                     continue
 
                 try:
-                    content = src.read_text(encoding=cfg.source_encoding)
+                    content = src.read_text(encoding=self._encoding)
                 except Exception as e:
                     cls = e.__class__.__name__
                     raise RuntimeError(
@@ -108,12 +129,11 @@ class Builder:
                 env = {**cfg.variables, **source.variables}
                 includes = [src.parent, *cfg.include_directories]
 
+                content = self._gather_defines(content, env)
                 content = self._restore_section_directives(content)
                 content = self._normalize_properties(content)
                 content = expand_variables(content, env)
-                content = self._expand_includes(
-                    content, includes, cfg.source_encoding
-                )
+                content = self._expand_includes(content, includes)
 
                 script += content + "\n"
 
@@ -125,17 +145,13 @@ class Builder:
             )
         except Exception as e:
             cls = e.__class__.__name__
-            raise RuntimeError(
-                f"Failed to write script ({cls}): {target}"
-            ) from e
+            raise RuntimeError(f"Failed to write script ({cls}): {target}") from e
 
         logger.info("Script '%s' written to %s", cfg.id, target)
 
         artifacts = [target, *cfg.artifacts]
 
-        logger.info(
-            "Script '%s' produced %d artifact(s)", cfg.id, len(artifacts)
-        )
+        logger.info("Script '%s' produced %d artifact(s)", cfg.id, len(artifacts))
 
         return artifacts
 
@@ -150,15 +166,22 @@ class Builder:
                 check=True,
             )
 
+    def _gather_defines(self, text: str, env: dict[str, str]) -> str:
+        def _replacer(match: re.Match[str]) -> str:
+            key = match.group(1) or match.group(3)
+            val = match.group(2) or match.group(4)
+            env[key] = val
+            return ""
+
+        return self._DEFINE_PATTERN.sub(_replacer, text)
+
     def _restore_section_directives(self, text: str) -> str:
         return self._SECTION_PATTERN.sub("@", text)
 
     def _normalize_properties(self, text: str) -> str:
         return self._PROPERTY_PATTERN.sub(r"\1", text)
 
-    def _expand_includes(
-        self, text: str, includes: list[Path], encoding: str = "utf-8"
-    ) -> str:
+    def _expand_includes(self, text: str, includes: list[Path]) -> str:
         def _replacer(match: re.Match[str]) -> str:
             indent = match.group(1) or ""
             quoted = match.group(2)
@@ -183,7 +206,47 @@ class Builder:
                         continue
 
                 try:
-                    content = candidate.read_text(encoding=encoding)
+                    content = candidate.read_text(encoding=self._encoding)
+                except Exception as e:
+                    cls = e.__class__.__name__
+                    raise RuntimeError(
+                        f"Failed to read include ({cls}): {candidate}"
+                    ) from e
+
+                suffix = candidate.suffix.lower()
+                if suffix == ".hlsl":
+                    content = self._expand_includes_hlsl(content, includes)
+                elif suffix == ".lua" and module:
+                    content = self._IF_PATTERN.sub("", content)
+
+                return textwrap.indent(content, indent)
+
+            logger.warning("Include not found: %s", match.group(0).strip())
+            return match.group(0)
+
+        return self._INCLUDE_PATTERN.sub(_replacer, text)
+
+    def _expand_includes_hlsl(self, text: str, includes: list[Path]) -> str:
+        def _replacer(match: re.Match[str]) -> str:
+            indent = match.group(1) or ""
+            quoted = match.group(2)
+            angled = match.group(3)
+
+            path = quoted or angled
+            if path is None:
+                logger.warning("Malformed include: %s", match.group(0).strip())
+                return match.group(0)
+
+            candidates = [d / path for d in includes]
+            if angled:
+                candidates = candidates[1:]
+
+            for candidate in candidates:
+                if not candidate.is_file():
+                    continue
+
+                try:
+                    content = candidate.read_text(encoding=self._encoding)
                 except Exception as e:
                     cls = e.__class__.__name__
                     raise RuntimeError(
@@ -195,7 +258,7 @@ class Builder:
             logger.warning("Include not found: %s", match.group(0).strip())
             return match.group(0)
 
-        return self._INCLUDE_PATTERN.sub(_replacer, text)
+        return self._INCLUDE_HLSL_PATTERN.sub(_replacer, text)
 
 
 def build(dst: Path, cfg: Build, configuration: str = "release") -> Artifact:
@@ -204,7 +267,9 @@ def build(dst: Path, cfg: Build, configuration: str = "release") -> Artifact:
         return Artifact()
 
     logger.info(
-        "Build started: Destination=%s, Configuration=%s", dst, configuration
+        "Building plugins and scripts to: %s (Configuration=%s)",
+        dst,
+        configuration,
     )
 
     dst.mkdir(parents=True, exist_ok=True)

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import importlib.metadata as metadata
 import json
 import tomllib
 from collections.abc import ItemsView
 from dataclasses import dataclass, field
+from logging import getLogger
 from pathlib import Path
 from typing import TypeVar, cast, overload
 
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
+
 from astra.core.utils import expand_variables
 
+
+logger = getLogger(__name__)
 T = TypeVar("T", str, bool)
 
 
@@ -95,9 +102,7 @@ class Json:
     @overload
     def objects(self, key: str, default: list[Json]) -> list[Json]: ...
 
-    def objects(
-        self, key: str, default: list[Json] | None = None
-    ) -> list[Json] | None:
+    def objects(self, key: str, default: list[Json] | None = None) -> list[Json] | None:
         v = self._data.get(key)
         if type(v) is list:
             return [
@@ -149,8 +154,7 @@ class Json:
             }
         elif type(value) is list:
             self._data[key] = [
-                v._data if type(v) is Json else v
-                for v in cast("list[object]", value)
+                v._data if type(v) is Json else v for v in cast("list[object]", value)
             ]
         else:
             self._data[key] = value
@@ -241,9 +245,7 @@ class Toml:
     @overload
     def tables(self, key: str, default: list[Toml]) -> list[Toml]: ...
 
-    def tables(
-        self, key: str, default: list[Toml] | None = None
-    ) -> list[Toml] | None:
+    def tables(self, key: str, default: list[Toml] | None = None) -> list[Toml] | None:
         v = self._data.get(key)
         if type(v) is list:
             return [
@@ -397,10 +399,17 @@ class Config:
     _root: Path
     _project: Project
 
-    def __init__(self, path: Path, version: str | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        version: str | None = None,
+        defines: dict[str, str] | None = None,
+    ) -> None:
         self._data = Toml(path)
+        self._load_astra(self._data)
+
         self._root = path.parent
-        self._project = self._load_project(self._data, version)
+        self._project = self._load_project(self._data, version, defines)
 
     def load_build(self) -> Build:
         build = self._data.table("build")
@@ -434,7 +443,23 @@ class Config:
         return Install(self._load_release_extension(contents, artifact))
 
     @staticmethod
-    def _load_project(data: Toml, version: str | None = None) -> Project:
+    def _load_astra(data: Toml) -> None:
+        if astra := data.table("astra"):
+            if version := astra.string("requires-astra"):
+                try:
+                    __version__ = metadata.version("astra")
+                except metadata.PackageNotFoundError as e:
+                    raise ValueError("Version not found") from e
+
+                if Version(__version__) not in SpecifierSet(version):
+                    raise ValueError("Version mismatch")
+
+    @staticmethod
+    def _load_project(
+        data: Toml,
+        version: str | None = None,
+        defines: dict[str, str] | None = None,
+    ) -> Project:
         project = data.table("project")
         if project is None:
             raise ValueError("[project] section is required")
@@ -458,6 +483,9 @@ class Config:
         if requires_aviutl2:
             variables["PROJECT_REQUIRES_AVIUTL2"] = requires_aviutl2
 
+        if defines:
+            variables |= defines
+
         return Project(name, version, author, requires_aviutl2, variables)
 
     def _load_plugins(self, build: Toml) -> list[Plugin]:
@@ -477,6 +505,7 @@ class Config:
             env = {
                 **self._project.variables,
                 **entry.dict_of("variables", str, {}),
+                "BUILD_DIRECTORY": "${BUILD_DIRECTORY}",
             }
 
             release = entry.table("release")
@@ -627,11 +656,15 @@ class Config:
                 else:
                     files.extend(self._resolve_glob(file, env))
 
-            items.append(
-                ReleaseExtension(
-                    _exp(entry.string("directory", ""), env), files
-                )
-            )
+            if not files:
+                raise ValueError("release.contents.extensions.files is required")
+
+            directory = entry.string("directory")
+            if directory is None:
+                raise ValueError("release.contents.extensions.directory is required")
+
+            if directory := self._resolve_package_hierarchy(directory, env):
+                items.append(ReleaseExtension(directory, files))
 
         return items
 
@@ -648,11 +681,15 @@ class Config:
             for file in entry.list_of("files", str, []):
                 files.extend(self._resolve_glob(file, env))
 
-            docs.append(
-                ReleaseDocument(
-                    _exp(entry.string("directory", ""), env), files
-                )
-            )
+            if not files:
+                raise ValueError("release.contents.documents.files is required")
+
+            directory = entry.string("directory")
+            if directory is None:
+                raise ValueError("release.contents.documents.directory is required")
+
+            if directory := self._resolve_package_hierarchy(directory, env):
+                docs.append(ReleaseDocument(directory, files))
 
         return docs
 
@@ -693,19 +730,22 @@ class Config:
                         "release.contents.assets.documents.name is required"
                     )
                 docs.append(
-                    AssetDocument(
-                        filename, _exp(doc.string("content", ""), env)
-                    )
+                    AssetDocument(filename, _exp(doc.string("content", ""), env))
                 )
 
-            assets.append(
-                ReleaseAsset(
-                    _exp(name, env),
-                    _exp(entry.string("directory", ""), env),
-                    sources,
-                    docs,
+            directory = entry.string("directory")
+            if directory is None:
+                raise ValueError("release.contents.assets.directory is required")
+
+            if directory := self._resolve_package_hierarchy(directory, env):
+                assets.append(
+                    ReleaseAsset(
+                        _exp(name, env),
+                        directory,
+                        sources,
+                        docs,
+                    )
                 )
-            )
 
         return assets
 
@@ -713,6 +753,26 @@ class Config:
         path = expand_variables(path, env)
         matched = sorted(self._root.glob(path))
         return matched if matched else [self._root / path]
+
+    def _resolve_package_hierarchy(self, path: str, env: dict[str, str]) -> str | None:
+        path = expand_variables(path, env)
+        path = path.replace("\\", "/")
+        data = (
+            "Plugin/",
+            "Script/",
+            "Language/",
+            "Alias/",
+            "Default/",
+            "Figure/",
+            "Preset/",
+            "Transition/",
+        )
+
+        if path.startswith(data):
+            return path
+
+        logger.warning(f"{path} is not a package hierarchy")
+        return None
 
 
 class Cache:
@@ -741,17 +801,13 @@ class Cache:
         for k, v in artifacts.object("plugins", Json()).items():
             if isinstance(v, list):
                 plugins[k] = [
-                    Path(p)
-                    for p in cast("list[object]", v)
-                    if isinstance(p, str)
+                    Path(p) for p in cast("list[object]", v) if isinstance(p, str)
                 ]
 
         for k, v in artifacts.object("scripts", Json()).items():
             if isinstance(v, list):
                 scripts[k] = [
-                    Path(p)
-                    for p in cast("list[object]", v)
-                    if isinstance(p, str)
+                    Path(p) for p in cast("list[object]", v) if isinstance(p, str)
                 ]
 
         self._data.save(self._path)  # 雑な破損ファイルの修正
