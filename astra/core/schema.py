@@ -178,20 +178,6 @@ class Schema:
                     "contents": {
                         "type": "object",
                         "properties": {
-                            "plugins": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "directory": {"type": "string"},
-                                        "files": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                    },
-                                    "additionalProperties": False,
-                                },
-                            },
                             "extensions": {
                                 "type": "array",
                                 "items": {
@@ -203,6 +189,7 @@ class Schema:
                                             "items": {"type": "string"},
                                         },
                                     },
+                                    "required": ["directory", "files"],
                                     "additionalProperties": False,
                                 },
                             },
@@ -217,6 +204,7 @@ class Schema:
                                             "items": {"type": "string"},
                                         },
                                     },
+                                    "required": ["directory", "files"],
                                     "additionalProperties": False,
                                 },
                             },
@@ -255,7 +243,7 @@ class Schema:
                                             },
                                         },
                                     },
-                                    "required": ["name"],
+                                    "required": ["name", "directory"],
                                     "additionalProperties": False,
                                 },
                             },

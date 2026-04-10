@@ -5,6 +5,7 @@ import json
 import tomllib
 from collections.abc import ItemsView
 from dataclasses import dataclass, field
+from logging import getLogger
 from pathlib import Path
 from typing import TypeVar, cast, overload
 
@@ -14,6 +15,7 @@ from packaging.version import Version
 from astra.core.utils import expand_variables
 
 
+logger = getLogger(__name__)
 T = TypeVar("T", str, bool)
 
 
@@ -642,9 +644,15 @@ class Config:
                 else:
                     files.extend(self._resolve_glob(file, env))
 
-            items.append(
-                ReleaseExtension(_exp(entry.string("directory", ""), env), files)
-            )
+            if not files:
+                raise ValueError("release.contents.extensions.files is required")
+
+            directory = entry.string("directory")
+            if directory is None:
+                raise ValueError("release.contents.extensions.directory is required")
+
+            if directory := self._resolve_package_hierarchy(directory, env):
+                items.append(ReleaseExtension(directory, files))
 
         return items
 
@@ -661,9 +669,15 @@ class Config:
             for file in entry.list_of("files", str, []):
                 files.extend(self._resolve_glob(file, env))
 
-            docs.append(
-                ReleaseDocument(_exp(entry.string("directory", ""), env), files)
-            )
+            if not files:
+                raise ValueError("release.contents.documents.files is required")
+
+            directory = entry.string("directory")
+            if directory is None:
+                raise ValueError("release.contents.documents.directory is required")
+
+            if directory := self._resolve_package_hierarchy(directory, env):
+                docs.append(ReleaseDocument(directory, files))
 
         return docs
 
@@ -707,14 +721,19 @@ class Config:
                     AssetDocument(filename, _exp(doc.string("content", ""), env))
                 )
 
-            assets.append(
-                ReleaseAsset(
-                    _exp(name, env),
-                    _exp(entry.string("directory", ""), env),
-                    sources,
-                    docs,
+            directory = entry.string("directory")
+            if directory is None:
+                raise ValueError("release.contents.assets.directory is required")
+
+            if directory := self._resolve_package_hierarchy(directory, env):
+                assets.append(
+                    ReleaseAsset(
+                        _exp(name, env),
+                        directory,
+                        sources,
+                        docs,
+                    )
                 )
-            )
 
         return assets
 
@@ -722,6 +741,26 @@ class Config:
         path = expand_variables(path, env)
         matched = sorted(self._root.glob(path))
         return matched if matched else [self._root / path]
+
+    def _resolve_package_hierarchy(self, path: str, env: dict[str, str]) -> str | None:
+        path = expand_variables(path, env)
+        path = path.replace("\\", "/")
+        data = (
+            "Plugin/",
+            "Script/",
+            "Language/",
+            "Alias/",
+            "Default/",
+            "Figure/",
+            "Preset/",
+            "Transition/",
+        )
+
+        if path.startswith(data):
+            return path
+
+        logger.warning(f"{path} is not a package hierarchy")
+        return None
 
 
 class Cache:

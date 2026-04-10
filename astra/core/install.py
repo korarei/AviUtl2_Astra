@@ -64,7 +64,7 @@ def uninstall(installations: list[Path]) -> None:
         "figure",
         "preset",
         "transition",
-        "data",
+        "data",  # 一応
         "aviutl2",
     )
 
