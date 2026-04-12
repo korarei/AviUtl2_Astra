@@ -350,7 +350,7 @@ def create_parser() -> ArgumentParser:
         nargs="?",
         default=None,
         help="Target directory for installation (default: .venv/aviutl2/data "
-        + "if .venv exists, otherwise %ProgramData%/aviutl2)",
+        + "if .venv exists, otherwise %%ProgramData%%/aviutl2)",
     )
     _ = p_install.add_argument(
         "--build",
