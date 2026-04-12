@@ -165,7 +165,7 @@ class Schema:
                             "name": {"type": "string"},
                             "id": {"type": "string"},
                             "information": {"type": "string"},
-                            "uninstall-subdirectory": {"type": "boolean"},
+                            "uninstall-subdirectory-files": {"type": "boolean"},
                             "version": {"type": "string"},
                             "author": {"type": "string"},
                             "license": {"type": "string"},

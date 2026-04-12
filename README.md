@@ -330,6 +330,8 @@ id = "${PROJECT_NAME}"
 # `package.ini`のname= (設定されない場合，プロジェクト名)
 # `package.txt`にも記載される
 name = "${PROJECT_NAME}"
+# `package.ini`のuninstallSubFolderFile= (設定されない場合，true)
+uninstall-subdirectory-files = true
 # `package.ini`のinformation= (設定されない場合，追加されない)
 information = "${PROJECT_NAME} v${PROJECT_VERSION} by ${PROJECT_AUTHOR}"
 # `package.txt`に記載ライセンス表記 (設定されない場合，追加されない)
