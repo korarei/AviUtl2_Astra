@@ -109,6 +109,8 @@ class Releaser:
         if package.information:
             config += f"information={package.information}\n"
 
+        config += f"uninstallSubFolderFile={int(package.uninstall_subdirectory_files)}\n"
+
         path = self._dst / "package.ini"
         _ = path.write_text(config, encoding="utf-8", newline="\r\n")
 
@@ -213,7 +215,7 @@ def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
     match = _CHANGELOG_SECTION_PATTERN.search(text)
     if match:
         section = match.group(0).strip()
-        changes = re.sub(r"^\s*-", "-", section, flags=re.MULTILINE).split("\n", 1)[1]
+        changes = re.sub(r"^[^\S\n]*-", "-", section, flags=re.MULTILINE).split("\n", 1)[1]
         content = f"## What's Changed\n{changes}"
     else:
         return

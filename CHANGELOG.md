@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.1
+
+- リリースノート生成機能とluaモジュール展開機能の正規表現を修正．
+- `package.ini`の`uninstallSubFolderFile`の対応．
+
 ## v0.5.0
 
 - `package.ini`の`[package]`セクションの記述漏れの修正．

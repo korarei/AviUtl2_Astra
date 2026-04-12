@@ -329,6 +329,7 @@ class ReleasePackage:
     filename: str
     name: str
     id: str
+    uninstall_subdirectory_files: bool = True
     information: str | None = None
     version: str | None = None
     author: str | None = None
@@ -611,6 +612,7 @@ class Config:
             _exp(pkg.string("filename", self._project.name), env),
             _exp(pkg.string("name", self._project.name), env),
             _exp(pkg.string("id", self._project.name), env),
+            pkg.boolean("uninstall-subdirectory-files", True),
             _exp_opt(pkg.string("information"), env),
             self._project.version,
             self._project.author,

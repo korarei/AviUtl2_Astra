@@ -55,8 +55,12 @@ class Builder:
     )
 
     _IF_PATTERN: Final[re.Pattern[str]] = re.compile(
-        r"^[^\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*.+?\s*end[^\n]*(?:\n|$)",
-        re.MULTILINE | re.DOTALL,
+        r"""
+        ^[\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*
+        (?:(?!\s+else(?:if)?\s+).)+?
+        \s*end[^\n]*(?:\n|$)
+        """,
+        re.MULTILINE | re.DOTALL | re.VERBOSE,
     )
 
     def __init__(self, dst: Path, root: Path) -> None:
