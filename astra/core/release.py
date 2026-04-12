@@ -109,6 +109,8 @@ class Releaser:
         if package.information:
             config += f"information={package.information}\n"
 
+        config += f"uninstallSubFolderFile={int(package.uninstall_subdirectory)}\n"
+
         path = self._dst / "package.ini"
         _ = path.write_text(config, encoding="utf-8", newline="\r\n")
 

@@ -3,6 +3,7 @@
 ## v0.5.1
 
 - リリースノート生成機能とluaモジュール展開機能の正規表現を修正．
+- `package.ini`の`uninstallSubFolderFile`の対応．
 
 ## v0.5.0
 
