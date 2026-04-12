@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.2
+
+- `install`コマンドのヘルプメッセージの`%ProgramData%`を`%%ProgramData%%`に修正．
+
 ## v0.5.1
 
 - リリースノート生成機能とluaモジュール展開機能の正規表現を修正．
