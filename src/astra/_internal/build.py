@@ -14,7 +14,7 @@ logger = getLogger(__name__)
 
 class Builder:
     _dst: Path
-    _root: Path
+    _cwd: Path
     _encoding: str
 
     _SECTION_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -63,15 +63,15 @@ class Builder:
         re.MULTILINE | re.DOTALL | re.VERBOSE,
     )
 
-    def __init__(self, dst: Path, root: Path) -> None:
+    def __init__(self, dst: Path, cwd: Path) -> None:
         if not dst.is_dir():
             raise NotADirectoryError(f"Not a directory: {dst}")
 
-        if not root.is_dir():
-            raise NotADirectoryError(f"Not a directory: {root}")
+        if not cwd.is_dir():
+            raise NotADirectoryError(f"Not a directory: {cwd}")
 
         self._dst = dst
-        self._root = root
+        self._cwd = cwd
         self._encoding = "utf-8"
 
     def build_plugin(self, cfg: Plugin, configuration: str) -> list[Path]:
@@ -99,7 +99,7 @@ class Builder:
 
         artifacts: list[Path] = []
         for a in target.artifacts:
-            path = self._root / expand_variables(a, env)
+            path = Path(expand_variables(a, env))
             matched = sorted(path.parent.glob(path.name))
             artifacts.extend(matched if matched else [path])
 
@@ -141,7 +141,7 @@ class Builder:
 
                 script += content + "\n"
 
-        target = self._dst / "scripts" / cfg.id / cfg.name
+        target = self._dst / "scripts" / cfg.id / f"{cfg.prefix}{cfg.name}{cfg.suffix}"
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             _ = target.write_text(
@@ -166,7 +166,7 @@ class Builder:
             _ = subprocess.run(
                 cmd,
                 shell=True,
-                cwd=self._root,
+                cwd=self._cwd,
                 check=True,
             )
 
@@ -279,7 +279,7 @@ def build(dst: Path, cfg: Build, configuration: str = "release") -> Artifact:
     dst.mkdir(parents=True, exist_ok=True)
     dst = dst.resolve()
 
-    builder = Builder(dst, cfg.root)
+    builder = Builder(dst, cfg.cwd)
 
     plugins: dict[str, list[Path]] = {}
     for plugin in cfg.plugins:
