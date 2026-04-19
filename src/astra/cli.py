@@ -8,6 +8,8 @@ from pathlib import Path
 from tempfile import mkdtemp
 from typing import Callable, Protocol, cast
 
+from filelock import FileLock
+
 from astra._internal import build, config, init, install, release, schema, venv
 from astra._internal.utils import find_config
 
@@ -87,10 +89,14 @@ def _init(args: InitArgs) -> None:
 
 def _build(args: BuildArgs) -> None:
     try:
+        dst = args.build
+        dst.mkdir(parents=True, exist_ok=True)
+
         env = {k: v for k, v in args.define}
         cfg = config.Config(find_config(), args.version, env).load_build()
 
-        _ = build.build(args.build, cfg, args.config)
+        with FileLock(dst / ".astra-lock"):
+            _ = build.build(dst, cfg, args.config)
     except Exception as e:
         logger.error("Failed to build (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
@@ -98,33 +104,31 @@ def _build(args: BuildArgs) -> None:
 
 def _release(args: ReleaseArgs) -> None:
     try:
-        if args.target.exists():
-            if args.target.is_dir():
-                shutil.rmtree(args.target)
-            else:
-                args.target.unlink()
+        dst = args.target
+        dst.mkdir(parents=True, exist_ok=True)
 
-        args.target.mkdir(parents=True, exist_ok=True)
+        with FileLock(dst / ".astra-lock"):
+            for ext in "*.zip", "*.md":
+                for file in dst.glob(ext):
+                    file.unlink()
 
-        env = {k: v for k, v in args.define}
-        cfg = config.Config(find_config(), args.version, env)
-        tmp = Path(mkdtemp(dir=args.target))
+            env = {k: v for k, v in args.define}
+            cfg = config.Config(find_config(), args.version, env)
+            tmp = Path(mkdtemp(dir=dst))
 
-        artifact = build.build(tmp, cfg.load_build(), "release")
-        release.release(args.target, cfg.load_release(artifact))
-
-        shutil.rmtree(tmp, ignore_errors=True)
+            artifact = build.build(tmp, cfg.load_build(), "release")
+            release.release(dst, cfg.load_release(artifact))
+            shutil.rmtree(tmp, ignore_errors=True)
     except Exception as e:
         logger.error("Failed to release (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
 
 
 def _install(args: InstallArgs) -> None:
-    default = (
-        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "aviutl2"
-        if sys.platform == "win32"
-        else None
-    )
+    if sys.platform == "win32":
+        default = Path(os.getenv("ProgramData", "C:\\ProgramData")) / "aviutl2"
+    else:
+        default = None
 
     if args.target is None:
         venv = Path(".venv")
