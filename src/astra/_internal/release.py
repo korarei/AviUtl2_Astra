@@ -5,13 +5,13 @@ from pathlib import Path
 from tempfile import mkdtemp
 from typing import Self
 
-from astra.core.config import (
+from astra._internal.config import (
     Release,
     ReleaseAsset,
     ReleaseDocument,
     ReleasePackage,
 )
-from astra.core.utils import download
+from astra._internal.utils import download
 
 
 _CHANGELOG_HEADER_PATTERN = re.compile(

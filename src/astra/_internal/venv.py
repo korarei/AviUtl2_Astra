@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import BinaryIO, cast
 from urllib.request import urlopen
 
-from astra.core.utils import download
+from astra._internal.utils import download
 
 
 logger = getLogger(__name__)

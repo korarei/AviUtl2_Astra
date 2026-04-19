@@ -8,8 +8,8 @@ from pathlib import Path
 from tempfile import mkdtemp
 from typing import Callable, Protocol, cast
 
-from astra.core import build, config, init, install, release, schema, venv
-from astra.core.utils import find_config
+from astra._internal import build, config, init, install, release, schema, venv
+from astra._internal.utils import find_config
 
 
 logger = getLogger(__name__)

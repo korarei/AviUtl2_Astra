@@ -3,7 +3,7 @@ from logging import getLogger
 from os import symlink
 from pathlib import Path
 
-from astra.core.config import Install
+from astra._internal.config import Install
 
 
 logger = getLogger(__name__)

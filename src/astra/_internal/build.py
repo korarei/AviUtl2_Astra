@@ -5,8 +5,8 @@ from logging import getLogger
 from pathlib import Path
 from typing import Final
 
-from astra.core.config import Artifact, Build, Cache, Plugin, Script
-from astra.core.utils import expand_variables
+from astra._internal.config import Artifact, Build, Cache, Plugin, Script
+from astra._internal.utils import expand_variables
 
 
 logger = getLogger(__name__)

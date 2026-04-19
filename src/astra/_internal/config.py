@@ -12,7 +12,7 @@ from typing import TypeVar, cast, overload
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from astra.core.utils import expand_variables
+from astra._internal.utils import expand_variables
 
 
 logger = getLogger(__name__)
