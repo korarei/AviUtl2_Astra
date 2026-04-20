@@ -7,12 +7,14 @@ from collections.abc import ItemsView
 from dataclasses import dataclass, field
 from logging import getLogger
 from pathlib import Path
-from typing import ClassVar, TypeVar, cast, overload
+from typing import Annotated, ClassVar, Literal, TypeAlias, TypeVar, cast, overload
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 from pydantic import (
+    AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     ValidationInfo,
@@ -20,11 +22,149 @@ from pydantic import (
     model_validator,
 )
 
-from astra._internal.utils import expand_variables
+from astra._internal.utils import expand_variables, resolve_glob
 
 
 logger = getLogger(__name__)
 T = TypeVar("T", str, bool)
+
+_PACKAGE_HIERARCHIES = (
+    "Plugin/",
+    "Script/",
+    "Language/",
+    "Alias/",
+    "Default/",
+    "Figure/",
+    "Preset/",
+    "Transition/",
+)
+
+
+def _expand_str(v: str, info: ValidationInfo) -> str:
+    ctx = info.context
+    if type(ctx) is not Context:
+        raise RuntimeError("info.context is not a Context object")
+
+    env = ctx.get_variables("variables", {})
+    return expand_variables(v, env)
+
+
+def _resolve_paths(v: object, info: ValidationInfo) -> list[Path]:
+    if type(v) is not list:
+        raise ValueError(f"{info.field_name} must be a list of strings")
+
+    ctx = info.context
+    if type(ctx) is not Context:
+        raise RuntimeError("info.context is not a Context object")
+
+    root = ctx.get_data(Path, "root", Path().cwd())
+    env = ctx.get_variables("variables", {})
+
+    paths: list[Path] = []
+    for p in cast(list[object], v):
+        if type(p) is not str:
+            raise ValueError(f"{info.field_name} must be a list of strings")
+
+        paths.extend(resolve_glob(root, expand_variables(p, env)))
+
+    if not paths:
+        raise FileNotFoundError(f"{info.field_name} is empty")
+
+    return paths
+
+
+def _check_hierarchy(v: str, info: ValidationInfo) -> str:
+    ctx = info.context
+    if type(ctx) is not Context:
+        raise RuntimeError("info.context is not a Context object")
+
+    env = ctx.get_variables("variables", {})
+    v = expand_variables(v, env).replace("\\", "/")
+
+    if not v.startswith(_PACKAGE_HIERARCHIES):
+        logger.warning(f"{v} is not a package hierarchy")
+
+    return v
+
+
+_ExpandedStr = Annotated[str, AfterValidator(_expand_str)]
+_ResolvedPaths = Annotated[list[Path], BeforeValidator(_resolve_paths)]
+_PackageDir = Annotated[str, AfterValidator(_check_hierarchy)]
+
+
+class Context:
+    Data: TypeAlias = str | Path
+
+    _data: dict[str, None | Data]
+    _variables: dict[str, dict[str, str]]
+    _objects: dict[str, object]
+
+    def __init__(
+        self,
+        data: dict[str, None | Data],
+        variables: dict[str, dict[str, str]],
+        objects: dict[str, object],
+    ) -> None:
+        self._data = data
+        self._variables = variables
+        self._objects = objects
+
+    @overload
+    def get_data[T: Data](self, cls: type[T], key: str) -> T | None: ...
+
+    @overload
+    def get_data[T: Data](self, cls: type[T], key: str, default: T) -> T: ...
+
+    def get_data[T: Data](
+        self, cls: type[T], key: str, default: T | None = None
+    ) -> T | None:
+        v = self._data.get(key)
+        if isinstance(v, cls):
+            return v
+
+        if default is not None:
+            self._data[key] = default
+            return default
+
+        return None
+
+    @overload
+    def get_variables(self, key: str) -> dict[str, str] | None: ...
+
+    @overload
+    def get_variables(self, key: str, default: dict[str, str]) -> dict[str, str]: ...
+
+    def get_variables(
+        self, key: str, default: dict[str, str] | None = None
+    ) -> dict[str, str] | None:
+        v = self._variables.get(key)
+        if type(v) is dict:
+            return v
+
+        if default is not None:
+            self._variables[key] = default
+            return default
+
+        return None
+
+    @overload
+    def get_object[T](self, cls: type[T], key: str, default: T) -> T: ...
+
+    @overload
+    def get_object[T](self, cls: type[T], key: str) -> T | None: ...
+
+    def get_object[T](
+        self, cls: type[T], key: str, default: T | None = None
+    ) -> T | None:
+        v = self._objects.get(key)
+        if isinstance(v, cls):
+            return v
+
+        if default is not None:
+            self._objects[key] = default
+            return default
+
+        return None
 
 
 class Json:
@@ -164,26 +304,37 @@ class Json:
         return json.dumps(self._data, ensure_ascii=False, indent=indent)
 
 
-class Project(BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(populate_by_name=True)
+class ConfigModel(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        alias_generator=lambda s: s.replace("_", "-"),
+        populate_by_name=True,
+        strict=True,
+        str_strip_whitespace=True,
+    )
 
-    name: str
+
+class Project(ConfigModel):
+    name: str = Field(min_length=1)
     version: str | None = None
     author: str | None = None
-    requires_aviutl2: str | None = Field(default=None, alias="requires-aviutl2")
+    requires_aviutl2: str | None = None
     variables: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("version", mode="after")
     @classmethod
-    def _init_version(cls, v: str | None, info: ValidationInfo) -> str | None:
-        ctx = cast(dict[str, object], info.context)
-        version = cast(str | None, ctx.get("version"))
+    def _overwrite_version(cls, v: str | None, info: ValidationInfo) -> str | None:
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
 
-        return v if version is None else version
+        return v if (version := ctx.get_data(str, "version")) is None else version
 
     @model_validator(mode="after")
-    def _init_variables(self, info: ValidationInfo) -> Project:
-        ctx = cast(dict[str, object], info.context)
+    def _update_variables(self, info: ValidationInfo) -> Project:
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
+
         variables = self.variables
 
         variables["PROJECT_NAME"] = self.name
@@ -197,143 +348,104 @@ class Project(BaseModel):
         if (requires_aviutl2 := self.requires_aviutl2) is not None:
             variables["PROJECT_REQUIRES_AVIUTL2"] = requires_aviutl2
 
-        variables |= cast(dict[str, str], ctx.get("defines", {}))
+        variables |= ctx.get_variables("defines", {})
 
         return self
 
 
-class Command(BaseModel):
+class Command(ConfigModel):
     commands: list[str] = Field(default_factory=list)
     artifacts: list[str] = Field(default_factory=list)
 
-    @field_validator("commands", "artifacts", mode="before")
+    @field_validator("commands", "artifacts", mode="after")
     @classmethod
-    def _init_command(cls, v: object, info: ValidationInfo) -> list[str]:
-        if type(v) is not list:
-            raise ValueError("commands and artifacts must be a list of strings")
+    def _expand_variables(cls, v: list[str], info: ValidationInfo) -> list[str]:
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
 
-        ctx = cast(dict[str, object], info.context)
-        env = cast(dict[str, str], ctx.get("variables", {}))
+        env = ctx.get_variables("variables", {})
 
-        return [
-            expand_variables(text, env)
-            for text in cast(list[object], v)
-            if type(text) is str
-        ]
+        return [expand_variables(text, env) for text in v]
 
 
-class Plugin(BaseModel):
-    id: str
+class Plugin(ConfigModel):
+    id: str = Field(min_length=1)
     release: Command
     debug: Command = Field(default_factory=Command)
 
     @model_validator(mode="after")
-    def _init_debug(self) -> Plugin:
+    def _overwrite_debug(self) -> Plugin:
         if not (self.debug.commands or self.debug.artifacts):
             self.debug = self.release
 
         return self
 
 
-@dataclass(frozen=True)
-class ScriptSource:
+class ScriptSource(ConfigModel):
     files: list[Path]
-    variables: dict[str, str] = field(default_factory=dict)
-
-
-class Script(BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(populate_by_name=True)
-
-    id: str
-    name: str = Field(default="", validate_default=True)
-    prefix: str = ""
-    suffix: str = ""
-    newline: str = "\r\n"
-    source_encoding: str = Field(default="utf-8", alias="source-encoding")
-    target_encoding: str = Field(default="utf-8", alias="target-encoding")
     variables: dict[str, str] = Field(default_factory=dict)
-    include_directories: list[Path] = Field(
-        default_factory=list, alias="include-directories"
-    )
-    sources: list[ScriptSource] = Field(default_factory=list)
-    artifacts: list[Path] = Field(default_factory=list)
 
-    @field_validator("name", mode="after")
+    @model_validator(mode="before")
     @classmethod
-    def _init_name(cls, v: str, info: ValidationInfo) -> str:
-        ctx = cast(dict[str, object], info.context)
-        name = cast(str, ctx.get("name", ""))
+    def _resolve_sources(cls, v: object, info: ValidationInfo) -> dict[str, object]:
+        if type(v) is not dict:
+            raise ValueError("sources entries must be dicts")
 
-        return v if v else name
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
+
+        root = ctx.get_data(Path, "root", Path().cwd())
+        env = ctx.get_variables("variables", {})
+
+        file = cast(dict[str, object], v).get("file")
+        if type(file) is not str:
+            raise ValueError("file is required")
+
+        files = resolve_glob(root, expand_variables(file, env))
+        variables = {k: v for k, v in cast(dict[str, object], v).items() if k != "file"}
+
+        return {"files": files, "variables": variables}
+
+
+class Script(ConfigModel):
+    id: str = Field(min_length=1)
+    name: str = ""
+    prefix: Literal["", "@"] = ""
+    suffix: str = ""
+    newline: Literal["\r\n", "\n"] = "\r\n"
+    source_encoding: str = "utf-8"
+    target_encoding: str = "utf-8"
+    variables: dict[str, str] = Field(default_factory=dict)
+    include_directories: _ResolvedPaths = Field(default_factory=list)
+    sources: list[ScriptSource] = Field(default_factory=list)
+    artifacts: _ResolvedPaths = Field(default_factory=list)
 
     @field_validator("variables", mode="before")
     @classmethod
-    def _init_variables(cls, _: object) -> dict[str, str]:
+    def _ignore_variables(cls, _: object) -> dict[str, str]:
         return {}
 
-    @field_validator("sources", mode="before")
-    @classmethod
-    def _init_sources(cls, v: object, info: ValidationInfo) -> list[ScriptSource]:
-        if type(v) is not list:
-            raise ValueError("build.scripts.sources must be a list of dicts")
+    @model_validator(mode="after")
+    def _overwrite_name(self, info: ValidationInfo) -> Script:
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
 
-        ctx = cast(dict[str, object], info.context)
-        root = cast(Path, ctx.get("root", Path().cwd()))
-        env = cast(dict[str, str], ctx.get("variables", {}))
+        if not self.name:
+            self.name = ctx.get_data(str, "name", "")
 
-        sources: list[ScriptSource] = []
-        for src in cast(list[object], v):
-            if type(src) is not dict:
-                raise ValueError("build.scripts.sources must be a list of dicts")
-
-            file = cast(dict[str, object], src).get("file")
-            if type(file) is not str:
-                raise ValueError("build.scripts.sources.file is required")
-
-            matched = sorted(root.glob(expand_variables(file, env)))
-
-            sources.append(
-                ScriptSource(
-                    matched if matched else [root / file],
-                    {
-                        k: v
-                        for k, v in cast(dict[str, object], src).items()
-                        if type(v) is str and k != "file"
-                    },
-                )
-            )
-
-        return sources
-
-    @field_validator("artifacts", "include_directories", mode="before")
-    @classmethod
-    def _init_paths(cls, v: object, info: ValidationInfo) -> list[Path]:
-        if type(v) is not list:
-            raise ValueError(
-                "artifacts and include-directories must be a list of strings"
-            )
-
-        ctx = cast(dict[str, object], info.context)
-        root = cast(Path, ctx.get("root", Path().cwd()))
-        env = cast(dict[str, str], ctx.get("variables", {}))
-
-        paths: list[Path] = []
-        for path in cast(list[object], v):
-            if type(path) is not str:
-                raise ValueError(
-                    "artifacts and include-directories must be a list of strings"
-                )
-
-            matched = sorted(root.glob(expand_variables(path, env)))
-            paths.extend(matched if matched else [root / path])
-
-        return paths
+        return self
 
     @model_validator(mode="after")
-    def _set_variables(self, info: ValidationInfo) -> Script:
-        ctx = cast(dict[str, object], info.context)
+    def _overwrite_variables(self, info: ValidationInfo) -> Script:
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
+
         self.variables = {
-            **cast(dict[str, str], ctx.get("variables", {})),
+            **ctx.get_variables("variables", {}),
             "SCRIPT_NAME": self.name,
         }
 
@@ -347,272 +459,150 @@ class Build:
     scripts: list[Script] = field(default_factory=list)
 
 
-class ReleasePackage(BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(populate_by_name=True)
-
-    filename: str = Field(default="", validate_default=True)
-    name: str = Field(default="", validate_default=True)
-    id: str = Field(default="", validate_default=True)
-    uninstall_subdirectory_files: bool = Field(
-        default=False, alias="uninstall-subdirectory-files"
-    )
-    information: str | None = None
-    version: str | None = None
-    author: str | None = None
-    license: str | None = None
-    summary: str | None = None
-    description: str | None = None
-    website: str | None = None
-    report_issue: str | None = Field(default=None, alias="report-issue")
-
-    @field_validator("filename", "name", "id", mode="after")
-    @classmethod
-    def _init_config(cls, v: str, info: ValidationInfo) -> str:
-        ctx = cast(dict[str, object], info.context)
-        name = cast(str, ctx.get("name", ""))
-        env = cast(dict[str, str], ctx.get("variables", {}))
-
-        if not v:
-            return name
-
-        return expand_variables(v, env)
-
-    @field_validator(
-        "information",
-        "license",
-        "summary",
-        "description",
-        "website",
-        "report_issue",
-        mode="after",
-    )
-    @classmethod
-    def _init_info(cls, v: str | None, info: ValidationInfo) -> str | None:
-        if v is None:
-            return None
-
-        ctx = cast(dict[str, object], info.context)
-        env = cast(dict[str, str], ctx.get("variables", {}))
-        return expand_variables(v, env)
-
-    @field_validator("version", "author", mode="before")
-    @classmethod
-    def _init_metadata(cls, _: str | None) -> str | None:
-        return None
+class ReleasePackage(ConfigModel):
+    filename: str = ""
+    id: str = ""
+    name: str = ""
+    uninstall_subdirectory_files: bool = False
+    information: _ExpandedStr | None = None
+    version: _ExpandedStr | None = None
+    author: _ExpandedStr | None = None
+    license: _ExpandedStr | None = None
+    summary: _ExpandedStr | None = None
+    description: _ExpandedStr | None = None
+    website: _ExpandedStr | None = None
+    report_issue: _ExpandedStr | None = None
 
     @model_validator(mode="after")
-    def _set_metadata(self, info: ValidationInfo) -> ReleasePackage:
-        ctx = cast(dict[str, object], info.context)
-        self.version = cast(str | None, ctx.get("version", None))
-        self.author = cast(str | None, ctx.get("author", None))
+    def _overwrite_metadata(self, info: ValidationInfo) -> ReleasePackage:
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
+
+        env = ctx.get_variables("variables", {})
+        name = env.get("PROJECT_NAME", "")
+
+        if not self.filename:
+            self.filename = name
+        else:
+            self.filename = expand_variables(self.filename, env)
+
+        if not self.name:
+            self.name = name
+        else:
+            self.name = expand_variables(self.name, env)
+
+        if not self.id:
+            self.id = name
+        else:
+            self.id = expand_variables(self.id, env)
+
+        if self.version is None:
+            self.version = env.get("PROJECT_VERSION")
+        else:
+            self.version = expand_variables(self.version, env)
+
+        if self.author is None:
+            self.author = env.get("PROJECT_AUTHOR")
+        else:
+            self.author = expand_variables(self.author, env)
 
         return self
 
 
 class ReleaseExtension(BaseModel):
-    directory: str = ""
+    directory: _PackageDir = ""
     files: list[Path] = Field(default_factory=list)
-
-    @field_validator("directory", mode="after")
-    @classmethod
-    def _init_directory(cls, v: str, info: ValidationInfo) -> str:
-        data = (
-            "Plugin/",
-            "Script/",
-            "Language/",
-            "Alias/",
-            "Default/",
-            "Figure/",
-            "Preset/",
-            "Transition/",
-        )
-
-        ctx = cast(dict[str, object], info.context)
-        env = cast(dict[str, str], ctx.get("variables", {}))
-        v = expand_variables(v, env).replace("\\", "/")
-
-        if v.startswith(data):
-            return v
-
-        logger.warning(f"{v} is not a package hierarchy")
-        return ""
 
     @field_validator("files", mode="before")
     @classmethod
-    def _init_files(cls, v: object, info: ValidationInfo) -> list[Path]:
+    def _resolve_files(cls, v: object, info: ValidationInfo) -> list[Path]:
         if type(v) is not list:
-            raise ValueError(
-                "release.contents.extensions.files must be a list of strings"
-            )
+            raise ValueError(f"{info.field_name} must be a list of strings")
 
-        ctx = cast(dict[str, object], info.context)
-        root = cast(Path, ctx.get("root", Path().cwd()))
-        env = cast(dict[str, str], ctx.get("variables", {}))
-        artifact = cast(Artifact, ctx.get("artifact", Artifact()))
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
+
+        root = ctx.get_data(Path, "root", Path().cwd())
+        env = ctx.get_variables("variables", {})
+        artifact = ctx.get_object(Artifact, "artifact", Artifact())
 
         extensions: list[Path] = []
         for extension in cast(list[object], v):
             if type(extension) is not str:
-                raise ValueError(
-                    "release.contents.extensions.files must be a list of strings"
-                )
+                raise ValueError(f"{info.field_name} must be a list of strings")
 
-            prefix, _, identifier = extension.partition(":")
+            prefix, sep, identifier = extension.partition(":")
 
-            if prefix == "script" and identifier in artifact.script:
-                extensions.extend(artifact.script[identifier])
-            elif prefix == "plugin" and identifier in artifact.plugin:
-                extensions.extend(artifact.plugin[identifier])
+            if prefix == "script" and sep:
+                if identifier in artifact.script:
+                    extensions.extend(artifact.script[identifier])
+                else:
+                    raise ValueError(f"Script artifact '{identifier}' not found")
+            elif prefix == "plugin" and sep:
+                if identifier in artifact.plugin:
+                    extensions.extend(artifact.plugin[identifier])
+                else:
+                    raise ValueError(f"Plugin artifact '{identifier}' not found")
             else:
-                matched = sorted(root.glob(expand_variables(extension, env)))
-                extensions.extend(matched if matched else [root / extension])
+                extensions.extend(resolve_glob(root, expand_variables(extension, env)))
 
         if not extensions:
-            raise ValueError("release.contents.extensions.files is required")
+            raise FileNotFoundError(f"{info.field_name} is empty")
 
         return extensions
 
 
 class ReleaseDocument(BaseModel):
-    directory: str = ""
-    files: list[Path] = Field(default_factory=list)
-
-    @field_validator("directory", mode="after")
-    @classmethod
-    def _init_directory(cls, v: str, info: ValidationInfo) -> str:
-        data = (
-            "Plugin/",
-            "Script/",
-            "Language/",
-            "Alias/",
-            "Default/",
-            "Figure/",
-            "Preset/",
-            "Transition/",
-        )
-
-        ctx = cast(dict[str, object], info.context)
-        env = cast(dict[str, str], ctx.get("variables", {}))
-        v = expand_variables(v, env).replace("\\", "/")
-
-        if v.startswith(data):
-            return v
-
-        logger.warning(f"{v} is not a package hierarchy")
-        return ""
-
-    @field_validator("files", mode="before")
-    @classmethod
-    def _init_files(cls, v: object, info: ValidationInfo) -> list[Path]:
-        if type(v) is not list:
-            raise ValueError(
-                "release.contents.documents.files must be a list of strings"
-            )
-
-        ctx = cast(dict[str, object], info.context)
-        root = cast(Path, ctx.get("root", Path().cwd()))
-        env = cast(dict[str, str], ctx.get("variables", {}))
-
-        documents: list[Path] = []
-        for document in cast(list[object], v):
-            if type(document) is not str:
-                raise ValueError(
-                    "release.contents.documents.files must be a list of strings"
-                )
-
-            matched = sorted(root.glob(expand_variables(document, env)))
-            documents.extend(matched if matched else [root / document])
-
-        if not documents:
-            raise ValueError("release.contents.documents.files is required")
-
-        return documents
+    directory: _PackageDir = ""
+    files: _ResolvedPaths = Field(default_factory=list)
 
 
 class AssetSource(BaseModel):
-    directory: str = ""
+    directory: _PackageDir = ""
     files: list[Path | str] = Field(default_factory=list)
-
-    @field_validator("directory", mode="after")
-    @classmethod
-    def _init_directory(cls, v: str, info: ValidationInfo) -> str:
-        ctx = cast(dict[str, object], info.context)
-        env = cast(dict[str, str], ctx.get("variables", {}))
-        return expand_variables(v, env)
 
     @field_validator("files", mode="before")
     @classmethod
-    def _init_files(cls, v: object, info: ValidationInfo) -> list[Path | str]:
+    def _resolve_files(cls, v: object, info: ValidationInfo) -> list[Path | str]:
         if type(v) is not list:
-            raise ValueError(
-                "release.contents.assets.sources.files must be a list of strings"
-            )
+            raise ValueError(f"{info.field_name} must be a list of strings")
 
-        ctx = cast(dict[str, object], info.context)
-        root = cast(Path, ctx.get("root", Path().cwd()))
-        env = cast(dict[str, str], ctx.get("variables", {}))
+        ctx = info.context
+        if type(ctx) is not Context:
+            raise RuntimeError("info.context is not a Context object")
+
+        root = ctx.get_data(Path, "root", Path().cwd())
+        env = ctx.get_variables("variables", {})
 
         files: list[Path | str] = []
         for file in cast(list[object], v):
             if type(file) is not str:
-                raise ValueError(
-                    "release.contents.assets.sources.files must be a list of strings"
-                )
+                raise ValueError(f"{info.field_name} must be a list of strings")
 
             if file.startswith(("http://", "https://")):
                 files.append(file)
                 continue
 
-            matched = sorted(root.glob(expand_variables(file, env)))
-            files.extend(matched if matched else [root / file])
+            files.extend(resolve_glob(root, expand_variables(file, env)))
 
         if not files:
-            raise ValueError("release.contents.assets.sources.files is required")
+            raise FileNotFoundError(f"{info.field_name} is empty")
 
         return files
 
 
 class AssetDocument(BaseModel):
-    filename: str
-    content: str = ""
-
-    @field_validator("filename", "content", mode="after")
-    @classmethod
-    def _init_document(cls, v: str, info: ValidationInfo) -> str:
-        ctx = cast(dict[str, object], info.context)
-        env = cast(dict[str, str], ctx.get("variables", {}))
-        return expand_variables(v, env)
+    filename: _ExpandedStr = Field(min_length=1)
+    content: _ExpandedStr = ""
 
 
 class ReleaseAsset(BaseModel):
-    name: str
-    directory: str = ""
+    name: str = Field(min_length=1)
+    directory: _PackageDir = ""
     sources: list[AssetSource] = Field(default_factory=list)
     documents: list[AssetDocument] = Field(default_factory=list)
-
-    @field_validator("directory", mode="after")
-    @classmethod
-    def _init_directory(cls, v: str, info: ValidationInfo) -> str:
-        data = (
-            "Plugin/",
-            "Script/",
-            "Language/",
-            "Alias/",
-            "Default/",
-            "Figure/",
-            "Preset/",
-            "Transition/",
-        )
-
-        ctx = cast(dict[str, object], info.context)
-        env = cast(dict[str, str], ctx.get("variables", {}))
-        v = expand_variables(v, env).replace("\\", "/")
-
-        if v.startswith(data):
-            return v
-
-        logger.warning(f"{v} is not a package hierarchy")
-        return ""
 
 
 @dataclass(frozen=True)
@@ -696,8 +686,16 @@ class Config:
         if contents is None or type(contents) is not dict:
             raise ValueError("[release.contents] section is required")
 
+        extensions = self._load_release_extension(
+            cast(dict[str, object], contents), artifact
+        )
+
         return Install(
-            self._load_release_extension(cast(dict[str, object], contents), artifact)
+            [
+                extention
+                for extention in extensions
+                if extention.directory.startswith(_PACKAGE_HIERARCHIES)
+            ]
         )
 
     def _load_astra(self) -> None:
@@ -712,14 +710,16 @@ class Config:
                 raise ValueError("Version not found") from e
 
             if Version(__version__) not in SpecifierSet(version):
-                raise ValueError("Version mismatch")
+                raise ValueError(
+                    f"Requires astra {version} but {__version__} is installed"
+                )
 
     def _load_project(self, version: str | None, defines: dict[str, str]) -> None:
         project = self._data.get("project")
         if project is None or type(project) is not dict:
             raise ValueError("[project] section is required")
 
-        ctx = {"version": version, "defines": defines}
+        ctx = Context({"version": version}, {"defines": defines}, {})
 
         self._project = Project.model_validate(project, context=ctx)
 
@@ -731,7 +731,7 @@ class Config:
         configs: list[Plugin] = []
         for plugin in cast(list[object], plugins):
             if type(plugin) is not dict:
-                continue
+                raise ValueError("plugins entries must be a dictionary")
 
             enabled = cast(dict[str, object], plugin).get("enabled", True)
             if type(enabled) is not bool or not enabled:
@@ -739,24 +739,32 @@ class Config:
 
             env = cast(dict[str, object], plugin).get("variables")
             if type(env) is dict:
-                ctx = {
-                    "variables": {
-                        **self._project.variables,
-                        **{
-                            k: v
-                            for k, v in cast(dict[str, object], env).items()
-                            if type(v) is str
-                        },
-                        "BUILD_DIRECTORY": "${BUILD_DIRECTORY}",
-                    }
-                }
+                ctx = Context(
+                    {},
+                    {
+                        "variables": {
+                            **self._project.variables,
+                            **{
+                                k: v
+                                for k, v in cast(dict[str, object], env).items()
+                                if type(v) is str
+                            },
+                            "BUILD_DIRECTORY": "${BUILD_DIRECTORY}",
+                        }
+                    },
+                    {},
+                )
             else:
-                ctx = {
-                    "variables": {
-                        **self._project.variables,
-                        "BUILD_DIRECTORY": "${BUILD_DIRECTORY}",
-                    }
-                }
+                ctx = Context(
+                    {},
+                    {
+                        "variables": {
+                            **self._project.variables,
+                            "BUILD_DIRECTORY": "${BUILD_DIRECTORY}",
+                        }
+                    },
+                    {},
+                )
 
             configs.append(Plugin.model_validate(plugin, context=ctx))
 
@@ -770,7 +778,7 @@ class Config:
         configs: list[Script] = []
         for script in cast(list[object], scripts):
             if type(script) is not dict:
-                continue
+                raise ValueError("scripts entries must be a dictionary")
 
             enabled = cast(dict[str, object], script).get("enabled", True)
             if type(enabled) is not bool or not enabled:
@@ -778,24 +786,26 @@ class Config:
 
             env = cast(dict[str, object], script).get("variables", {})
             if type(env) is dict:
-                ctx = {
-                    "root": self._root,
-                    "name": self._project.name,
-                    "variables": {
-                        **self._project.variables,
-                        **{
-                            k: v
-                            for k, v in cast(dict[str, object], env).items()
-                            if type(v) is str
+                ctx = Context(
+                    {"root": self._root, "name": self._project.name},
+                    {
+                        "variables": {
+                            **self._project.variables,
+                            **{
+                                k: v
+                                for k, v in cast(dict[str, object], env).items()
+                                if type(v) is str
+                            },
                         },
                     },
-                }
+                    {},
+                )
             else:
-                ctx = {
-                    "root": self._root,
-                    "name": self._project.name,
-                    "variables": self._project.variables,
-                }
+                ctx = Context(
+                    {"root": self._root, "name": self._project.name},
+                    {"variables": self._project.variables},
+                    {},
+                )
 
             configs.append(Script.model_validate(script, context=ctx))
 
@@ -806,16 +816,11 @@ class Config:
         if pkg is None or type(pkg) is not dict:
             return ReleasePackage.model_construct(
                 filename=self._project.name,
-                name=self._project.name,
                 id=self._project.name,
+                name=self._project.name,
             )
 
-        ctx = {
-            "name": self._project.name,
-            "version": self._project.version,
-            "author": self._project.author,
-            "variables": self._project.variables,
-        }
+        ctx = Context({}, {"variables": self._project.variables}, {})
 
         return ReleasePackage.model_validate(pkg, context=ctx)
 
@@ -839,19 +844,16 @@ class Config:
         if extensions is None or type(extensions) is not list:
             return []
 
-        ctx = {
-            "root": self._root,
-            "variables": self._project.variables,
-            "artifact": artifact,
-        }
+        ctx = Context(
+            {"root": self._root},
+            {"variables": self._project.variables},
+            {"artifact": artifact},
+        )
 
-        items: list[ReleaseExtension] = []
-        for extension in cast(list[object], extensions):
-            item = ReleaseExtension.model_validate(extension, context=ctx)
-            if item.directory:
-                items.append(item)
-
-        return items
+        return [
+            ReleaseExtension.model_validate(extension, context=ctx)
+            for extension in cast(list[object], extensions)
+        ]
 
     def _load_release_documents(
         self, contents: dict[str, object]
@@ -860,43 +862,42 @@ class Config:
         if documents is None or type(documents) is not list:
             return []
 
-        ctx = {
-            "root": self._root,
-            "variables": self._project.variables,
-        }
+        ctx = Context(
+            {"root": self._root},
+            {"variables": self._project.variables},
+            {},
+        )
 
-        items: list[ReleaseDocument] = []
-        for document in cast(list[object], documents):
-            item = ReleaseDocument.model_validate(document, context=ctx)
-            if item.files and item.directory:
-                items.append(item)
-
-        return items
+        return [
+            ReleaseDocument.model_validate(document, context=ctx)
+            for document in cast(list[object], documents)
+        ]
 
     def _load_release_assets(self, contents: dict[str, object]) -> list[ReleaseAsset]:
         assets = contents.get("assets")
         if assets is None or type(assets) is not list:
             return []
 
-        ctx = {
-            "root": self._root,
-            "variables": self._project.variables,
-        }
+        ctx = Context(
+            {"root": self._root},
+            {"variables": self._project.variables},
+            {},
+        )
 
-        items: list[ReleaseAsset] = []
+        entries: list[ReleaseAsset] = []
         for asset in cast(list[object], assets):
             if type(asset) is not dict:
-                continue
+                raise ValueError("assets entries must be a dictionary")
 
             enabled = cast(dict[str, object], asset).get("enabled", True)
             if type(enabled) is not bool or not enabled:
                 continue
 
-            item = ReleaseAsset.model_validate(asset, context=ctx)
-            if item.sources and item.directory:
-                items.append(item)
+            entry = ReleaseAsset.model_validate(asset, context=ctx)
+            if entry.sources or entry.documents:
+                entries.append(entry)
 
-        return items
+        return entries
 
 
 class Cache:

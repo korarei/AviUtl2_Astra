@@ -108,9 +108,12 @@ def _release(args: ReleaseArgs) -> None:
         dst.mkdir(parents=True, exist_ok=True)
 
         with FileLock(dst / ".astra-lock"):
-            for ext in "*.zip", "*.md":
+            for ext in "*.zip", "*.md", "tmp*", "*.au2pkg":
                 for file in dst.glob(ext):
-                    file.unlink()
+                    if file.is_file() or file.is_symlink():
+                        file.unlink()
+                    else:
+                        shutil.rmtree(file, ignore_errors=True)
 
             env = {k: v for k, v in args.define}
             cfg = config.Config(find_config(), args.version, env)

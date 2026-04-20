@@ -42,6 +42,11 @@ def expand_variables(text: str, variables: dict[str, str]) -> str:
     return _VAR_PATTERN.sub(_replacer, text)
 
 
+def resolve_glob(root: Path, pattern: str) -> list[Path]:
+    matched = sorted(root.glob(pattern))
+    return matched if matched else [root / pattern]
+
+
 def download(url: str, dst: Path) -> None:
     if not dst.is_dir():
         raise NotADirectoryError(f"Not a directory: {dst}")

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Final
 
 from astra._internal.config import Artifact, Build, Cache, Plugin, Script
-from astra._internal.utils import expand_variables
+from astra._internal.utils import expand_variables, resolve_glob
 
 
 logger = getLogger(__name__)
@@ -89,7 +89,9 @@ class Builder:
             logger.warning("Plugin '%s' has no commands, skipping", cfg.id)
             return []
 
-        env = {"BUILD_DIRECTORY": str(self._dst / "plugins" / cfg.id)}
+        dst = self._dst.relative_to(self._cwd, walk_up=True)
+
+        env = {"BUILD_DIRECTORY": str(dst / "plugins" / cfg.id)}
 
         try:
             self._run_commands(target.commands, env)
@@ -98,10 +100,8 @@ class Builder:
             raise RuntimeError(f"Plugin '{cfg.id}' command failed ({cls}): {e}") from e
 
         artifacts: list[Path] = []
-        for a in target.artifacts:
-            path = Path(expand_variables(a, env))
-            matched = sorted(path.parent.glob(path.name))
-            artifacts.extend(matched if matched else [path])
+        for artifact in target.artifacts:
+            artifacts.extend(resolve_glob(self._cwd, expand_variables(artifact, env)))
 
         logger.info("Plugin '%s' produced %d artifact(s)", cfg.id, len(artifacts))
         return artifacts
