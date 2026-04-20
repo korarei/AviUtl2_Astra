@@ -3,11 +3,10 @@ from __future__ import annotations
 import importlib.metadata as metadata
 import json
 import tomllib
-from collections.abc import ItemsView
 from dataclasses import dataclass, field
 from logging import getLogger
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, TypeAlias, TypeVar, cast, overload
+from typing import Annotated, ClassVar, Literal, TypeAlias, cast, overload
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -26,7 +25,6 @@ from astra._internal.utils import expand_variables, resolve_glob
 
 
 logger = getLogger(__name__)
-T = TypeVar("T", str, bool)
 
 _PACKAGE_HIERARCHIES = (
     "Plugin/",
@@ -40,7 +38,7 @@ _PACKAGE_HIERARCHIES = (
 )
 
 
-def _expand_str(v: str, info: ValidationInfo) -> str:
+def _expand_string(v: str, info: ValidationInfo) -> str:
     ctx = info.context
     if type(ctx) is not Context:
         raise RuntimeError("info.context is not a Context object")
@@ -87,9 +85,9 @@ def _check_hierarchy(v: str, info: ValidationInfo) -> str:
     return v
 
 
-_ExpandedStr = Annotated[str, AfterValidator(_expand_str)]
+_ExpandedString = Annotated[str, AfterValidator(_expand_string)]
 _ResolvedPaths = Annotated[list[Path], BeforeValidator(_resolve_paths)]
-_PackageDir = Annotated[str, AfterValidator(_check_hierarchy)]
+_PackageDirectory = Annotated[str, AfterValidator(_check_hierarchy)]
 
 
 class Context:
@@ -165,143 +163,6 @@ class Context:
             return default
 
         return None
-
-
-class Json:
-    _data: dict[str, object]
-
-    def __init__(self, data: dict[str, object] | Path | None = None) -> None:
-        if isinstance(data, Path):
-            try:
-                with open(data, encoding="utf-8") as f:
-                    self._data = json.load(f)
-            except FileNotFoundError as e:
-                raise FileNotFoundError(f"JSON file not found: {data}") from e
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid JSON format at {data}: {e}") from e
-            except OSError as e:
-                raise OSError(f"Error reading JSON file at {data}: {e}") from e
-        else:
-            self._data = data if data is not None else {}
-
-    @overload
-    def string(self, key: str) -> str | None: ...
-
-    @overload
-    def string(self, key: str, default: str) -> str: ...
-
-    def string(self, key: str, default: str | None = None) -> str | None:
-        v = self._data.get(key)
-        return v if type(v) is str else default
-
-    @overload
-    def object(self, key: str) -> Json | None: ...
-
-    @overload
-    def object(self, key: str, default: Json) -> Json: ...
-
-    def object(self, key: str, default: Json | None = None) -> Json | None:
-        v = self._data.get(key)
-        if type(v) is dict:
-            return Json(cast("dict[str, object]", v))
-
-        if default is not None:
-            self._data[key] = default._data
-            return default
-
-        return None
-
-    @overload
-    def dict_of(self, key: str, cls: type[T]) -> dict[str, T] | None: ...
-
-    @overload
-    def dict_of(
-        self, key: str, cls: type[T], default: dict[str, T]
-    ) -> dict[str, T]: ...
-
-    def dict_of(
-        self, key: str, cls: type[T], default: dict[str, T] | None = None
-    ) -> dict[str, T] | None:
-        v = self._data.get(key)
-        if type(v) is dict:
-            return {
-                k: val
-                for k, val in cast("dict[str, object]", v).items()
-                if isinstance(val, cls)
-            }
-
-        return default
-
-    @overload
-    def objects(self, key: str) -> list[Json] | None: ...
-
-    @overload
-    def objects(self, key: str, default: list[Json]) -> list[Json]: ...
-
-    def objects(self, key: str, default: list[Json] | None = None) -> list[Json] | None:
-        v = self._data.get(key)
-        if type(v) is list:
-            return [
-                Json(cast("dict[str, object]", i))
-                for i in cast("list[object]", v)
-                if type(i) is dict
-            ]
-
-        if default is not None:
-            self._data[key] = [i._data for i in default]
-            return default
-
-        return None
-
-    @overload
-    def list_of(self, key: str, cls: type[T]) -> list[T] | None: ...
-
-    @overload
-    def list_of(self, key: str, cls: type[T], default: list[T]) -> list[T]: ...
-
-    def list_of(
-        self, key: str, cls: type[T], default: list[T] | None = None
-    ) -> list[T] | None:
-        v = self._data.get(key)
-        if type(v) is list:
-            return [i for i in cast("list[object]", v) if isinstance(i, cls)]
-
-        return default
-
-    def items(self) -> ItemsView[str, object]:
-        return self._data.items()
-
-    @overload
-    def set(self, key: str, value: T | Json) -> None: ...
-
-    @overload
-    def set(self, key: str, value: dict[str, T] | dict[str, Json]) -> None: ...
-
-    @overload
-    def set(self, key: str, value: list[T] | list[Json]) -> None: ...
-
-    def set(self, key: str, value: object) -> None:
-        if type(value) is Json:
-            self._data[key] = value._data
-        elif type(value) is dict:
-            self._data[key] = {
-                k: v._data if type(v) is Json else v
-                for k, v in cast("dict[str, object]", value).items()
-            }
-        elif type(value) is list:
-            self._data[key] = [
-                v._data if type(v) is Json else v for v in cast("list[object]", value)
-            ]
-        else:
-            self._data[key] = value
-
-    def save(self, path: Path, indent: int = 4) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=indent)
-
-    def dumps(self, indent: int = 4) -> str:
-        return json.dumps(self._data, ensure_ascii=False, indent=indent)
 
 
 class ConfigModel(BaseModel):
@@ -464,14 +325,14 @@ class ReleasePackage(ConfigModel):
     id: str = ""
     name: str = ""
     uninstall_subdirectory_files: bool = False
-    information: _ExpandedStr | None = None
-    version: _ExpandedStr | None = None
-    author: _ExpandedStr | None = None
-    license: _ExpandedStr | None = None
-    summary: _ExpandedStr | None = None
-    description: _ExpandedStr | None = None
-    website: _ExpandedStr | None = None
-    report_issue: _ExpandedStr | None = None
+    information: _ExpandedString | None = None
+    version: _ExpandedString | None = None
+    author: _ExpandedString | None = None
+    license: _ExpandedString | None = None
+    summary: _ExpandedString | None = None
+    description: _ExpandedString | None = None
+    website: _ExpandedString | None = None
+    report_issue: _ExpandedString | None = None
 
     @model_validator(mode="after")
     def _overwrite_metadata(self, info: ValidationInfo) -> ReleasePackage:
@@ -511,7 +372,7 @@ class ReleasePackage(ConfigModel):
 
 
 class ReleaseExtension(BaseModel):
-    directory: _PackageDir = ""
+    directory: _PackageDirectory = ""
     files: list[Path] = Field(default_factory=list)
 
     @field_validator("files", mode="before")
@@ -555,12 +416,12 @@ class ReleaseExtension(BaseModel):
 
 
 class ReleaseDocument(BaseModel):
-    directory: _PackageDir = ""
+    directory: _PackageDirectory = ""
     files: _ResolvedPaths = Field(default_factory=list)
 
 
 class AssetSource(BaseModel):
-    directory: _PackageDir = ""
+    directory: _PackageDirectory = ""
     files: list[Path | str] = Field(default_factory=list)
 
     @field_validator("files", mode="before")
@@ -594,13 +455,13 @@ class AssetSource(BaseModel):
 
 
 class AssetDocument(BaseModel):
-    filename: _ExpandedStr = Field(min_length=1)
-    content: _ExpandedStr = ""
+    filename: _ExpandedString = Field(min_length=1)
+    content: _ExpandedString = ""
 
 
 class ReleaseAsset(BaseModel):
     name: str = Field(min_length=1)
-    directory: _PackageDir = ""
+    directory: _PackageDirectory = ""
     sources: list[AssetSource] = Field(default_factory=list)
     documents: list[AssetDocument] = Field(default_factory=list)
 
@@ -901,73 +762,63 @@ class Config:
 
 
 class Cache:
-    _data: Json
+    _data: dict[str, object]
     _path: Path
 
     def __init__(self, path: Path) -> None:
-        self._path = path
         try:
-            self._data = Json(path)
+            with open(path, "rb") as f:
+                self._data = json.load(f)
         except (FileNotFoundError, ValueError, OSError):
-            self._data = Json()
+            self._data = {}
+
+        self._path = path
 
     def load_artifacts(self) -> Artifact | None:
-        build = self._data.object("build")
-        if build is None:
+        build = self._data.get("build")
+        if build is None or type(build) is not dict:
             return None
 
-        artifacts = build.object("artifacts")
-        if artifacts is None:
+        artifacts = cast(dict[str, object], build).get("artifacts")
+        if artifacts is None or type(artifacts) is not dict:
             return None
 
-        plugins: dict[str, list[Path]] = {}
-        scripts: dict[str, list[Path]] = {}
+        def _parse(key: str) -> dict[str, list[Path]]:
+            data = cast(dict[str, object], artifacts).get(key)
+            if data is None or type(data) is not dict:
+                return {}
 
-        for k, v in artifacts.object("plugins", Json()).items():
-            if isinstance(v, list):
-                plugins[k] = [
-                    Path(p) for p in cast("list[object]", v) if isinstance(p, str)
-                ]
+            return {
+                k: [Path(p) for p in cast(list[object], v) if type(p) is str]
+                for k, v in cast(dict[str, object], data).items()
+            }
 
-        for k, v in artifacts.object("scripts", Json()).items():
-            if isinstance(v, list):
-                scripts[k] = [
-                    Path(p) for p in cast("list[object]", v) if isinstance(p, str)
-                ]
-
-        self._data.save(self._path)  # 雑な破損ファイルの修正
-
-        return Artifact(plugins, scripts)
+        return Artifact(_parse("plugins"), _parse("scripts"))
 
     def save_artifacts(self, artifact: Artifact) -> None:
-        build = self._data.object("build", Json())
-        artifacts = build.object("artifacts", Json())
+        self._data["build"] = {
+            "artifacts": {
+                "plugins": {k: [str(p) for p in v] for k, v in artifact.plugin.items()},
+                "scripts": {k: [str(p) for p in v] for k, v in artifact.script.items()},
+            }
+        }
 
-        plugins = Json()
-        for k, v in artifact.plugin.items():
-            plugins.set(k, [str(p) for p in v])
-
-        scripts = Json()
-        for k, v in artifact.script.items():
-            scripts.set(k, [str(p) for p in v])
-
-        artifacts.set("plugins", plugins)
-        artifacts.set("scripts", scripts)
-
-        self._data.save(self._path)
+        with self._path.open("w", encoding="utf-8") as f:
+            json.dump(self._data, f, ensure_ascii=False, indent=4)
 
     def load_installations(self) -> list[Path] | None:
-        install = self._data.object("install")
-        if install is None:
+        install = self._data.get("install")
+        if install is None or type(install) is not dict:
             return None
 
-        installations = install.list_of("installations", str)
-        if installations is None:
+        installations = cast(dict[str, object], install).get("installations")
+        if installations is None or type(installations) is not list:
             return None
 
-        return [Path(p) for p in installations]
+        return [Path(p) for p in cast(list[object], installations) if type(p) is str]
 
     def save_installations(self, installations: list[Path]) -> None:
-        install = self._data.object("install", Json())
-        install.set("installations", [str(p) for p in installations])
-        self._data.save(self._path)
+        self._data["install"] = {"installations": [str(p) for p in installations]}
+
+        with self._path.open("w", encoding="utf-8") as f:
+            json.dump(self._data, f, ensure_ascii=False, indent=4)
