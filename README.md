@@ -264,25 +264,31 @@ variables = { PROJECT_LABEL = "Project" }
 enabled = true
 # プラグイン固有のID (必須)
 id = "core"
+# 用いるシェル (設定されない場合，未定)
+# cmd, powershell, pwsh, bash など (パスが通っていない場合フルパスで指定)
+# 推奨は pwsh
+shell = "pwsh"
 # このテーブル内部で利用できる変数
 variables = { SOURCE = "./plugins" }
 # リリースビルド (必須)
 [build.plugins.release]
 # コマンド
-commands = [
-    "cmake -S ${SOURCE} -B ${BUILD_DIRECTORY} -G \"Ninja Multi-Config\"",
-    "cmake --build ${BUILD_DIRECTORY} --config Release",
-]
+# `shell`でシェルを指定した場合，astraでの変数展開はパスされシェルの環境変数に追加される
+# `BUILD_DIRECTORY`は`${build}/plugins/${id}`
+commands = ['''
+cmake -S $env:SOURCE -B $env:BUILD_DIRECTORY -G "Ninja Multi-Config"
+cmake --build $env:BUILD_DIRECTORY --config Release
+''']
 # 生成物
 artifacts = ["${BUILD_DIRECTORY}/Release/*.aux2"]
 # デバッグビルド
 [build.plugins.debug]
 # コマンド
-# ${BUILD_DIRECTORY}は`${build}/plugins/${id}`
-commands = [
-    "cmake -S ${SOURCE} -B ${BUILD_DIRECTORY} -G \"Ninja Multi-Config\"",
-    "cmake --build ${BUILD_DIRECTORY} --config Debug",
-]
+# `${BUILD_DIRECTORY}`は`${build}/plugins/${id}`
+commands = ['''
+cmake -S $env:SOURCE -B $env:BUILD_DIRECTORY -G "Ninja Multi-Config"
+cmake --build $env:BUILD_DIRECTORY --config Debug
+''']
 # 生成物
 artifacts = ["${BUILD_DIRECTORY}/Debug/*.aux2"]
 
@@ -309,7 +315,7 @@ target-encoding = "utf-8"
 # このテーブルおよびスクリプトで利用できる変数
 variables = { SOURCE = "./script" }
 # `--#include`で検索するフォルダ
-include_directories = ["${SOURCE}/shaders"]
+include-directories = ["${SOURCE}/shaders"]
 # ソースファイル (複数設定した場合連結される)
 sources = [
     # fileは必須 (ワイルドカードの利用も可能)
@@ -317,6 +323,8 @@ sources = [
     { file = "effect1.lua", LABEL = "Effect1" },
     { file = "effect2.lua", LABEL = "Effect2" },
 ]
+# 追加の生成物 (あれば)
+artifacts = ["${SOURCE}/setting.json"]
 
 # リリース設定
 [release]
@@ -457,7 +465,7 @@ astra <command> [options]
 ```editorconfig
 root = true
 
-[*]  
+[*]
 charset = utf-8
 end_of_line = lf
 indent_style = space

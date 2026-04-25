@@ -2,10 +2,10 @@ import importlib.metadata as metadata
 import os
 import shutil
 import sys
+import tempfile
 from argparse import ArgumentParser
 from logging import getLogger
 from pathlib import Path
-from tempfile import mkdtemp
 from typing import Callable, Protocol, cast
 
 from filelock import FileLock
@@ -96,7 +96,8 @@ def _build(args: BuildArgs) -> None:
         cfg = config.Config(find_config(), args.version, env).load_build()
 
         with FileLock(dst / ".astra-lock"):
-            _ = build.build(dst, cfg, args.config)
+            artifact = build.build(dst, cfg, args.config)
+            config.Cache(dst / "astra.json").save(artifact)
     except Exception as e:
         logger.error("Failed to build (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
@@ -117,11 +118,10 @@ def _release(args: ReleaseArgs) -> None:
 
             env = {k: v for k, v in args.define}
             cfg = config.Config(find_config(), args.version, env)
-            tmp = Path(mkdtemp(dir=dst))
 
-            artifact = build.build(tmp, cfg.load_build(), "release")
-            release.release(dst, cfg.load_release(artifact))
-            shutil.rmtree(tmp, ignore_errors=True)
+            with tempfile.TemporaryDirectory(dir=dst) as tmp:
+                artifact = build.build(Path(tmp), cfg.load_build(), "release")
+                release.release(dst, cfg.load_release(artifact))
     except Exception as e:
         logger.error("Failed to release (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
@@ -166,17 +166,10 @@ def _install(args: InstallArgs) -> None:
 
     try:
         cache = config.Cache(args.build / "astra.json")
-        artifact = cache.load_artifacts()
-        if artifact is None:
-            logger.error("No artifacts found. Please run 'astra build' first.")
-            sys.exit(1)
-
+        artifact = cache.load(config.Artifact)
         env = {k: v for k, v in args.define}
         cfg = config.Config(find_config(), defines=env).load_install(artifact)
-
-        installations = install.install(target, cfg, args.editable)
-
-        cache.save_installations(installations)
+        cache.save(install.install(target, cfg, args.editable))
     except Exception as e:
         logger.error("Failed to install (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
@@ -189,14 +182,8 @@ def _uninstall(args: UninstallArgs) -> None:
 
     try:
         cache = config.Cache(args.build / "astra.json")
-        installations = cache.load_installations()
-        if installations is None:
-            logger.error("No installation records found.")
-            sys.exit(1)
-
-        install.uninstall(installations)
-
-        cache.save_installations([])
+        install.uninstall(cache.load(config.Extension))
+        cache.save(config.Extension())
     except Exception as e:
         logger.error("Failed to uninstall (%s): %s", e.__class__.__name__, e)
         sys.exit(1)
@@ -218,8 +205,7 @@ def _clean(args: CleanArgs) -> None:
                 sys.exit(1)
 
             cache = config.Cache(args.build / "astra.json")
-            if installations := cache.load_installations():
-                install.uninstall(installations)
+            install.uninstall(cache.load(config.Extension))
 
             shutil.rmtree(args.build)
         else:

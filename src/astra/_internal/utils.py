@@ -27,16 +27,16 @@ def find_config() -> Path:
         if candidate.is_file():
             return candidate.resolve()
 
-    raise FileNotFoundError("astra.toml not found.")
+    raise FileNotFoundError("astra.toml not found")
 
 
 def expand_variables(text: str, variables: dict[str, str]) -> str:
     def _replacer(match: re.Match[str]) -> str:
         key = match.group(1)
-        if val := variables.get(key):
+        if (val := variables.get(key)) is not None:
             return val
         else:
-            logger.warning("Variable %s not found", key)
+            logger.warning(f"'{key}' has no match in variables")
             return match.group(0)
 
     return _VAR_PATTERN.sub(_replacer, text)
@@ -44,12 +44,15 @@ def expand_variables(text: str, variables: dict[str, str]) -> str:
 
 def resolve_glob(root: Path, pattern: str) -> list[Path]:
     matched = sorted(root.glob(pattern))
-    return matched if matched else [root / pattern]
+    if len(matched) == 0:
+        raise FileNotFoundError(f"'{pattern}' in '{root.resolve()}' has no match")
+
+    return matched
 
 
 def download(url: str, dst: Path) -> None:
     if not dst.is_dir():
-        raise NotADirectoryError(f"Not a directory: {dst}")
+        raise NotADirectoryError(f"{dst} is not a directory")
 
     logger.info("Downloading: %s", url)
 

@@ -1,11 +1,16 @@
+import ctypes
+import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import textwrap
 from logging import getLogger
 from pathlib import Path
 from typing import Final
 
-from astra._internal.config import Artifact, Build, Cache, Plugin, Script
+from astra._internal.config import Artifact, Build, Plugin, Script
 from astra._internal.utils import expand_variables, resolve_glob
 
 
@@ -74,7 +79,7 @@ class Builder:
         self._cwd = cwd
         self._encoding = "utf-8"
 
-    def build_plugin(self, cfg: Plugin, configuration: str) -> list[Path]:
+    def build_plugin(self, cfg: Plugin, configuration: str) -> list[str]:
         logger.info("Building plugin '%s' (%s)", cfg.id, configuration)
 
         config = configuration.lower()
@@ -89,24 +94,25 @@ class Builder:
             logger.warning("Plugin '%s' has no commands, skipping", cfg.id)
             return []
 
-        dst = self._dst.relative_to(self._cwd, walk_up=True)
-
-        env = {"BUILD_DIRECTORY": str(dst / "plugins" / cfg.id)}
+        dst = self._dst / "plugins" / cfg.id
+        dst.mkdir(parents=True, exist_ok=True)
+        dst = dst.relative_to(self._cwd, walk_up=True)  # 別ドライブだとダメ
 
         try:
-            self._run_commands(target.commands, env)
+            self._run_commands(target.commands, dst, cfg)
         except Exception as e:
             cls = e.__class__.__name__
             raise RuntimeError(f"Plugin '{cfg.id}' command failed ({cls}): {e}") from e
 
+        env = {**cfg.variables, "BUILD_DIRECTORY": str(dst)}
         artifacts: list[Path] = []
         for artifact in target.artifacts:
             artifacts.extend(resolve_glob(self._cwd, expand_variables(artifact, env)))
 
         logger.info("Plugin '%s' produced %d artifact(s)", cfg.id, len(artifacts))
-        return artifacts
+        return [str(a) for a in artifacts]
 
-    def build_script(self, cfg: Script) -> list[Path]:
+    def build_script(self, cfg: Script) -> list[str]:
         logger.info("Building script '%s'", cfg.id)
 
         if not cfg.sources:
@@ -157,23 +163,117 @@ class Builder:
 
         logger.info("Script '%s' produced %d artifact(s)", cfg.id, len(artifacts))
 
-        return artifacts
+        return [str(a) for a in artifacts]
 
-    def _run_commands(self, commands: list[str], env: dict[str, str]) -> None:
-        for cmd in commands:
-            cmd = expand_variables(cmd, env)
-            logger.info("Running: %s", cmd)
-            _ = subprocess.run(
-                cmd,
-                shell=True,
-                cwd=self._cwd,
-                check=True,
-            )
+    def _run_commands(self, commands: list[str], dst: Path, cfg: Plugin) -> None:
+        shell = cfg.shell
+        if shell is None:
+            env = {**cfg.variables, "BUILD_DIRECTORY": str(dst)}
+
+            for cmd in commands:
+                cmd = expand_variables(cmd, env)
+                logger.info("Running: %s", cmd)
+                _ = subprocess.run(cmd, cwd=self._cwd, check=True, shell=True)
+        elif (shell := shutil.which(shell)) is not None:
+            env = cfg.variables.copy()
+
+            name = Path(shell).stem.lower()
+            if name == "cmd" and sys.platform == "win32":
+                ctypes.windll.kernel32.GetACP.restype = ctypes.c_uint
+                env["BUILD_DIRECTORY"] = dst.as_posix().replace("/", "\\")
+                args = [shell, "/d", "/e:on", "/v:off", "/s", "/c"]
+                suffix = ".bat"
+                encoding = f"cp{ctypes.windll.kernel32.GetACP() or 437}"
+                newline = "\r\n"
+                script = "@echo off\nsetlocal\n{content}\nendlocal\n"
+            elif name == "powershell":
+                env["BUILD_DIRECTORY"] = dst.as_posix()
+                args = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+                suffix = ".ps1"
+                encoding = "utf-8-sig"
+                newline = "\n"
+                script = (
+                    "$ErrorActionPreference='Stop'\n"
+                    "Set-StrictMode -Version Latest\n"
+                    "{content}\n"
+                )
+            elif name == "pwsh":
+                env["BUILD_DIRECTORY"] = dst.as_posix()
+                args = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+                suffix = ".ps1"
+                encoding = "utf-8"
+                newline = "\n"
+                script = (
+                    "$ErrorActionPreference='Stop'\n"
+                    "Set-StrictMode -Version Latest\n"
+                    "$PSNativeCommandUseErrorActionPreference = $true\n"
+                    "{content}\n"
+                )
+            elif name.endswith("bash"):
+                env["BUILD_DIRECTORY"] = dst.as_posix()
+                args = [shell, "--noprofile", "--norc", "-euo", "pipefail"]
+                suffix = ".sh"
+                encoding = "utf-8"
+                newline = "\n"
+                script = "{content}\n"
+            elif name.endswith("zsh"):
+                env["BUILD_DIRECTORY"] = dst.as_posix()
+                args = [shell, "-f", "-euo", "pipefail"]
+                suffix = ".sh"
+                encoding = "utf-8"
+                newline = "\n"
+                script = "{content}\n"
+            elif name.endswith("sh"):
+                env["BUILD_DIRECTORY"] = dst.as_posix()
+                args = [shell, "-eu"]
+                suffix = ".sh"
+                encoding = "utf-8"
+                newline = "\n"
+                script = "{content}\n"
+            else:
+                raise ValueError(f"Unsupported shell: {shell}")
+
+            tmp = dst.parent
+            env |= os.environ
+
+            for cmd in commands:
+                logger.info("Running: %s", cmd)
+
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding=encoding,
+                    newline=newline,
+                    suffix=suffix,
+                    dir=tmp,
+                    delete=False,
+                ) as f:
+                    _ = f.write(script.format(content=cmd))
+                    path = f.name
+
+                try:
+                    _ = subprocess.run(
+                        [*args, path],
+                        env=env,
+                        cwd=self._cwd,
+                        check=True,
+                    )
+                finally:
+                    try:
+                        _ = Path(path).unlink()
+                    except Exception:
+                        logger.warning("Failed to remove temporary file: %s", path)
+        else:
+            raise RuntimeError("Shell not found")
 
     def _gather_defines(self, text: str, env: dict[str, str]) -> str:
         def _replacer(match: re.Match[str]) -> str:
             key = match.group(1) or match.group(3)
             val = match.group(2) or match.group(4)
+
+            if not (key and val):
+                logger.warning("Invalid define: %s", match.group(0))
+                return match.group(0)
+
             env[key] = val
             return ""
 
@@ -193,7 +293,7 @@ class Builder:
             module = match.group(4) or match.group(5)
 
             path = quoted or angled
-            if path is None:
+            if not path:
                 logger.warning("Malformed include: %s", match.group(0).strip())
                 return match.group(0)
 
@@ -237,7 +337,7 @@ class Builder:
             angled = match.group(3)
 
             path = quoted or angled
-            if path is None:
+            if not path:
                 logger.warning("Malformed include: %s", match.group(0).strip())
                 return match.group(0)
 
@@ -281,17 +381,13 @@ def build(dst: Path, cfg: Build, configuration: str = "release") -> Artifact:
 
     builder = Builder(dst, cfg.cwd)
 
-    plugins: dict[str, list[Path]] = {}
+    plugins: dict[str, list[str]] = {}
     for plugin in cfg.plugins:
         plugins[plugin.id] = builder.build_plugin(plugin, configuration)
 
-    scripts: dict[str, list[Path]] = {}
+    scripts: dict[str, list[str]] = {}
     for script in cfg.scripts:
         scripts[script.id] = builder.build_script(script)
-
-    artifact = Artifact(plugins, scripts)
-
-    Cache(dst / "astra.json").save_artifacts(artifact)
 
     logger.info(
         "Build completed: %d plugin(s), %d script(s)",
@@ -299,4 +395,4 @@ def build(dst: Path, cfg: Build, configuration: str = "release") -> Artifact:
         len(scripts),
     )
 
-    return artifact
+    return Artifact(plugins, scripts)
