@@ -9,7 +9,6 @@ from astra._internal.config import (
     Release,
     ReleaseAsset,
     ReleaseDocument,
-    ReleasePackage,
 )
 from astra._internal.utils import download
 
@@ -29,15 +28,18 @@ logger = getLogger(__name__)
 
 
 class Releaser:
-    _base: Path
     _dst: Path
+    _cfg: Release
 
-    def __init__(self, dst: Path) -> None:
-        if not dst.is_dir():
-            raise NotADirectoryError(f"Not a directory: {dst}")
+    def __init__(self, dst: Path, cfg: Release) -> None:
+        if dst.is_file():
+            raise NotADirectoryError(f"'{dst}' is not a directory")
 
-        self._base = dst
-        self._dst = self._base
+        dst = dst.resolve()
+        dst.mkdir(parents=True, exist_ok=True)
+
+        self._dst = dst
+        self._cfg = cfg
 
     def __enter__(self) -> Self:
         self.mkdir()
@@ -46,108 +48,114 @@ class Releaser:
     def __exit__(self, *_) -> None:
         self.cleanup()
 
-    def copy_contents(self, cfg: Release) -> None:
-        logger.info("Copying contents")
-
-        contents = cfg.contents
+    def copy_contents(self) -> None:
+        contents = self._cfg.contents
 
         for extension in contents.extensions:
             dst = self._dst / extension.directory
             dst.mkdir(parents=True, exist_ok=True)
-            for file in extension.files:
+
+            files = extension.files
+
+            logger.info(f"Copying {len(files)} extension(s) to '{dst}'")
+
+            for file in files:
                 self._copy_file(file, dst)
 
         for doc in contents.documents:
             dst = self._dst / doc.directory
             dst.mkdir(parents=True, exist_ok=True)
-            for file in doc.files:
+
+            files = doc.files
+
+            logger.info(f"Copying {len(files)} document(s) to '{dst}'")
+
+            for file in files:
                 self._copy_file(file, dst)
 
         for asset in contents.assets:
             dst = self._dst / asset.directory / asset.name
             dst.mkdir(parents=True, exist_ok=True)
+
+            logger.info(f"Making asset to '{dst}'")
+
             self._copy_asset(dst, asset)
 
-        logger.info("Contents copied")
+    def write_manifest(self) -> None:
+        logger.info("Writing 'package.txt'")
 
-    def create_manifest(self, package: ReleasePackage) -> None:
-        logger.info("Creating manifest")
+        package = self._cfg.package
 
         manifest = f"[ {package.name} ]\n\n"
 
-        if package.summary:
+        if package.summary is not None:
             manifest += f"{package.summary}\n\n"
 
-        if package.version:
+        if package.version is not None:
             manifest += f"Version: {package.version}\n"
 
-        if package.license:
+        if package.license is not None:
             manifest += f"License: {package.license}\n"
 
-        if package.author:
+        if package.author is not None:
             manifest += f"Author: {package.author}\n"
 
-        if package.website:
+        if package.website is not None:
             manifest += f"Website: {package.website}\n"
 
-        if package.report_issue:
+        if package.report_issue is not None:
             manifest += f"Report Issue: {package.report_issue}\n"
 
-        if package.description:
+        if package.description is not None:
             manifest += f"\n{package.description}\n"
 
         path = self._dst / "package.txt"
         _ = path.write_text(manifest, encoding="utf-8", newline="\r\n")
 
-        logger.info("Manifest created: %s", path)
+    def write_config(self) -> None:
+        logger.info("Writing 'package.ini'")
 
-    def create_config(self, package: ReleasePackage) -> None:
-        logger.info("Creating config")
+        package = self._cfg.package
 
-        config = f"[package]\nid={package.id}\nname={package.name}\n"
-
-        if package.information:
-            config += f"information={package.information}\n"
-
-        config += (
+        config = (
+            f"[package]\nid={package.id}\nname={package.name}\n"
             f"uninstallSubFolderFile={int(package.uninstall_subdirectory_files)}\n"
         )
+
+        if package.information is not None:
+            config += f"information={package.information}\n"
 
         path = self._dst / "package.ini"
         _ = path.write_text(config, encoding="utf-8", newline="\r\n")
 
-        logger.info("Config created: %s", path)
+    def make_archive(self) -> None:
+        name = self._dst.parent / f"{self._cfg.package.filename}"
 
-    def create_archive(self, filename: str) -> None:
-        logger.info("Creating archive")
+        logger.info(f"Making archive to '{name}.zip'")
 
         _ = shutil.make_archive(
-            str(self._base / (filename + ".au2pkg")),
+            str(name),
             "zip",
             root_dir=self._dst,
             base_dir=".",
         )
 
-        logger.info("Archive created: %s.au2pkg.zip", filename)
-
     def mkdir(self) -> None:
-        self._dst = Path(mkdtemp(dir=self._base))
+        self._dst = Path(mkdtemp(dir=self._dst))
 
     def cleanup(self) -> None:
         shutil.rmtree(self._dst, ignore_errors=True)
 
     def _copy_file(self, src: Path, dst: Path) -> None:
         if not src.is_file():
-            logger.warning("File not found, skipping: %s", src)
+            logger.warning(f"'{src}' is not found")
             return
 
         _ = shutil.copy2(src, dst)
 
     def _copy_asset(self, dst: Path, asset: ReleaseAsset) -> None:
         if not dst.is_dir():
-            raise NotADirectoryError(f"Not a directory: {dst}")
-
-        logger.info("Copying asset: %s", asset.name)
+            raise NotADirectoryError(f"'{dst}' is not a directory")
 
         for source in asset.sources:
             target = dst / source.directory
@@ -158,7 +166,7 @@ class Releaser:
                     try:
                         download(item, target)
                     except Exception:
-                        logger.warning("Failed to download asset: %s", item)
+                        logger.warning(f"Failed to download asset: '{item}'")
                 else:
                     self._copy_file(item, target)
 
@@ -169,10 +177,14 @@ class Releaser:
 
 
 def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
-    if not dst.is_dir():
-        raise NotADirectoryError(f"Not a directory: {dst}")
+    if dst.is_file():
+        raise NotADirectoryError(f"'{dst}' is not a directory")
 
-    logger.info("Creating release notes")
+    dst = dst.resolve()
+    dst.mkdir(parents=True, exist_ok=True)
+    path = dst / "release_notes.md"
+
+    logger.info(f"Writing release notes to '{path}'")
 
     changelog: Path | None = None
     readme: Path | None = None
@@ -191,21 +203,14 @@ def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
         break
 
     target = changelog or readme
-    if not target:
-        logger.warning("Changelog or readme not found")
+    if target in (None, ""):
+        logger.warning("CHANGELOG or README is not found")
         return
 
     if not target.is_file():
-        logger.warning("Target is not a file: %s", target)
-        return
+        raise FileNotFoundError(f"'{target}' is not found")
 
-    try:
-        text = target.read_text(encoding="utf-8")
-    except Exception as e:
-        filename = "changelog" if target == changelog else "readme"
-        raise RuntimeError(
-            f"Failed to read {filename} ({e.__class__.__name__}): {target}"
-        ) from e
+    text = target.read_text(encoding="utf-8")
 
     if target == readme:
         match = _CHANGELOG_HEADER_PATTERN.search(text)
@@ -215,34 +220,25 @@ def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
         text = text[match.end() :]
 
     match = _CHANGELOG_SECTION_PATTERN.search(text)
-    if match:
-        section = match.group(0).strip()
-        changes = re.sub(r"^[^\S\n]*-", "-", section, flags=re.MULTILINE).split(
-            "\n", 1
-        )[1]
-        content = f"## What's Changed\n{changes}"
-    else:
+    if match is None:
         return
 
-    path = dst / "release_notes.md"
-    _ = path.write_text(content, encoding="utf-8", newline="\n")
+    section = match.group(0).strip()
+    changes = re.sub(r"^[^\S\n]*-", "-", section, flags=re.MULTILINE).split("\n", 1)[1]
+    content = f"## What's Changed\n{changes}\n"
 
-    logger.info("Release notes created: %s", path)
+    _ = path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def release(dst: Path, cfg: Release) -> None:
-    logger.info("Making package to: %s", dst)
+    with Releaser(dst, cfg) as releaser:
+        releaser.copy_contents()
+        releaser.write_manifest()
+        releaser.write_config()
+        releaser.make_archive()
 
-    dst.mkdir(parents=True, exist_ok=True)
-    dst = dst.resolve()
+    documents = cfg.contents.documents
+    if not documents:
+        return
 
-    with Releaser(dst) as releaser:
-        releaser.copy_contents(cfg)
-        releaser.create_manifest(cfg.package)
-        releaser.create_config(cfg.package)
-        releaser.create_archive(cfg.package.filename)
-
-    if cfg.contents.documents:
-        create_release_notes(dst, cfg.contents.documents)
-
-    logger.info("Making package completed")
+    create_release_notes(dst, documents)

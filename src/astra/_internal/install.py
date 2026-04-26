@@ -11,13 +11,13 @@ logger = getLogger(__name__)
 
 def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
     if not dst.is_dir():
-        raise NotADirectoryError(f"Not a directory: {dst}")
-
-    if not src.is_file():
-        logger.warning("File not found, skipping: %s", src)
-        return None
+        raise NotADirectoryError(f"'{dst}' is not a directory")
 
     src = src.resolve()
+    if not src.is_file():
+        logger.warning(f"'{src}' is not found")
+        return None
+
     path = (dst / src.name).resolve()
 
     if path.exists() or path.is_symlink():
@@ -32,10 +32,13 @@ def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
 
 
 def install(dst: Path, cfg: Install, editable: bool = False) -> Extension:
-    if not dst.is_dir():
-        raise NotADirectoryError(f"Not a directory: {dst}")
+    if dst.is_file():
+        raise NotADirectoryError(f"'{dst}' is not a directory")
 
-    logger.info("Installing to: %s", dst)
+    dst = dst.resolve()
+    dst.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Installing to '{dst}' ({'symbolic link' if editable else 'copy'})")
 
     extensions: list[str] = []
 
@@ -47,7 +50,7 @@ def install(dst: Path, cfg: Install, editable: bool = False) -> Extension:
             if path is not None:
                 extensions.append(str(path))
 
-    logger.info("Install completed: %d files", len(extensions))
+    logger.info(f"{len(extensions)} file(s) installed")
 
     return Extension(extensions)
 
@@ -73,8 +76,9 @@ def uninstall(extension: Extension) -> None:
         if path.exists() or path.is_symlink():
             path.unlink()
 
+        parent = path.parent
+
         while True:
-            parent = path.parent
             if parent == path:
                 break
 
@@ -91,4 +95,4 @@ def uninstall(extension: Extension) -> None:
             except Exception:
                 break
 
-    logger.info("Uninstall completed")
+            parent = path.parent

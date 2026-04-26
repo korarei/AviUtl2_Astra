@@ -1,10 +1,10 @@
 import importlib.metadata as metadata
+import logging
 import os
 import shutil
 import sys
 import tempfile
 from argparse import ArgumentParser
-from logging import getLogger
 from pathlib import Path
 from typing import Callable, Protocol, cast
 
@@ -14,7 +14,7 @@ from astra._internal import build, config, init, install, release, schema, venv
 from astra._internal.utils import find_config
 
 
-logger = getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 try:
     __version__ = metadata.version("astra")
@@ -83,7 +83,7 @@ def _init(args: InitArgs) -> None:
     try:
         init.init(args.target)
     except Exception as e:
-        logger.error("Failed to initialize (%s): %s", e.__class__.__name__, e)
+        logger.error(f"[{type(e).__name__}] Failed to initialize: {e}")
         sys.exit(1)
 
 
@@ -99,7 +99,7 @@ def _build(args: BuildArgs) -> None:
             artifact = build.build(dst, cfg, args.config)
             config.Cache(dst / "astra.json").save(artifact)
     except Exception as e:
-        logger.error("Failed to build (%s): %s", e.__class__.__name__, e)
+        logger.error(f"[{type(e).__name__}] Failed to build: {e}")
         sys.exit(1)
 
 
@@ -123,7 +123,7 @@ def _release(args: ReleaseArgs) -> None:
                 artifact = build.build(Path(tmp), cfg.load_build(), "release")
                 release.release(dst, cfg.load_release(artifact))
     except Exception as e:
-        logger.error("Failed to release (%s): %s", e.__class__.__name__, e)
+        logger.error(f"[{type(e).__name__}] Failed to release: {e}")
         sys.exit(1)
 
 
@@ -140,28 +140,29 @@ def _install(args: InstallArgs) -> None:
         elif default is not None:
             target = default
         else:
-            logger.error("Install target not specified.")
+            logger.error("Install target not specified")
             sys.exit(1)
     else:
         target = args.target
 
+    target = target.resolve()
     if not target.is_dir():
-        logger.error("Install target not a directory: %s", target)
+        logger.error(f"'{target}' is not a directory")
         sys.exit(1)
 
     if not args.build.is_dir():
-        logger.error("Build directory not found: %s", args.build)
+        logger.error(f"Build directory not found: {args.build.resolve()}")
         sys.exit(1)
 
     name = target.name.lower()
     if name not in ("aviutl2", "data"):
-        logger.error("Install target not valid: %s", target)
+        logger.error(f"Install target not valid: {target}")
         sys.exit(1)
     elif name == "aviutl2" and default is not None and target != default:
-        logger.error("Install target not valid: %s", target)
+        logger.error(f"Install target not valid: {target}")
         sys.exit(1)
     elif name == "data" and not (target.parent / "aviutl2.exe").is_file():
-        logger.error("Install target not valid: %s", target)
+        logger.error(f"Install target not valid: {target}")
         sys.exit(1)
 
     try:
@@ -171,13 +172,13 @@ def _install(args: InstallArgs) -> None:
         cfg = config.Config(find_config(), defines=env).load_install(artifact)
         cache.save(install.install(target, cfg, args.editable))
     except Exception as e:
-        logger.error("Failed to install (%s): %s", e.__class__.__name__, e)
+        logger.error(f"[{type(e).__name__}] Failed to install: {e}")
         sys.exit(1)
 
 
 def _uninstall(args: UninstallArgs) -> None:
     if not args.build.is_dir():
-        logger.error("Build directory not found: %s", args.build)
+        logger.error(f"Build directory not found: {args.build.resolve()}")
         sys.exit(1)
 
     try:
@@ -185,7 +186,7 @@ def _uninstall(args: UninstallArgs) -> None:
         install.uninstall(cache.load(config.Extension))
         cache.save(config.Extension())
     except Exception as e:
-        logger.error("Failed to uninstall (%s): %s", e.__class__.__name__, e)
+        logger.error(f"[{type(e).__name__}] Failed to uninstall: {e}")
         sys.exit(1)
 
 
@@ -195,13 +196,15 @@ def _clean(args: CleanArgs) -> None:
         shutil.rmtree(venv)
 
     if not args.build.exists():
-        logger.info("Already clean: %s", args.build)
+        logger.info(f"Already clean: {args.build.resolve()}")
         return
 
     try:
+        logger.info(f"Cleaning: {args.build.resolve()}")
+
         if args.build.is_dir():
             if not (args.build / "astra.json").is_file():
-                logger.error("Not a target directory: %s", args.build)
+                logger.error(f"Not a target directory: {args.build}")
                 sys.exit(1)
 
             cache = config.Cache(args.build / "astra.json")
@@ -210,10 +213,8 @@ def _clean(args: CleanArgs) -> None:
             shutil.rmtree(args.build)
         else:
             args.build.unlink()
-
-        logger.info("Cleaned: %s", args.build)
     except Exception as e:
-        logger.error("Failed to clean (%s): %s", e.__class__.__name__, e)
+        logger.error(f"[{type(e).__name__}] Failed to clean: {e}")
         sys.exit(1)
 
 
@@ -221,7 +222,7 @@ def _schema(args: SchemaArgs) -> None:
     try:
         schema.schema(args.target)
     except Exception as e:
-        logger.error("Failed to generate schema (%s): %s", e.__class__.__name__, e)
+        logger.error(f"[{type(e).__name__}] Failed to generate schema: {e}")
         sys.exit(1)
 
 
@@ -229,9 +230,7 @@ def _venv(args: VenvArgs) -> None:
     try:
         venv.venv(args.target, args.aviutl2)
     except Exception as e:
-        logger.error(
-            "Failed to setup virtual environment (%s): %s", e.__class__.__name__, e
-        )
+        logger.error(f"[{type(e).__name__}] Failed to create virtual environment: {e}")
         sys.exit(1)
 
 
@@ -435,6 +434,21 @@ class CommandArgs(Protocol):
 
 
 def main() -> None:
+    logger = logging.getLogger()
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    handler.addFilter(lambda record: record.levelno < logging.WARNING)
+    handler.setFormatter(logging.Formatter("[astra] %(levelname)-7s: %(message)s"))
+    logger.addHandler(handler)
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logging.Formatter("[astra] %(levelname)-7s: %(message)s"))
+    logger.addHandler(handler)
+
     parser = create_parser()
     args = cast(CommandArgs, cast(object, parser.parse_args()))
     args.func(args)

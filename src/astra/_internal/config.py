@@ -44,6 +44,7 @@ def _require_context(info: ValidationInfo) -> Json:
     ctx = info.context
     if not isinstance(ctx, Json):
         raise RuntimeError("'info.context' must be a Json object")
+
     return ctx
 
 
@@ -54,7 +55,7 @@ def _expand_variables(v: str, info: ValidationInfo) -> str:
 
 def _resolve_glob(v: object, info: ValidationInfo) -> list[Path]:
     if not isinstance(v, list):
-        raise TypeError(f"'{info.field_name}' must be a list, got {type(v).__name__}")
+        raise TypeError(f"'{info.field_name}' must be an array")
 
     if len(cast(list[object], v)) == 0:
         raise ValueError(f"'{info.field_name}' must contain at least one entry")
@@ -66,9 +67,7 @@ def _resolve_glob(v: object, info: ValidationInfo) -> list[Path]:
     paths: list[Path] = []
     for p in cast(list[object], v):
         if not isinstance(p, str):
-            raise TypeError(
-                f"'{info.field_name}' entries must be strings, got {type(p).__name__}"
-            )
+            raise TypeError(f"'{info.field_name}' entries must be strings")
 
         paths.extend(resolve_glob(root, expand_variables(p, variables)))
 
@@ -299,7 +298,7 @@ class ScriptSource:
         if file is None:
             raise ValueError("'file' is required")
         elif not isinstance(file, str):
-            raise TypeError(f"'file' must be a string, got {type(file).__name__}")
+            raise TypeError("'file' must be a string")
 
         files = resolve_glob(root, expand_variables(file, variables))
         var: dict[str, str] = {}
@@ -310,7 +309,7 @@ class ScriptSource:
             if isinstance(v, str):
                 var[k] = v
             else:
-                raise TypeError(f"'{k}' must be a string, got {type(v).__name__}")
+                raise TypeError(f"'{k}' must be a string")
 
         return ScriptSource(files, var)
 
@@ -334,27 +333,21 @@ class Script(ConfigModel):
         ctx = _require_context(info)
 
         if not isinstance(data, dict):
-            raise TypeError(
-                f"'build.scripts' entries must be tables, got {type(data).__name__}"
-            )
+            raise TypeError("'build.scripts' entries must be tables")
 
         data = cast(dict[str, object], data).copy()
 
         name = data.setdefault("name", ctx.get(str, "name", ""))
         if not isinstance(name, str):
-            raise TypeError(f"'name' must be a string, got {type(name).__name__}")
+            raise TypeError("'name' must be a string")
 
         variables = data.setdefault("variables", {})
         if not isinstance(variables, dict):
-            raise TypeError(
-                f"'variables' must be a table, got {type(variables).__name__}"
-            )
+            raise TypeError("'variables' must be a table")
 
         for k, v in cast(dict[str, object], variables).items():
             if not isinstance(v, str):
-                raise TypeError(
-                    f"'variables.{k}' must be a string, got {type(v).__name__}"
-                )
+                raise TypeError(f"'{k}' must be a string")
 
         variables = {
             **cast(dict[str, str], ctx.get(dict, "variables", {})),
@@ -366,16 +359,14 @@ class Script(ConfigModel):
 
         sources = data.setdefault("sources", [])
         if not isinstance(sources, list):
-            raise TypeError(f"'sources' must be a list, got {type(sources).__name__}")
+            raise TypeError("'sources' must be an array")
 
         root = Path(ctx.get(str, "root", "")) or Path.cwd()
 
         srcs: list[ScriptSource] = []
         for src in cast(list[object], sources):
             if not isinstance(src, dict):
-                raise TypeError(
-                    f"'sources' entries must be tables, got {type(src).__name__}"
-                )
+                raise TypeError("'sources' entries must be tables")
 
             srcs.append(
                 ScriptSource.from_dict(cast(dict[str, object], src), variables, root)
@@ -388,7 +379,7 @@ class Script(ConfigModel):
 
 @dataclass(frozen=True)
 class Build:
-    cwd: Path
+    root: Path
     plugins: list[Plugin] = field(default_factory=list)
     scripts: list[Script] = field(default_factory=list)
 
@@ -413,7 +404,7 @@ class ReleasePackage(ConfigModel):
         variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
         name = variables.get("PROJECT_NAME", "")
 
-        self.filename = _resolve_field(self.filename, name, variables)
+        self.filename = _resolve_field(self.filename, f"{name}.au2pkg", variables)
         self.name = _resolve_field(self.name, name, variables)
         self.id = _resolve_field(self.id, name, variables)
 
@@ -434,9 +425,7 @@ class ReleaseExtension(ConfigModel):
     @classmethod
     def _resolve_files(cls, v: object, info: ValidationInfo) -> list[Path]:
         if not isinstance(v, list):
-            raise TypeError(
-                f"'{info.field_name}' must be a list, got {type(v).__name__}"
-            )
+            raise TypeError(f"'{info.field_name}' must be an array")
 
         ctx = _require_context(info)
         root = Path(ctx.get(str, "root", "")) or Path.cwd()
@@ -446,12 +435,7 @@ class ReleaseExtension(ConfigModel):
         extensions: list[Path] = []
         for extension in cast(list[object], v):
             if not isinstance(extension, str):
-                raise TypeError(
-                    (
-                        f"'{info.field_name}' entries must be strings, "
-                        f"got {type(extension).__name__}"
-                    )
-                )
+                raise TypeError(f"'{info.field_name}' entries must be strings")
 
             prefix, sep, identifier = extension.partition(":")
 
@@ -483,9 +467,7 @@ class AssetSource(ConfigModel):
     @classmethod
     def _resolve_files(cls, v: object, info: ValidationInfo) -> list[Path | str]:
         if not isinstance(v, list):
-            raise TypeError(
-                f"'{info.field_name}' must be a list, got {type(v).__name__}"
-            )
+            raise TypeError(f"'{info.field_name}' must be an array")
 
         ctx = _require_context(info)
         root = Path(ctx.get(str, "root", "")) or Path.cwd()
@@ -494,12 +476,7 @@ class AssetSource(ConfigModel):
         files: list[Path | str] = []
         for file in cast(list[object], v):
             if not isinstance(file, str):
-                raise TypeError(
-                    (
-                        f"'{info.field_name}' entries must be strings, "
-                        f"got {type(file).__name__}"
-                    )
-                )
+                raise TypeError(f"'{info.field_name}' entries must be strings")
 
             if file.startswith(("http://", "https://")):
                 files.append(file)
@@ -577,9 +554,7 @@ class Extension:
 
     @property
     def files(self) -> Sequence[str]:
-        return cast(
-            Sequence[str], self._data.setdefault(Json.Array, "files", Json.Array())
-        )
+        return cast(Sequence[str], self._data.get(Json.Array, "files", Json.Array()))
 
 
 class Config:
@@ -600,6 +575,8 @@ class Config:
         self._load_project(version, defines or {})
 
     def load_build(self) -> Build:
+        logger.info("Loading build configuration")
+
         build = self._data.get(Toml, "build")
         if build is None:
             raise KeyError("'build' section is required in astra.toml")
@@ -607,6 +584,8 @@ class Config:
         return Build(self._root, self._load_plugins(build), self._load_scripts(build))
 
     def load_release(self, artifact: Artifact) -> Release:
+        logger.info("Loading release configuration")
+
         release = self._data.get(Toml, "release")
         if release is None:
             raise KeyError("'release' section is required in astra.toml")
@@ -617,6 +596,8 @@ class Config:
         )
 
     def load_install(self, artifact: Artifact) -> Install:
+        logger.info("Loading install configuration")
+
         release = self._data.get(Toml, "release")
         if release is None:
             raise KeyError("'release' section is required in astra.toml")
@@ -644,21 +625,11 @@ class Config:
         if version not in (None, ""):
             try:
                 astra_version = metadata.version("astra")
-            except metadata.PackageNotFoundError as e:
-                raise RuntimeError(
-                    (
-                        "Astra is not installed as a package; "
-                        "cannot verify 'requires-astra' constraint"
-                    )
-                ) from e
+            except metadata.PackageNotFoundError:
+                raise RuntimeError("Astra is not installed as a package")
 
             if Version(astra_version) not in SpecifierSet(version):
-                raise ValueError(
-                    (
-                        "Astra version mismatch: "
-                        f"installed {astra_version}, required {version}"
-                    )
-                )
+                raise ValueError(f"'{version}' does not satisfy '{astra_version}'")
 
     def _load_project(self, version: str | None, defines: dict[str, str]) -> None:
         project = self._data.get(Toml.Table, "project")
@@ -683,12 +654,7 @@ class Config:
         configs: list[T] = []
         for entry in entries:
             if not isinstance(entry, dict):
-                raise TypeError(
-                    (
-                        f"'{label.lower()}s' entries must be tables, "
-                        f"got {type(entry).__name__}"
-                    )
-                )
+                raise TypeError(f"'{label.lower()}s' entries must be tables")
 
             entry = Toml(entry)
 
@@ -791,6 +757,8 @@ class Cache:
 
     def load[T: Artifact | Extension](self, cls: type[T]) -> T:
         if cls is Artifact:
+            logger.info("Loading artifacts from cache")
+
             build = self._data.get(Json, "build", Json({}))
             artifacts = build.get(Json, "artifacts", Json({}))
             plugins = artifacts.get(Json.Object, "plugins", Json.Object())
@@ -812,6 +780,8 @@ class Cache:
                 ),
             )
         elif cls is Extension:
+            logger.info("Loading extensions from cache")
+
             install = self._data.get(Json, "install", Json({}))
             extensions = install.get(Json, "extensions", Json({}))
             files = extensions.get(Json.Array, "files", Json.Array())
@@ -822,8 +792,12 @@ class Cache:
 
     def save(self, value: Artifact | Extension) -> None:
         if isinstance(value, Artifact):
+            logger.info(f"Caching artifacts to '{self._path}'")
+
             self._data["build"] = {"artifacts": value.data()}
         else:
+            logger.info(f"Caching extensions to '{self._path}'")
+
             self._data["install"] = {"extensions": value.data()}
 
         self._data.save(self._path)

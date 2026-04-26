@@ -12,9 +12,10 @@ logger = getLogger(__name__)
 
 
 def venv(dst: Path, version: str | None) -> None:
-    logger.info("Setting up virtual environment to: %s", dst)
-
     dst /= ".venv"
+
+    logger.info(f"Creating virtual environment at '{dst.resolve()}'")
+
     shutil.rmtree(dst, ignore_errors=True)
 
     aviutl2 = dst / "aviutl2"
@@ -36,6 +37,8 @@ def venv(dst: Path, version: str | None) -> None:
         if item := next((i for i in data if i["id"] == identifier), None):
             version = item["latest-version"]
 
+    logger.info(f"AviUtl ExEdit2 version: {version}")
+
     url = f"https://spring-fragrance.mints.ne.jp/aviutl/aviutl2{version}.zip"
 
     try:
@@ -46,5 +49,3 @@ def venv(dst: Path, version: str | None) -> None:
 
     (aviutl2 / "data").mkdir(parents=True, exist_ok=True)
     _ = (dst / ".gitignore").write_text("*", encoding="utf-8", newline="\n")
-
-    logger.info("Setting up virtual environment completed")

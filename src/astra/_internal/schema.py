@@ -121,7 +121,7 @@ class Schema:
                                 "newline": {"type": "string"},
                                 "source-encoding": {"type": "string"},
                                 "target-encoding": {"type": "string"},
-                                "include_directories": {
+                                "include-directories": {
                                     "type": "array",
                                     "items": {"type": "string"},
                                 },
@@ -264,19 +264,22 @@ class Schema:
         return json.dumps(self.data, ensure_ascii=False, indent=indent)
 
     def save(self, dst: Path, indent: int = 4) -> None:
-        if not dst.is_dir():
-            raise NotADirectoryError(f"Destination is not a directory: {dst}")
+        if dst.is_file():
+            raise NotADirectoryError(f"'{dst}' is not a directory")
 
+        dst = dst.resolve()
         dst.mkdir(parents=True, exist_ok=True)
         path = dst / "astra.schema.json"
+
+        logger.info(f"Saving schema to '{path}'")
+
         with path.open("w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=indent)
 
 
 def schema(dst: Path | None = None, indent: int = 4) -> None:
-    s = Schema()
-    if dst:
-        s.save(dst, indent)
-        logger.info("Saved schema to %s", dst)
+    schema = Schema()
+    if dst is not None:
+        schema.save(dst, indent)
     else:
-        print(s.dumps(indent))
+        print(schema.dumps(indent))
