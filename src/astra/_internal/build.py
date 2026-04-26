@@ -109,10 +109,9 @@ class Builder:
             if len(target.commands) > 0:
                 try:
                     self._run_commands(target.commands, dst, cfg.shell, cfg.variables)
-                except Exception as e:
-                    raise RuntimeError(
-                        f"[{type(e).__name__}] Plugin '{cfg.id}' commands failed: {e}"
-                    )
+                except Exception:
+                    logger.error(f"Plugin '{cfg.id}' commands failed")
+                    raise
             else:
                 logger.warning(f"Plugin '{cfg.id}' has no commands")
 
@@ -164,10 +163,9 @@ class Builder:
                     encoding=cfg.target_encoding,
                     newline=cfg.newline,
                 )
-            except Exception as e:
-                raise RuntimeError(
-                    f"[{type(e).__name__}] Script '{cfg.id}' build failed: {e}"
-                )
+            except Exception:
+                logger.error(f"Script '{cfg.id}' build failed")
+                raise
 
             return [str(target), *artifacts]
 
