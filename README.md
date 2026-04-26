@@ -330,16 +330,15 @@ artifacts = ["${SOURCE}/setting.json"]
 [release]
 # パッケージ設定
 [release.package]
-# 生成物の名前 (設定されない場合，プロジェクト名)
-# `.au2pkg.zip`は追加される．
-filename = "${PROJECT_NAME}"
+# 生成物の名前 (設定されない場合，プロジェクト名.au2pkg.zip)
+filename = "${PROJECT_NAME}.au2pkg.zip"
 # `package.ini`のid= (設定されない場合，プロジェクト名)
 id = "${PROJECT_NAME}"
 # `package.ini`のname= (設定されない場合，プロジェクト名)
 # `package.txt`にも記載される
 name = "${PROJECT_NAME}"
-# `package.ini`のuninstallSubFolderFile= (設定されない場合，true)
-uninstall-subdirectory-files = true
+# `package.ini`のuninstallSubFolderFile= (設定されない場合，false)
+uninstall-subdirectory-files = false
 # `package.ini`のinformation= (設定されない場合，追加されない)
 information = "${PROJECT_NAME} v${PROJECT_VERSION} by ${PROJECT_AUTHOR}"
 # `package.txt`に記載ライセンス表記 (設定されない場合，追加されない)

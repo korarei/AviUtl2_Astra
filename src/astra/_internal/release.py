@@ -129,13 +129,13 @@ class Releaser:
         _ = path.write_text(config, encoding="utf-8", newline="\r\n")
 
     def make_archive(self) -> None:
-        name = self._dst.parent / f"{self._cfg.package.filename}"
+        path = self._dst.parent / self._cfg.package.filename
 
-        logger.info(f"Making archive to '{name}.zip'")
+        logger.info(f"Making archive to '{path}'")
 
         _ = shutil.make_archive(
-            str(name),
-            "zip",
+            str(path.with_suffix("")),
+            path.suffix[1:],
             root_dir=self._dst,
             base_dir=".",
         )

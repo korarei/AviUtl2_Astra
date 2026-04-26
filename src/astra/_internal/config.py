@@ -404,7 +404,7 @@ class ReleasePackage(ConfigModel):
         variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
         name = variables.get("PROJECT_NAME", "")
 
-        self.filename = _resolve_field(self.filename, f"{name}.au2pkg", variables)
+        self.filename = _resolve_field(self.filename, f"{name}.au2pkg.zip", variables)
         self.name = _resolve_field(self.name, name, variables)
         self.id = _resolve_field(self.id, name, variables)
 
