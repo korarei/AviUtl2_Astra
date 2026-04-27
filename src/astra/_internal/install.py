@@ -3,7 +3,7 @@ from logging import getLogger
 from os import symlink
 from pathlib import Path
 
-from astra.core.config import Install
+from astra._internal.config import Extension, Install
 
 
 logger = getLogger(__name__)
@@ -11,14 +11,14 @@ logger = getLogger(__name__)
 
 def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
     if not dst.is_dir():
-        raise NotADirectoryError(f"Not a directory: {dst}")
-
-    if not src.is_file():
-        logger.warning("File not found, skipping: %s", src)
-        return None
+        raise NotADirectoryError(f"'{dst}' is not a directory")
 
     src = src.resolve()
-    path = (dst / src.name).resolve()
+    if not src.is_file():
+        logger.warning(f"'{src}' is not found")
+        return None
+
+    path = Path(dst, src.name).absolute()
 
     if path.exists() or path.is_symlink():
         path.unlink()
@@ -31,28 +31,31 @@ def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
     return path
 
 
-def install(dst: Path, cfg: Install, editable: bool = False) -> list[Path]:
-    if not dst.is_dir():
-        raise NotADirectoryError(f"Not a directory: {dst}")
+def install(dst: Path, cfg: Install, editable: bool = False) -> Extension:
+    if dst.is_file() or dst.is_symlink():
+        raise NotADirectoryError(f"'{dst}' is not a directory")
 
-    logger.info("Installing to: %s", dst)
+    dst = dst.resolve()
+    dst.mkdir(parents=True, exist_ok=True)
 
-    installations: list[Path] = []
+    logger.info(f"Installing to '{dst}' ({'symbolic link' if editable else 'copy'})")
+
+    extensions: list[str] = []
 
     for extension in cfg.extensions:
         target = dst / extension.directory
         target.mkdir(parents=True, exist_ok=True)
         for file in extension.files:
             path = _copy_file(file, target, editable)
-            if path:
-                installations.append(path)
+            if path is not None:
+                extensions.append(str(path))
 
-    logger.info("Install completed: %d files", len(installations))
+    logger.info(f"{len(extensions)} file(s) installed")
 
-    return installations
+    return Extension(extensions)
 
 
-def uninstall(installations: list[Path]) -> None:
+def uninstall(extension: Extension) -> None:
     logger.info("Uninstalling from AviUtl2 ExEdit2")
 
     data = (
@@ -68,16 +71,18 @@ def uninstall(installations: list[Path]) -> None:
         "aviutl2",
     )
 
-    for path in installations:
+    for path in extension.files:
+        path = Path(path)
         if path.exists() or path.is_symlink():
             path.unlink()
 
+        parent = path.parent
+
         while True:
-            parent = path.parent
             if parent == path:
                 break
 
-            path = path.parent
+            path = parent
 
             if not path.is_dir():
                 break
@@ -90,4 +95,4 @@ def uninstall(installations: list[Path]) -> None:
             except Exception:
                 break
 
-    logger.info("Uninstall completed")
+            parent = path.parent
