@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.metadata as metadata
 import json
 import tomllib
 from collections.abc import Mapping, Sequence
@@ -22,7 +21,7 @@ from pydantic import (
     model_validator,
 )
 
-from astra._internal.utils import expand_variables, resolve_glob
+from astra._internal.utils import expand_variables, fetch_version, resolve_glob
 
 
 logger = getLogger(__name__)
@@ -597,6 +596,11 @@ class Config:
         self._load_astra()
         self._load_project(version, defines or {})
 
+    def load_project(self) -> Project:
+        logger.info("Loading project metadata")
+
+        return self._project
+
     def load_build(self) -> Build:
         logger.info("Loading build configuration")
 
@@ -646,13 +650,9 @@ class Config:
 
         version = astra.get(str, "requires-astra") or astra.get(str, "requires_astra")
         if version not in (None, ""):
-            try:
-                astra_version = metadata.version("astra")
-            except metadata.PackageNotFoundError:
-                raise RuntimeError("Astra is not installed as a package")
-
-            if Version(astra_version) not in SpecifierSet(version):
-                raise ValueError(f"'{version}' does not satisfy '{astra_version}'")
+            package_version = fetch_version()
+            if Version(package_version) not in SpecifierSet(version):
+                raise ValueError(f"'{version}' does not satisfy '{package_version}'")
 
     def _load_project(self, version: str | None, defines: dict[str, str]) -> None:
         project = self._data.get(Toml.Table, "project")

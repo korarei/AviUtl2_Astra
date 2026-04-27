@@ -1,3 +1,4 @@
+import importlib.metadata as metadata
 import re
 from io import BytesIO
 from logging import getLogger
@@ -11,6 +12,13 @@ from zipfile import ZipFile, is_zipfile
 _VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 logger = getLogger(__name__)
+
+
+def fetch_version() -> str:
+    try:
+        return metadata.version("astra")
+    except metadata.PackageNotFoundError:
+        return "unknown"
 
 
 def find_config() -> Path:

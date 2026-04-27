@@ -5,6 +5,8 @@ from pathlib import Path
 from tempfile import mkdtemp
 from typing import Self
 
+from filelock import FileLock
+
 from astra._internal.config import (
     Release,
     ReleaseAsset,
@@ -129,21 +131,24 @@ class Releaser:
         _ = path.write_text(config, encoding="utf-8", newline="\r\n")
 
     def make_archive(self) -> None:
-        path = self._dst.parent / self._cfg.package.filename
+        target = self._dst.parent
+        path = target / self._cfg.package.filename
 
         logger.info(f"Making archive to '{path}'")
 
-        _ = shutil.make_archive(
-            str(path.with_suffix("")),
-            path.suffix[1:],
-            root_dir=self._dst,
-            base_dir=".",
-        )
+        with FileLock(target / ".astra-lock"):
+            _ = shutil.make_archive(
+                str(path.with_suffix("")),
+                path.suffix[1:],
+                root_dir=self._dst,
+                base_dir=".",
+            )
 
     def mkdir(self) -> None:
         self._dst = Path(mkdtemp(dir=self._dst))
 
     def cleanup(self) -> None:
+        self.make_archive()
         shutil.rmtree(self._dst, ignore_errors=True)
 
     def _copy_file(self, src: Path, dst: Path) -> None:
@@ -227,7 +232,8 @@ def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
     changes = re.sub(r"^[^\S\n]*-", "-", section, flags=re.MULTILINE).split("\n", 1)[1]
     content = f"## What's Changed\n{changes}\n"
 
-    _ = path.write_text(content, encoding="utf-8", newline="\n")
+    with FileLock(dst / ".astra-lock"):
+        _ = path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def release(dst: Path, cfg: Release) -> None:
@@ -237,8 +243,6 @@ def release(dst: Path, cfg: Release) -> None:
         if cfg.package.filename.endswith(".au2pkg.zip"):
             releaser.write_manifest()
             releaser.write_config()
-
-        releaser.make_archive()
 
     documents = cfg.contents.documents
     if not documents:

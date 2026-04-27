@@ -1,4 +1,5 @@
-import importlib.metadata as metadata
+from __future__ import annotations
+
 import logging
 import os
 import shutil
@@ -6,215 +7,207 @@ import sys
 import tempfile
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import Callable, Protocol, cast
+from typing import Callable, Protocol, cast, final, override
 
 from filelock import FileLock
 
-from astra._internal import build, config, init, install, release, schema, venv
+from astra._internal import build, config, init, install, release, schema, utils, venv
 from astra._internal.utils import find_config
 
 
 logger = logging.getLogger(__name__)
 
-try:
-    __version__ = metadata.version("astra")
-except metadata.PackageNotFoundError:
-    __version__ = "unknown"
+
+class CommandArgs(Protocol):
+    venv: Path | None
+    func: Callable[[CommandArgs], None]
 
 
-class InitArgs(Protocol):
+class InitArgs(CommandArgs, Protocol):
     command: str
     target: Path
-    func: Callable[["InitArgs"], None]
+    func: Callable[[InitArgs], None]
 
 
-class BuildArgs(Protocol):
+class BuildArgs(CommandArgs, Protocol):
     command: str
     build: Path
     config: str
     version: str | None
     define: list[list[str]]
-    func: Callable[["BuildArgs"], None]
+    func: Callable[[BuildArgs], None]
 
 
-class ReleaseArgs(Protocol):
+class ReleaseArgs(CommandArgs, Protocol):
     command: str
     target: Path
     version: str | None
     define: list[list[str]]
-    func: Callable[["ReleaseArgs"], None]
+    func: Callable[[ReleaseArgs], None]
 
 
-class InstallArgs(Protocol):
+class InstallArgs(CommandArgs, Protocol):
     command: str
     target: Path | None
     build: Path
     editable: bool
     define: list[list[str]]
-    func: Callable[["InstallArgs"], None]
+    func: Callable[[InstallArgs], None]
 
 
-class UninstallArgs(Protocol):
+class UninstallArgs(CommandArgs, Protocol):
     command: str
     build: Path
-    func: Callable[["UninstallArgs"], None]
+    func: Callable[[UninstallArgs], None]
 
 
-class CleanArgs(Protocol):
+class CleanArgs(CommandArgs, Protocol):
     command: str
     build: Path
-    func: Callable[["CleanArgs"], None]
+    func: Callable[[CleanArgs], None]
 
 
-class SchemaArgs(Protocol):
+class SchemaArgs(CommandArgs, Protocol):
     command: str
     target: Path | None
-    func: Callable[["SchemaArgs"], None]
+    func: Callable[[SchemaArgs], None]
 
 
-class VenvArgs(Protocol):
+class VenvArgs(CommandArgs, Protocol):
     command: str
     target: Path
     aviutl2: str | None
-    func: Callable[["VenvArgs"], None]
+    func: Callable[[VenvArgs], None]
 
 
 def _init(args: InitArgs) -> None:
     try:
         init.init(args.target)
     except Exception as e:
-        logger.error(f"[{type(e).__name__}] Failed to initialize: {e}")
+        logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
 
 
 def _build(args: BuildArgs) -> None:
     try:
         dst = args.build
-        dst.mkdir(parents=True, exist_ok=True)
+        defines = {k: v for k, v in args.define}
 
-        env = {k: v for k, v in args.define}
-        cfg = config.Config(find_config(), args.version, env).load_build()
+        cfg = config.Config(find_config(), args.version, defines).load_build()
 
         with FileLock(dst / ".astra-lock"):
             artifact = build.build(dst, cfg, args.config)
             config.Cache(dst / "astra.json").save(artifact)
     except Exception as e:
-        logger.error(f"[{type(e).__name__}] Failed to build: {e}")
+        logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
 
 
 def _release(args: ReleaseArgs) -> None:
     try:
         dst = args.target
-        dst.mkdir(parents=True, exist_ok=True)
+        defines = {k: v for k, v in args.define}
 
-        with FileLock(dst / ".astra-lock"):
-            for ext in "*.zip", "*.md", "tmp*", "*.au2pkg":
-                for file in dst.glob(ext):
-                    if file.is_file() or file.is_symlink():
-                        file.unlink()
-                    else:
-                        shutil.rmtree(file, ignore_errors=True)
+        cfg = config.Config(find_config(), args.version, defines)
 
-            env = {k: v for k, v in args.define}
-            cfg = config.Config(find_config(), args.version, env)
-
-            with tempfile.TemporaryDirectory(dir=dst) as tmp:
-                artifact = build.build(Path(tmp), cfg.load_build(), "release")
-                release.release(dst, cfg.load_release(artifact))
+        with tempfile.TemporaryDirectory(dir=dst) as tmp:
+            artifact = build.build(Path(tmp), cfg.load_build(), "release")
+            release.release(dst, cfg.load_release(artifact))
     except Exception as e:
-        logger.error(f"[{type(e).__name__}] Failed to release: {e}")
+        logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
 
 
 def _install(args: InstallArgs) -> None:
-    if sys.platform == "win32":
+    build_dir = args.build
+
+    if not build_dir.is_dir() or not (build_dir / "astra.json").is_file():
+        logger.error(f"'{build_dir}' is not a valid build directory")
+        sys.exit(1)
+
+    if args.venv is not None:
+        default = args.venv / "aviutl2/data"
+    elif sys.platform == "win32":
         default = Path(os.getenv("ProgramData", "C:\\ProgramData")) / "aviutl2"
     else:
         default = None
 
-    if args.target is None:
-        venv = Path(".venv")
-        if venv.exists():
-            target = venv / "aviutl2/data"
-        elif default is not None:
-            target = default
-        else:
-            logger.error("Install target not specified")
-            sys.exit(1)
-    else:
-        target = args.target
-
-    target = target.resolve()
-    if not target.is_dir():
-        logger.error(f"'{target}' is not a directory")
+    dst = args.target or default
+    if dst is None:
+        logger.error("Target not specified")
         sys.exit(1)
 
-    if not args.build.is_dir():
-        logger.error(f"Build directory not found: {args.build.resolve()}")
+    dst = dst.resolve()
+    if not dst.is_dir():
+        logger.error(f"'{dst}' is not a directory")
         sys.exit(1)
 
-    name = target.name.lower()
+    name = dst.name.lower()
     if name not in ("aviutl2", "data"):
-        logger.error(f"Install target not valid: {target}")
+        logger.error(f"'{dst}' is not an AviUtl ExEdit2 data directory")
         sys.exit(1)
-    elif name == "aviutl2" and default is not None and target != default:
-        logger.error(f"Install target not valid: {target}")
+    elif name == "aviutl2" and default is not None and dst != default:
+        logger.error(f"'{dst}' is not an AviUtl ExEdit2 data directory")
         sys.exit(1)
-    elif name == "data" and not (target.parent / "aviutl2.exe").is_file():
-        logger.error(f"Install target not valid: {target}")
+    elif name == "data" and not (dst.parent / "aviutl2.exe").is_file():
+        logger.error(f"'{dst}' is not an AviUtl ExEdit2 data directory")
         sys.exit(1)
 
     try:
-        cache = config.Cache(args.build / "astra.json")
-        artifact = cache.load(config.Artifact)
-        env = {k: v for k, v in args.define}
-        cfg = config.Config(find_config(), defines=env).load_install(artifact)
-        cache.save(install.install(target, cfg, args.editable))
+        defines = {k: v for k, v in args.define}
+
+        with FileLock(build_dir / ".astra-lock"):
+            cache = config.Cache(build_dir / "astra.json")
+            artifact = cache.load(config.Artifact)
+            cfg = config.Config(find_config(), defines=defines).load_install(artifact)
+            extension = install.install(dst, cfg, args.editable)
+            cache.save(extension)
     except Exception as e:
-        logger.error(f"[{type(e).__name__}] Failed to install: {e}")
+        logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
 
 
 def _uninstall(args: UninstallArgs) -> None:
-    if not args.build.is_dir():
-        logger.error(f"Build directory not found: {args.build.resolve()}")
+    build_dir = args.build
+
+    if not build_dir.is_dir() or not (build_dir / "astra.json").is_file():
+        logger.error(f"'{build_dir}' is not a valid build directory")
         sys.exit(1)
 
     try:
-        cache = config.Cache(args.build / "astra.json")
-        install.uninstall(cache.load(config.Extension))
-        cache.save(config.Extension())
+        with FileLock(build_dir / ".astra-lock"):
+            cache = config.Cache(build_dir / "astra.json")
+            install.uninstall(cache.load(config.Extension))
+            cache.save(config.Extension())
     except Exception as e:
-        logger.error(f"[{type(e).__name__}] Failed to uninstall: {e}")
+        logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
 
 
 def _clean(args: CleanArgs) -> None:
-    venv = Path(".venv")
-    if venv.exists():
-        shutil.rmtree(venv)
-
-    if not args.build.exists():
-        logger.info(f"Already clean: {args.build.resolve()}")
-        return
-
     try:
-        logger.info(f"Cleaning: {args.build.resolve()}")
+        if (path := args.venv) is not None and path.is_dir():
+            path = path.resolve()
+            if input(f"Remove virtual environment '{path}'? (y/N): ").lower() == "y":
+                if (path / "aviutl2").is_dir():
+                    shutil.rmtree(path)
+                    logger.info(f"'{path}' is removed")
 
-        if args.build.is_dir():
-            if not (args.build / "astra.json").is_file():
-                logger.error(f"Not a target directory: {args.build}")
-                sys.exit(1)
+        target = args.build.resolve()
+        if not target.is_dir():
+            logger.info(f"'{target}' does not exist")
+            return
 
-            cache = config.Cache(args.build / "astra.json")
+        logger.info(f"Cleaning '{target}'")
+
+        if target.is_dir() and (target / "astra.json").is_file():
+            cache = config.Cache(target / "astra.json")
             install.uninstall(cache.load(config.Extension))
-
-            shutil.rmtree(args.build)
+            shutil.rmtree(target)
         else:
-            args.build.unlink()
+            logger.warning(f"'{target}' is not a valid build directory")
     except Exception as e:
-        logger.error(f"[{type(e).__name__}] Failed to clean: {e}")
+        logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
 
 
@@ -222,41 +215,49 @@ def _schema(args: SchemaArgs) -> None:
     try:
         schema.schema(args.target)
     except Exception as e:
-        logger.error(f"[{type(e).__name__}] Failed to generate schema: {e}")
+        logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
 
 
 def _venv(args: VenvArgs) -> None:
     try:
-        venv.venv(args.target, args.aviutl2)
+        cfg = config.Config(find_config()).load_project()
+        venv.venv(args.target, cfg, args.aviutl2)
     except Exception as e:
-        logger.error(f"[{type(e).__name__}] Failed to create virtual environment: {e}")
+        logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
 
 
 def create_parser() -> ArgumentParser:
     parser = ArgumentParser(
         prog="astra",
-        description="A build and deployment tool for AviUtl2 scripts.",
+        description="A build and deployment tool for AviUtl ExEdit2 extensions",
     )
 
     _ = parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}",
-        help="Show the version of the program.",
+        version=f"%(prog)s {utils.fetch_version()}",
+        help="Show the version of the program",
+    )
+
+    _ = parser.add_argument(
+        "--venv",
+        type=Path,
+        default=None,
+        help="Virtual environment path (default: None)",
     )
 
     sub = parser.add_subparsers(
         dest="command",
         required=True,
-        help="The command to execute.",
+        help="The command to execute",
     )
 
     p_init = sub.add_parser(
         "init",
-        help="Initialize a new project with a default astra.toml.",
+        help="Initialize a new project with a default astra.toml",
     )
     _ = p_init.add_argument(
         "target",
@@ -269,7 +270,7 @@ def create_parser() -> ArgumentParser:
 
     p_build = sub.add_parser(
         "build",
-        help="Build the project from the config file.",
+        help="Build the project from the config file",
     )
     _ = p_build.add_argument(
         "build",
@@ -279,33 +280,33 @@ def create_parser() -> ArgumentParser:
         help="Build destination directory (default: build)",
     )
     _ = p_build.add_argument(
-        "--config",
         "-c",
+        "--config",
         type=str,
         default="Debug",
-        help="Build configuration (e.g. Release, Debug).",
+        help="Build configuration (e.g. Release, Debug)",
     )
     _ = p_build.add_argument(
-        "--version",
         "-v",
+        "--version",
         type=str,
         default=None,
-        help='Override the project version. (e.g., "1.0.0")',
+        help='Override the project version (e.g., "1.0.0")',
     )
     _ = p_build.add_argument(
-        "--define",
         "-d",
+        "--define",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,
         default=[],
-        help="Define a variable. (e.g., '-d DEBUG 1')",
+        help="Define a variable (e.g., '-d DEBUG 1')",
     )
     p_build.set_defaults(func=_build)
 
     p_release = sub.add_parser(
         "release",
-        help="Package the project for release.",
+        help="Package the project for release",
     )
     _ = p_release.add_argument(
         "target",
@@ -315,66 +316,69 @@ def create_parser() -> ArgumentParser:
         help="Build directory (default: release)",
     )
     _ = p_release.add_argument(
-        "--version",
         "-v",
+        "--version",
         type=str,
         default=None,
-        help='Override the project version. (e.g., "1.0.0")',
+        help='Override the project version (e.g., "1.0.0")',
     )
     _ = p_release.add_argument(
-        "--define",
         "-d",
+        "--define",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,
         default=[],
-        help="Define a variable. (e.g., '-d DEBUG 1')",
+        help="Define a variable (e.g., '-d DEBUG 1')",
     )
     p_release.set_defaults(func=_release)
 
     p_install = sub.add_parser(
         "install",
-        help="Install the built artifacts and modules to a target dir.",
+        help="Install the extensions to a target directory",
     )
     _ = p_install.add_argument(
         "target",
         type=Path,
         nargs="?",
         default=None,
-        help="Target directory for installation (default: .venv/aviutl2/data "
-        + "if .venv exists, otherwise %%ProgramData%%/aviutl2)",
+        help=(
+            "Target directory for installation (Defaults to %%ProgramData%%/aviutl2, "
+            "unless a virtual environment exists, in which case it uses the "
+            "venv's data directory)"
+        ),
     )
     _ = p_install.add_argument(
-        "--build",
         "-b",
+        "--build",
         type=Path,
         default=Path("build"),
         help="Build directory (default: build)",
     )
     _ = p_install.add_argument(
-        "--editable",
         "-e",
+        "--editable",
         action="store_true",
-        help="Install the built artifacts in editable mode.",
+        help="Install the extensions in editable mode",
     )
     _ = p_install.add_argument(
-        "--define",
         "-d",
+        "--define",
         metavar=("KEY", "VALUE"),
         action="append",
         nargs=2,
         default=[],
-        help="Define a variable. (e.g., '-d DEBUG 1')",
+        help="Define a variable (e.g., '-d DEBUG 1')",
     )
     p_install.set_defaults(func=_install)
 
     p_uninstall = sub.add_parser(
         "uninstall",
-        help="Uninstall the built artifacts and modules from a target dir.",
+        help="Uninstall the extensions from a target directory",
     )
     _ = p_uninstall.add_argument(
-        "--build",
         "-b",
+        "--build",
         type=Path,
         default=Path("build"),
         help="Build directory (default: build)",
@@ -383,7 +387,7 @@ def create_parser() -> ArgumentParser:
 
     p_clean = sub.add_parser(
         "clean",
-        help="Clean the build directory.",
+        help="Clean the build directory",
     )
     _ = p_clean.add_argument(
         "build",
@@ -396,7 +400,7 @@ def create_parser() -> ArgumentParser:
 
     p_schema = sub.add_parser(
         "schema",
-        help="Output the JSON schema for astra.toml.",
+        help="Output the JSON schema for astra.toml",
     )
     _ = p_schema.add_argument(
         "target",
@@ -409,31 +413,41 @@ def create_parser() -> ArgumentParser:
 
     p_venv = sub.add_parser(
         "venv",
-        help="Setup virtual environment.",
+        help="Setup virtual environment",
     )
     _ = p_venv.add_argument(
         "target",
         type=Path,
         nargs="?",
-        default=Path("."),
-        help="Target directory for virtual environment (default: .)",
+        default=Path(".venv"),
+        help="Target directory for virtual environment (default: .venv)",
     )
     _ = p_venv.add_argument(
         "--aviutl2",
         type=str,
         default=None,
-        help='AviUtl2 version (e.g., "beta40a"). [default: latest]',
+        help='AviUtl ExEdit2 version (e.g., "beta40a", default: latest)',
     )
     p_venv.set_defaults(func=_venv)
 
     return parser
 
 
-class CommandArgs(Protocol):
-    func: Callable[["CommandArgs"], None]
+@final
+class Formatter(logging.Formatter):
+    COLOR_CODES = {logging.WARNING: "\033[33m", logging.ERROR: "\033[31m"}
+    RESET = "\033[0m"
+
+    @override
+    def format(self, record: logging.LogRecord) -> str:
+        msg = super().format(record)
+        color = self.COLOR_CODES.get(record.levelno)
+        return f"{color}{msg}{self.RESET}" if color is not None else msg
 
 
 def main() -> None:
+    formatter = Formatter("[astra] %(levelname)-7s: %(message)s")
+
     logger = logging.getLogger()
     logger.handlers.clear()
     logger.setLevel(logging.INFO)
@@ -441,12 +455,12 @@ def main() -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.INFO)
     handler.addFilter(lambda record: record.levelno < logging.WARNING)
-    handler.setFormatter(logging.Formatter("[astra] %(levelname)-7s: %(message)s"))
+    handler.setFormatter(formatter)
     logger.addHandler(handler)
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(logging.WARNING)
-    handler.setFormatter(logging.Formatter("[astra] %(levelname)-7s: %(message)s"))
+    handler.setFormatter(formatter)
     logger.addHandler(handler)
 
     parser = create_parser()
