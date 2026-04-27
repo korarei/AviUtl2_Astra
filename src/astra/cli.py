@@ -11,26 +11,25 @@ from typing import Callable, Protocol, cast, final, override
 
 from filelock import FileLock
 
-from astra._internal import build, config, init, install, release, schema, utils, venv
-from astra._internal.utils import find_config
+from astra._internal import build, config, init, install, release, run, schema, venv
+from astra._internal.utils import fetch_version, find_config
 
 
 logger = logging.getLogger(__name__)
 
 
 class CommandArgs(Protocol):
+    command: str
     venv: Path | None
     func: Callable[[CommandArgs], None]
 
 
 class InitArgs(CommandArgs, Protocol):
-    command: str
     target: Path
     func: Callable[[InitArgs], None]
 
 
 class BuildArgs(CommandArgs, Protocol):
-    command: str
     build: Path
     config: str
     version: str | None
@@ -39,7 +38,6 @@ class BuildArgs(CommandArgs, Protocol):
 
 
 class ReleaseArgs(CommandArgs, Protocol):
-    command: str
     target: Path
     version: str | None
     define: list[list[str]]
@@ -47,7 +45,6 @@ class ReleaseArgs(CommandArgs, Protocol):
 
 
 class InstallArgs(CommandArgs, Protocol):
-    command: str
     target: Path | None
     build: Path
     editable: bool
@@ -56,28 +53,34 @@ class InstallArgs(CommandArgs, Protocol):
 
 
 class UninstallArgs(CommandArgs, Protocol):
-    command: str
     build: Path
     func: Callable[[UninstallArgs], None]
 
 
 class CleanArgs(CommandArgs, Protocol):
-    command: str
     build: Path
     func: Callable[[CleanArgs], None]
 
 
 class SchemaArgs(CommandArgs, Protocol):
-    command: str
     target: Path | None
     func: Callable[[SchemaArgs], None]
 
 
 class VenvArgs(CommandArgs, Protocol):
-    command: str
     target: Path
     aviutl2: str | None
     func: Callable[[VenvArgs], None]
+
+
+class RunArgs(CommandArgs, Protocol):
+    target: Path
+    build: Path
+    config: str
+    version: str | None
+    define: list[list[str]]
+    aviutl2: str | None
+    func: Callable[[RunArgs], None]
 
 
 def _init(args: InitArgs) -> None:
@@ -228,6 +231,35 @@ def _venv(args: VenvArgs) -> None:
         sys.exit(1)
 
 
+def _run(args: RunArgs) -> None:
+    try:
+        venv_dir = args.venv
+        build_dir = args.build
+        defines = {k: v for k, v in args.define}
+        cfg = config.Config(find_config(), args.version, defines)
+
+        if venv_dir is None:
+            venv.venv(args.target, cfg.load_project(), args.aviutl2)
+            venv_dir = args.target
+
+        data_dir = (venv_dir / "aviutl2/data").resolve()
+        if not data_dir.is_dir():
+            logger.error(f"'{data_dir}' is not a directory")
+            sys.exit(1)
+
+        with FileLock(build_dir / ".astra-lock"):
+            cache = config.Cache(build_dir / "astra.json")
+            install.uninstall(cache.load(config.Extension))
+            artifact = build.build(build_dir, cfg.load_build(), args.config)
+            cache.save(artifact)
+            extension = install.install(data_dir, cfg.load_install(artifact), True)
+            cache.save(extension)
+            run.run(data_dir.parent)
+    except Exception as e:
+        logger.error(f"{type(e).__name__} - {e}")
+        sys.exit(1)
+
+
 def create_parser() -> ArgumentParser:
     parser = ArgumentParser(
         prog="astra",
@@ -238,7 +270,7 @@ def create_parser() -> ArgumentParser:
         "-v",
         "--version",
         action="version",
-        version=f"%(prog)s {utils.fetch_version()}",
+        version=f"%(prog)s {fetch_version()}",
         help="Show the version of the program",
     )
 
@@ -429,6 +461,55 @@ def create_parser() -> ArgumentParser:
         help='AviUtl ExEdit2 version (e.g., "beta40a", default: latest)',
     )
     p_venv.set_defaults(func=_venv)
+
+    p_run = sub.add_parser(
+        "run",
+        help="Run a command in the virtual environment",
+    )
+    _ = p_run.add_argument(
+        "target",
+        type=Path,
+        nargs="?",
+        default=Path(".venv"),
+        help="Target directory for virtual environment (default: .venv)",
+    )
+    _ = p_run.add_argument(
+        "-b",
+        "--build",
+        type=Path,
+        default=Path("build"),
+        help="Build directory (default: build)",
+    )
+    _ = p_run.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        default="Debug",
+        help="Build configuration (e.g. Release, Debug)",
+    )
+    _ = p_run.add_argument(
+        "-v",
+        "--version",
+        type=str,
+        default=None,
+        help='Override the project version (e.g., "1.0.0")',
+    )
+    _ = p_run.add_argument(
+        "-d",
+        "--define",
+        metavar=("KEY", "VALUE"),
+        action="append",
+        nargs=2,
+        default=[],
+        help="Define a variable (e.g., '-d DEBUG 1')",
+    )
+    _ = p_run.add_argument(
+        "--aviutl2",
+        type=str,
+        default=None,
+        help='AviUtl ExEdit2 version (e.g., "beta40a", default: latest)',
+    )
+    p_run.set_defaults(func=_run)
 
     return parser
 

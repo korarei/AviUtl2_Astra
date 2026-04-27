@@ -34,10 +34,10 @@ def find_config() -> Path:
     for candidate in candidates:
         if candidate.is_file():
             candidate = candidate.resolve()
-            logger.info(f"Using 'astra.toml' at '{candidate}'")
+            logger.info(f"Using astra.toml at {candidate}")
             return candidate
 
-    raise FileNotFoundError("'astra.toml' is not found")
+    raise FileNotFoundError("astra.toml is not found")
 
 
 def expand_variables(text: str, variables: dict[str, str]) -> str:

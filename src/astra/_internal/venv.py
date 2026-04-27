@@ -81,6 +81,7 @@ def venv(dst: Path, cfg: Project, version: str | None) -> None:
     aviutl2.mkdir(parents=True, exist_ok=True)
 
     if version is None or version.lower() == "latest":
+        logger.info("Connecting to the AviUtl2 Catalog data repository")
         url = "https://raw.githubusercontent.com/Neosku/aviutl2-catalog-data/main/index.json"
         identifier = "Kenkun.AviUtlExEdit2"
 

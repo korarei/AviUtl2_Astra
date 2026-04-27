@@ -457,7 +457,7 @@ astra [options]
 
 astraバージョンを表示する．
 
-- `--venv`
+- `--venv <directory>`
 
 仮想環境のパスを指定する．
 
@@ -674,14 +674,52 @@ astra venv [options]
 
 - `<target>`
 
-仮想環境を構築するディレクトリを指定する．(デフォルト: `.venv`)
+仮想環境を構築するディレクトリを指定する．(デフォルト: `./.venv`)
 
 - `--aviutl2 <version>`
 
-AviUtl2のバージョンを指定する．(デフォルト: `latest`)
+AviUtl ExEdit2のバージョンを指定する．(デフォルト: `latest`)
 
 > [!NOTE]
 > 最新版は[AviUtl2 カタログ](https://github.com/Neosku/aviutl2-catalog)の[データ](https://raw.githubusercontent.com/Neosku/aviutl2-catalog-data/main/index.json)から取得する．
+
+### `run`
+
+ビルド後に仮想環境にシンボリックリンクで設置し，仮想環境のAviUtl ExEdit2を起動する．
+
+`--venv`が指定されない場合，`<target>`と`--aviutl2`に応じて仮想環境の構築を行う．
+
+#### 使用方法
+
+```pwsh
+astra run [options]
+```
+
+#### オプション
+
+- `<target>`
+
+仮想環境を構築するディレクトリを指定する．(デフォルト: `./.venv`)
+
+- `-b <directory>`，`--build <directory>`
+
+ビルドディレクトリを指定する．(デフォルト: `./build`)
+
+- `-c <config>`，`--config <config>`
+
+ビルド設定 (ReleaseまたはDebug) を指定する．(デフォルト: Debug)
+
+- `-v <version>`，`--version <version>`
+
+プロジェクトバージョンを指定する．これは設定ファイルより優先される．
+
+- `-d <key> <value>`，`--define <key> <value>`
+
+プロジェクト変数を定義する．これは設定ファイルより優先される．
+
+- `--aviutl2 <version>`
+
+AviUtl ExEdit2のバージョンを指定する．(デフォルト: `latest`)
 
 ## ライセンス
 
