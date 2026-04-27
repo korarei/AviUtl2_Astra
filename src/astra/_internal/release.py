@@ -32,7 +32,7 @@ class Releaser:
     _cfg: Release
 
     def __init__(self, dst: Path, cfg: Release) -> None:
-        if dst.is_file():
+        if dst.is_file() or dst.is_symlink():
             raise NotADirectoryError(f"'{dst}' is not a directory")
 
         dst = dst.resolve()
@@ -147,7 +147,7 @@ class Releaser:
         shutil.rmtree(self._dst, ignore_errors=True)
 
     def _copy_file(self, src: Path, dst: Path) -> None:
-        if not src.is_file():
+        if not src.is_file() or src.is_symlink():
             logger.warning(f"'{src}' is not found")
             return
 
@@ -177,7 +177,7 @@ class Releaser:
 
 
 def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
-    if dst.is_file():
+    if dst.is_file() or dst.is_symlink():
         raise NotADirectoryError(f"'{dst}' is not a directory")
 
     dst = dst.resolve()
@@ -233,8 +233,11 @@ def create_release_notes(dst: Path, documents: list[ReleaseDocument]) -> None:
 def release(dst: Path, cfg: Release) -> None:
     with Releaser(dst, cfg) as releaser:
         releaser.copy_contents()
-        releaser.write_manifest()
-        releaser.write_config()
+
+        if cfg.package.filename.endswith(".au2pkg.zip"):
+            releaser.write_manifest()
+            releaser.write_config()
+
         releaser.make_archive()
 
     documents = cfg.contents.documents

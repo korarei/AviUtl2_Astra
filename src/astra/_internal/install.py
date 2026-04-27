@@ -18,7 +18,7 @@ def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
         logger.warning(f"'{src}' is not found")
         return None
 
-    path = (dst / src.name).resolve()
+    path = Path(dst, src.name).absolute()
 
     if path.exists() or path.is_symlink():
         path.unlink()
@@ -32,7 +32,7 @@ def _copy_file(src: Path, dst: Path, editable: bool) -> Path | None:
 
 
 def install(dst: Path, cfg: Install, editable: bool = False) -> Extension:
-    if dst.is_file():
+    if dst.is_file() or dst.is_symlink():
         raise NotADirectoryError(f"'{dst}' is not a directory")
 
     dst = dst.resolve()

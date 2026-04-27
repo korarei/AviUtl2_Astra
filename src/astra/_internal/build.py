@@ -78,7 +78,7 @@ class Builder:
             raise ValueError(f"{configuration.capitalize()} is not supported")
 
         dst = dst.resolve()
-        if dst.is_file():
+        if dst.is_file() or dst.is_symlink():
             raise NotADirectoryError(f"'{dst}' is not a directory")
 
         dst.mkdir(parents=True, exist_ok=True)

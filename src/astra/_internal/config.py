@@ -17,7 +17,6 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
-    SkipValidation,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -38,6 +37,8 @@ _PACKAGE_DIRECTORIES = (
     "Preset/",
     "Transition/",
 )
+_OLD_SCRIPT_SUFFIXES = (".anm", ".obj", ".cam", ".scn", ".tra")
+_NEW_SCRIPT_SUFFIXES = (".anm2", ".obj2", ".cam2", ".scn2", ".tra2")
 
 
 def _require_context(info: ValidationInfo) -> Json:
@@ -50,7 +51,8 @@ def _require_context(info: ValidationInfo) -> Json:
 
 def _expand_variables(v: str, info: ValidationInfo) -> str:
     ctx = _require_context(info)
-    return expand_variables(v, ctx.get(dict, "variables", {}))
+    variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
+    return expand_variables(v, variables)
 
 
 def _resolve_glob(v: object, info: ValidationInfo) -> list[Path]:
@@ -62,7 +64,7 @@ def _resolve_glob(v: object, info: ValidationInfo) -> list[Path]:
 
     ctx = _require_context(info)
     root = Path(ctx.get(str, "root", "")) or Path.cwd()
-    variables = ctx.get(dict, "variables", {})
+    variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
 
     paths: list[Path] = []
     for p in cast(list[object], v):
@@ -76,7 +78,8 @@ def _resolve_glob(v: object, info: ValidationInfo) -> list[Path]:
 
 def _check_package_directory(v: str, info: ValidationInfo) -> str:
     ctx = _require_context(info)
-    v = expand_variables(v, ctx.get(dict, "variables", {})).replace("\\", "/")
+    variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
+    v = expand_variables(v, variables).replace("\\", "/")
 
     if not v.startswith(_PACKAGE_DIRECTORIES):
         logger.warning(f"'{v}' is not a package directory")
@@ -101,7 +104,7 @@ class _ProxyMeta(type):
 
 @final
 class Toml:
-    type Primitive = str | bool
+    type Primitive = str | bool | int | float
     type Value = Primitive | list[Value] | dict[str, Value]
 
     class Array(list[Value], metaclass=_ProxyMeta):
@@ -144,7 +147,7 @@ class Toml:
 
 @final
 class Json:
-    type Primitive = None | str | bool
+    type Primitive = None | str | bool | int | float
     type Value = Primitive | Sequence[Value] | Mapping[str, Value]
 
     class Array(list[Value], metaclass=_ProxyMeta):
@@ -220,6 +223,7 @@ class ConfigModel(BaseModel):
         populate_by_name=True,
         strict=True,
         str_strip_whitespace=True,
+        extra="ignore",
     )
 
 
@@ -252,7 +256,7 @@ class Project(ConfigModel):
         if requires_aviutl2 := self.requires_aviutl2:
             variables["PROJECT_REQUIRES_AVIUTL2"] = requires_aviutl2
 
-        variables |= ctx.get(dict, "defines", {})
+        variables |= cast(dict[str, str], ctx.get(dict, "defines", {}))
 
         return self
 
@@ -274,7 +278,8 @@ class Plugin(ConfigModel):
     @classmethod
     def _update_vars(cls, v: dict[str, str], info: ValidationInfo) -> dict[str, str]:
         ctx = _require_context(info)
-        v |= ctx.get(dict, "variables", {})
+        v |= cast(dict[str, str], ctx.get(dict, "variables", {}))
+
         return v
 
     @model_validator(mode="after")
@@ -285,96 +290,106 @@ class Plugin(ConfigModel):
         return self
 
 
-@dataclass(frozen=True)
-class ScriptSource:
-    files: list[Path]
-    variables: dict[str, str]
-
-    @staticmethod
-    def from_dict(
-        src: dict[str, object], variables: dict[str, str], root: Path
-    ) -> ScriptSource:
-        file = src.get("file")
-        if file is None:
-            raise ValueError("'file' is required")
-        elif not isinstance(file, str):
-            raise TypeError("'file' must be a string")
-
-        files = resolve_glob(root, expand_variables(file, variables))
-        var: dict[str, str] = {}
-        for k, v in src.items():
-            if k == "file":
-                continue
-
-            if isinstance(v, str):
-                var[k] = v
-            else:
-                raise TypeError(f"'{k}' must be a string")
-
-        return ScriptSource(files, var)
-
-
-class Script(ConfigModel):
+class _Script(ConfigModel):
     id: str = Field(min_length=1)
-    name: SkipValidation[str] = Field(default="", min_length=1)
+    name: str = Field(default="", min_length=1)
     prefix: Literal["", "@"] = ""
     suffix: str = ""
     newline: Literal["\r\n", "\n"] = "\r\n"
     source_encoding: str = "utf-8"
     target_encoding: str = "utf-8"
-    variables: SkipValidation[dict[str, str]] = Field(default_factory=dict)
-    include_directories: _ResolvedPaths = Field(default_factory=list)
-    sources: SkipValidation[list[ScriptSource]] = Field(default_factory=list)
-    artifacts: _ResolvedPaths = Field(default_factory=list)
+    variables: dict[str, str] = Field(default_factory=dict)
+    include_directories: list[str] = Field(default_factory=list)
+    sources: list[dict[str, str]] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
 
-    @model_validator(mode="before")
+    @field_validator("suffix", mode="after")
     @classmethod
-    def _overwrite_data(cls, data: object, info: ValidationInfo) -> dict[str, object]:
-        ctx = _require_context(info)
+    def _check_suffix(cls, v: str) -> str:
+        v = v.lower()
 
-        if not isinstance(data, dict):
-            raise TypeError("'build.scripts' entries must be tables")
+        if v not in (*_OLD_SCRIPT_SUFFIXES, *_NEW_SCRIPT_SUFFIXES):
+            logger.warning("Invalid suffix")
 
-        data = cast(dict[str, object], data).copy()
+        return v
 
-        name = data.setdefault("name", ctx.get(str, "name", ""))
-        if not isinstance(name, str):
-            raise TypeError("'name' must be a string")
+    @model_validator(mode="after")
+    def _check_encoding(self) -> _Script:
+        suffix = self.suffix.lower()
+        encoding = self.target_encoding.lower().replace("-", "").replace("_", "")
 
-        variables = data.setdefault("variables", {})
-        if not isinstance(variables, dict):
-            raise TypeError("'variables' must be a table")
+        if suffix in _NEW_SCRIPT_SUFFIXES and encoding != "utf8":
+            raise ValueError("'target-encoding' must be utf-8")
 
-        for k, v in cast(dict[str, object], variables).items():
-            if not isinstance(v, str):
-                raise TypeError(f"'{k}' must be a string")
+        if suffix in _OLD_SCRIPT_SUFFIXES and encoding != "cp932":
+            raise ValueError("'target-encoding' must be cp932")
 
+        return self
+
+
+@dataclass(frozen=True)
+class ScriptSource:
+    files: list[Path]
+    variables: dict[str, str]
+
+
+class Script:
+    id: str
+    name: str
+    prefix: str
+    suffix: str
+    newline: str
+    source_encoding: str
+    target_encoding: str
+    variables: dict[str, str]
+    include_directories: list[Path]
+    sources: list[ScriptSource]
+    artifacts: list[Path]
+
+    def __init__(self, script: _Script, ctx: Json) -> None:
+        root = Path(ctx.get(str, "root", "")) or Path.cwd()
+        variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
+
+        name = script.name or variables["PROJECT_NAME"]
         variables = {
-            **cast(dict[str, str], ctx.get(dict, "variables", {})),
-            **cast(dict[str, str], variables),
+            **variables,
+            **script.variables,
             "SCRIPT_NAME": name,
         }
 
-        data["variables"] = variables
+        self.id = script.id
+        self.name = name
+        self.prefix = script.prefix
+        self.suffix = script.suffix
+        self.newline = script.newline
+        self.source_encoding = script.source_encoding
+        self.target_encoding = script.target_encoding
+        self.variables = variables
 
-        sources = data.setdefault("sources", [])
-        if not isinstance(sources, list):
-            raise TypeError("'sources' must be an array")
+        self.include_directories = [
+            p
+            for v in script.include_directories
+            for p in resolve_glob(root, expand_variables(v, variables))
+        ]
 
-        root = Path(ctx.get(str, "root", "")) or Path.cwd()
+        self.artifacts = [
+            p
+            for v in script.artifacts
+            for p in resolve_glob(root, expand_variables(v, variables))
+        ]
 
-        srcs: list[ScriptSource] = []
-        for src in cast(list[object], sources):
-            if not isinstance(src, dict):
-                raise TypeError("'sources' entries must be tables")
+        self.sources = []
+        for src in script.sources:
+            file = src.get("file")
+            if file is None:
+                raise ValueError("'file' is required")
 
-            srcs.append(
-                ScriptSource.from_dict(cast(dict[str, object], src), variables, root)
+            self.sources.append(
+                ScriptSource(
+                    resolve_glob(root, expand_variables(file, variables)),
+                    {k: v for k, v in src.items() if k != "file"},
+                )
             )
-
-        data["sources"] = srcs
-
-        return data
 
 
 @dataclass(frozen=True)
@@ -398,6 +413,14 @@ class ReleasePackage(ConfigModel):
     website: _ExpandedString | None = None
     report_issue: _ExpandedString | None = None
 
+    @field_validator("filename", mode="after")
+    @classmethod
+    def _rename_filename(cls, v: str) -> str:
+        if not v.endswith(".zip"):
+            return f"{v}.au2pkg.zip"
+
+        return v
+
     @model_validator(mode="after")
     def _overwrite_metadata(self, info: ValidationInfo) -> ReleasePackage:
         ctx = _require_context(info)
@@ -409,10 +432,10 @@ class ReleasePackage(ConfigModel):
         self.id = _resolve_field(self.id, name, variables)
 
         if self.version is None:
-            self.version = variables.get("PROJECT_VERSION", "")
+            self.version = variables.get("PROJECT_VERSION")
 
         if self.author is None:
-            self.author = variables.get("PROJECT_AUTHOR", "")
+            self.author = variables.get("PROJECT_AUTHOR")
 
         return self
 
@@ -429,7 +452,7 @@ class ReleaseExtension(ConfigModel):
 
         ctx = _require_context(info)
         root = Path(ctx.get(str, "root", "")) or Path.cwd()
-        variables = ctx.get(dict, "variables", {})
+        variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
         artifact = cast(dict[str, dict[str, list[str]]], ctx.get(dict, "artifact", {}))
 
         extensions: list[Path] = []
@@ -471,7 +494,7 @@ class AssetSource(ConfigModel):
 
         ctx = _require_context(info)
         root = Path(ctx.get(str, "root", "")) or Path.cwd()
-        variables = ctx.get(dict, "variables", {})
+        variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
 
         files: list[Path | str] = []
         for file in cast(list[object], v):
@@ -640,58 +663,56 @@ class Config:
 
         self._project = Project.model_validate(project, context=ctx)
 
-    def _load_actives[T: ConfigModel](
-        self,
-        cls: type[T],
-        entries: Toml.Array | None,
-        ctx: Json,
-        label: str,
-        identifier: str = "id",
-    ) -> list[T]:
-        if entries is None:
+    def _load_plugins(self, build: Toml) -> list[Plugin]:
+        ctx = Json({"variables": self._project.variables})
+
+        plugins = build.get(Toml.Array, "plugins")
+        if plugins is None:
             return []
 
-        configs: list[T] = []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise TypeError(f"'{label.lower()}s' entries must be tables")
+        configs: list[Plugin] = []
+        for plugin in plugins:
+            if not isinstance(plugin, dict):
+                raise TypeError("'plugins' entries must be tables")
 
-            entry = Toml(entry)
+            plugin = Toml(plugin)
 
-            if not entry.get(bool, "enabled", True):
-                logger.warning(f"{label} '{entry.get(str, identifier)}' is disabled")
+            if not plugin.get(bool, "enabled", True):
+                logger.warning(f"Plugin '{plugin.get(str, 'id')}' is disabled")
                 continue
 
-            configs.append(cls.model_validate(entry.data(), context=ctx))
+            configs.append(Plugin.model_validate(plugin.data(), context=ctx))
 
         return configs
 
-    def _load_plugins(self, build: Toml) -> list[Plugin]:
-        ctx = Json({"variables": self._project.variables})
-        plugins = build.get(Toml.Array, "plugins")
-        return self._load_actives(Plugin, plugins, ctx, "Plugin")
-
     def _load_scripts(self, build: Toml) -> list[Script]:
-        ctx = Json(
-            {
-                "root": str(self._root),
-                "name": self._project.name,
-                "variables": self._project.variables,
-            }
-        )
+        ctx = Json({"root": str(self._root), "variables": self._project.variables})
+
         scripts = build.get(Toml.Array, "scripts")
-        return self._load_actives(Script, scripts, ctx, "Script")
+        if scripts is None:
+            return []
+
+        configs: list[Script] = []
+        for script in scripts:
+            if not isinstance(script, dict):
+                raise TypeError("'scripts' entries must be tables")
+
+            script = Toml(script)
+
+            if not script.get(bool, "enabled", True):
+                logger.warning(f"Script '{script.get(str, 'id')}' is disabled")
+                continue
+
+            configs.append(Script(_Script.model_validate(script.data()), ctx))
+
+        return configs
 
     def _load_release_package(self, release: Toml) -> ReleasePackage:
+        ctx = Json({"variables": self._project.variables})
+
         package = release.get(Toml, "package")
         if package is None:
-            return ReleasePackage.model_construct(
-                filename=self._project.name,
-                id=self._project.name,
-                name=self._project.name,
-            )
-
-        ctx = Json({"variables": self._project.variables})
+            return ReleasePackage.model_validate({}, context=ctx)
 
         return ReleasePackage.model_validate(package.data(), context=ctx)
 
@@ -742,8 +763,25 @@ class Config:
 
     def _load_release_assets(self, contents: Toml) -> list[ReleaseAsset]:
         ctx = Json({"root": str(self._root), "variables": self._project.variables})
+
         assets = contents.get(Toml.Array, "assets")
-        return self._load_actives(ReleaseAsset, assets, ctx, "Asset", "name")
+        if assets is None:
+            return []
+
+        configs: list[ReleaseAsset] = []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                raise TypeError("'assets' entries must be tables")
+
+            asset = Toml(asset)
+
+            if not asset.get(bool, "enabled", True):
+                logger.warning(f"Asset '{asset.get(str, 'name')}' is disabled")
+                continue
+
+            configs.append(ReleaseAsset.model_validate(asset.data(), context=ctx))
+
+        return configs
 
 
 class Cache:

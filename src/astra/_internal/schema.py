@@ -264,7 +264,7 @@ class Schema:
         return json.dumps(self.data, ensure_ascii=False, indent=indent)
 
     def save(self, dst: Path, indent: int = 4) -> None:
-        if dst.is_file():
+        if dst.is_file() or dst.is_symlink():
             raise NotADirectoryError(f"'{dst}' is not a directory")
 
         dst = dst.resolve()
