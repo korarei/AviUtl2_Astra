@@ -452,7 +452,7 @@ class ReleaseExtension(ConfigModel):
         ctx = _require_context(info)
         root = Path(ctx.get(str, "root", "")) or Path.cwd()
         variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
-        artifact = cast(dict[str, dict[str, list[str]]], ctx.get(dict, "artifact", {}))
+        artifact = Artifact.from_json(ctx.get(Json, "artifact", Json({})))
 
         extensions: list[Path] = []
         for extension in cast(list[object], v):
@@ -462,7 +462,8 @@ class ReleaseExtension(ConfigModel):
             prefix, sep, identifier = extension.partition(":")
 
             if sep == ":" and prefix in ("script", "plugin"):
-                if (found := artifact[f"{prefix}s"].get(identifier)) is not None:
+                artifacts = artifact.plugins if prefix == "plugin" else artifact.scripts
+                if (found := artifacts.get(identifier)) is not None:
                     extensions.extend(map(Path, found))
                 else:
                     logger.warning(f"'{prefix}:{identifier}' not found")
@@ -558,8 +559,29 @@ class Artifact:
 
         self._data = Json({"plugins": plugins, "scripts": scripts})
 
+    # 型チェックはしないので気をつけて
+    @classmethod
+    def from_json(cls, data: Json) -> Artifact:
+        instance = cls.__new__(cls)
+        instance._data = data
+        return instance
+
     def data(self) -> Mapping[str, Json.Value]:
         return self._data.data()
+
+    @property
+    def plugins(self) -> Mapping[str, Sequence[str]]:
+        return cast(
+            Mapping[str, Sequence[str]],
+            self._data.get(Json.Object, "plugins", Json.Object()),
+        )
+
+    @property
+    def scripts(self) -> Mapping[str, Sequence[str]]:
+        return cast(
+            Mapping[str, Sequence[str]],
+            self._data.get(Json.Object, "scripts", Json.Object()),
+        )
 
 
 class Extension:
@@ -596,52 +618,67 @@ class Config:
         self._load_astra()
         self._load_project(version, defines or {})
 
-    def load_project(self) -> Project:
-        logger.info("Loading project metadata")
+    def load[T: Project | Build | Release | Install](
+        self, cls: type[T], artifact: Artifact | None = None
+    ) -> T:
+        if cls is Project:
+            logger.info("Loading project metadata")
 
-        return self._project
+            return cast(T, self._project)
+        elif cls is Build:
+            logger.info("Loading build configuration")
 
-    def load_build(self) -> Build:
-        logger.info("Loading build configuration")
+            build = self._data.get(Toml, "build")
+            if build is None:
+                raise KeyError("'build' section is required in astra.toml")
 
-        build = self._data.get(Toml, "build")
-        if build is None:
-            raise KeyError("'build' section is required in astra.toml")
+            return cast(
+                T,
+                Build(
+                    self._root,
+                    self._load_plugins(build),
+                    self._load_scripts(build),
+                ),
+            )
+        elif cls is Release:
+            logger.info("Loading release configuration")
 
-        return Build(self._root, self._load_plugins(build), self._load_scripts(build))
+            release = self._data.get(Toml, "release")
+            if release is None:
+                raise KeyError("'release' section is required in astra.toml")
 
-    def load_release(self, artifact: Artifact) -> Release:
-        logger.info("Loading release configuration")
+            return cast(
+                T,
+                Release(
+                    self._load_release_package(release),
+                    self._load_release_contents(release, artifact or Artifact()),
+                ),
+            )
+        elif cls is Install:
+            logger.info("Loading install configuration")
 
-        release = self._data.get(Toml, "release")
-        if release is None:
-            raise KeyError("'release' section is required in astra.toml")
+            release = self._data.get(Toml, "release")
+            if release is None:
+                raise KeyError("'release' section is required in astra.toml")
 
-        return Release(
-            self._load_release_package(release),
-            self._load_release_contents(release, artifact),
-        )
+            contents = release.get(Toml, "contents")
+            if contents is None:
+                raise KeyError("'release.contents' section is required in astra.toml")
 
-    def load_install(self, artifact: Artifact) -> Install:
-        logger.info("Loading install configuration")
+            extensions = self._load_release_extension(contents, artifact or Artifact())
 
-        release = self._data.get(Toml, "release")
-        if release is None:
-            raise KeyError("'release' section is required in astra.toml")
-
-        contents = release.get(Toml, "contents")
-        if contents is None:
-            raise KeyError("'release.contents' section is required in astra.toml")
-
-        extensions = self._load_release_extension(contents, artifact)
-
-        return Install(
-            [
-                extension
-                for extension in extensions
-                if extension.directory.startswith(_PACKAGE_DIRECTORIES)
-            ]
-        )
+            return cast(
+                T,
+                Install(
+                    [
+                        extension
+                        for extension in extensions
+                        if extension.directory.startswith(_PACKAGE_DIRECTORIES)
+                    ]
+                ),
+            )
+        else:
+            raise TypeError(f"'{cls.__name__}' is not supported")
 
     def _load_astra(self) -> None:
         astra = self._data.get(Toml, "astra")

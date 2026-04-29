@@ -105,8 +105,10 @@ def venv(dst: Path, cfg: Project, version: str | None) -> None:
     logger.info(f"AviUtl ExEdit2 version: {version}")
 
     if cfg.requires_aviutl2 is not None:
-        if (m := re.search(r"(\d+)([a-z])", version)) is not None:
-            v = 2000000 + (int(m.group(1)) * 100) + ord(m.group(2)) - ord("a") + 1
+        if (m := re.search(r"(\d+)([a-z])?", version)) is not None:
+            revision = int(m.group(1))
+            suffix = m.group(2) or "`"
+            v = 2000000 + (revision * 100) + ord(suffix) - ord("a") + 1
             if int(cfg.requires_aviutl2) > v:
                 logger.warning(f"'{version}' is not compatible with '{cfg.name}'")
 

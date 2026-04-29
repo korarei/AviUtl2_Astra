@@ -11,7 +11,17 @@ from typing import Callable, Protocol, cast, final, override
 
 from filelock import FileLock
 
-from astra._internal import build, config, init, install, release, run, schema, venv
+from astra._internal import build, init, install, release, run, schema, venv
+from astra._internal.config import (
+    Artifact,
+    Build,
+    Cache,
+    Config,
+    Extension,
+    Install,
+    Project,
+    Release,
+)
 from astra._internal.utils import fetch_version, find_config
 
 
@@ -96,11 +106,11 @@ def _build(args: BuildArgs) -> None:
         dst = args.build
         defines = {k: v for k, v in args.define}
 
-        cfg = config.Config(find_config(), args.version, defines).load_build()
+        cfg = Config(find_config(), args.version, defines).load(Build)
 
         with FileLock(dst / ".astra-lock"):
             artifact = build.build(dst, cfg, args.config)
-            config.Cache(dst / "astra.json").save(artifact)
+            Cache(dst / "astra.json").save(artifact)
     except Exception as e:
         logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
@@ -108,14 +118,21 @@ def _build(args: BuildArgs) -> None:
 
 def _release(args: ReleaseArgs) -> None:
     try:
-        dst = args.target
+        dst = args.target.resolve()
+
+        if dst.is_file() or dst.is_symlink():
+            logger.error(f"'{dst}' is not a directory")
+            sys.exit(1)
+
+        dst.mkdir(parents=True, exist_ok=True)
+
         defines = {k: v for k, v in args.define}
 
-        cfg = config.Config(find_config(), args.version, defines)
+        cfg = Config(find_config(), args.version, defines)
 
         with tempfile.TemporaryDirectory(dir=dst) as tmp:
-            artifact = build.build(Path(tmp), cfg.load_build(), "release")
-            release.release(dst, cfg.load_release(artifact))
+            artifact = build.build(Path(tmp), cfg.load(Build), "release")
+            release.release(dst, cfg.load(Release, artifact))
     except Exception as e:
         logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
@@ -160,9 +177,9 @@ def _install(args: InstallArgs) -> None:
         defines = {k: v for k, v in args.define}
 
         with FileLock(build_dir / ".astra-lock"):
-            cache = config.Cache(build_dir / "astra.json")
-            artifact = cache.load(config.Artifact)
-            cfg = config.Config(find_config(), defines=defines).load_install(artifact)
+            cache = Cache(build_dir / "astra.json")
+            artifact = cache.load(Artifact)
+            cfg = Config(find_config(), defines=defines).load(Install, artifact)
             extension = install.install(dst, cfg, args.editable)
             cache.save(extension)
     except Exception as e:
@@ -179,9 +196,9 @@ def _uninstall(args: UninstallArgs) -> None:
 
     try:
         with FileLock(build_dir / ".astra-lock"):
-            cache = config.Cache(build_dir / "astra.json")
-            install.uninstall(cache.load(config.Extension))
-            cache.save(config.Extension())
+            cache = Cache(build_dir / "astra.json")
+            install.uninstall(cache.load(Extension))
+            cache.save(Extension())
     except Exception as e:
         logger.error(f"{type(e).__name__} - {e}")
         sys.exit(1)
@@ -204,8 +221,8 @@ def _clean(args: CleanArgs) -> None:
         logger.info(f"Cleaning '{target}'")
 
         if target.is_dir() and (target / "astra.json").is_file():
-            cache = config.Cache(target / "astra.json")
-            install.uninstall(cache.load(config.Extension))
+            cache = Cache(target / "astra.json")
+            install.uninstall(cache.load(Extension))
             shutil.rmtree(target)
         else:
             logger.warning(f"'{target}' is not a valid build directory")
@@ -224,7 +241,7 @@ def _schema(args: SchemaArgs) -> None:
 
 def _venv(args: VenvArgs) -> None:
     try:
-        cfg = config.Config(find_config()).load_project()
+        cfg = Config(find_config()).load(Project)
         venv.venv(args.target, cfg, args.aviutl2)
     except Exception as e:
         logger.error(f"{type(e).__name__} - {e}")
@@ -236,10 +253,10 @@ def _run(args: RunArgs) -> None:
         venv_dir = args.venv
         build_dir = args.build
         defines = {k: v for k, v in args.define}
-        cfg = config.Config(find_config(), args.version, defines)
+        cfg = Config(find_config(), args.version, defines)
 
         if venv_dir is None:
-            venv.venv(args.target, cfg.load_project(), args.aviutl2)
+            venv.venv(args.target, cfg.load(Project), args.aviutl2)
             venv_dir = args.target
 
         data_dir = (venv_dir / "aviutl2/data").resolve()
@@ -248,11 +265,11 @@ def _run(args: RunArgs) -> None:
             sys.exit(1)
 
         with FileLock(build_dir / ".astra-lock"):
-            cache = config.Cache(build_dir / "astra.json")
-            install.uninstall(cache.load(config.Extension))
-            artifact = build.build(build_dir, cfg.load_build(), args.config)
+            cache = Cache(build_dir / "astra.json")
+            install.uninstall(cache.load(Extension))
+            artifact = build.build(build_dir, cfg.load(Build), args.config)
             cache.save(artifact)
-            extension = install.install(data_dir, cfg.load_install(artifact), True)
+            extension = install.install(data_dir, cfg.load(Install, artifact), True)
             cache.save(extension)
             run.run(data_dir.parent)
     except Exception as e:
