@@ -107,9 +107,14 @@ class Builder:
                 root = dst
                 variables = {**cfg.variables, "BUILD_DIRECTORY": "."}
 
-            if len(target.commands) > 0:
+            commands = target.commands
+
+            if isinstance(commands, str):
+                commands = [commands]
+
+            if len(commands) > 0:
                 try:
-                    self._run_commands(target.commands, dst, cfg.shell, cfg.variables)
+                    self._run_commands(commands, dst, cfg.shell, cfg.variables)
                 except Exception:
                     logger.error(f"Plugin '{cfg.id}' commands failed")
                     raise
@@ -198,7 +203,7 @@ class Builder:
                 ctypes.windll.kernel32.GetACP.restype = ctypes.c_uint
                 cp = cast(int, ctypes.windll.kernel32.GetACP())
 
-                env["BUILD_DIRECTORY"] = dst.as_posix().replace("/", "\\")
+                env["BUILD_DIRECTORY"] = str(dst)
                 args = [shell, "/d", "/e:on", "/v:off", "/s", "/c"]
                 suffix = ".bat"
                 encoding = f"cp{cp if cp != 0 else 437}"
@@ -269,8 +274,6 @@ class Builder:
                 raise NotImplementedError(f"'{shell}' is not supported")
 
             env |= os.environ
-
-            print(env)
 
             tmp = self._dst / "plugins"
             tmp.mkdir(parents=True, exist_ok=True)
