@@ -8,7 +8,7 @@ import tempfile
 import textwrap
 from logging import getLogger
 from pathlib import Path
-from typing import Final, cast
+from typing import cast, final
 
 from astra._internal.config import Artifact, Build, Plugin, Script
 from astra._internal.utils import expand_variables, resolve_glob
@@ -17,22 +17,23 @@ from astra._internal.utils import expand_variables, resolve_glob
 logger = getLogger(__name__)
 
 
+@final
 class Builder:
     _dst: Path
     _root: Path
     _configuration: str
 
-    _SECTION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    _SECTION_PATTERN = re.compile(
         r"^[^\S\n]*--[^\S\n]*@",
         re.MULTILINE,
     )
 
-    _PROPERTY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    _PROPERTY_PATTERN = re.compile(
         r"^[^\n]*?(--\w+@[^\n]*)",
         re.MULTILINE,
     )
 
-    _DEFINE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    _DEFINE_PATTERN = re.compile(
         r"""
         ^[^\S\n]*--[^\S\n]*
         (?:\[\[\s*\#[^\S\n]*define[^\S\n]+(\w+)[^\S\n]+(?s:(.+?))[^\S\n]*\]\]
@@ -42,7 +43,7 @@ class Builder:
         re.MULTILINE | re.VERBOSE,
     )
 
-    _SCRIPT_INCLUDE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    _SCRIPT_INCLUDE_PATTERN = re.compile(
         r"""
         ^([^\S\n]*)--[^\S\n]*\#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)
         [^\n]*
@@ -54,12 +55,12 @@ class Builder:
         re.MULTILINE | re.VERBOSE,
     )
 
-    _SHADER_INCLUDE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    _SHADER_INCLUDE_PATTERN = re.compile(
         r'^([^\S\n]*)#[^\S\n]*include[^\S\n]+(?:"([^"\n]+)"|<([^>\n]+)>)[^\n]*(?:\n|$)',
         re.MULTILINE,
     )
 
-    _IF_PATTERN: Final[re.Pattern[str]] = re.compile(
+    _IF_PATTERN = re.compile(
         r"""
         ^[\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*
         (?:(?!\s+else(?:if)?\s+).)+?

@@ -9,9 +9,9 @@ from urllib.request import urlopen
 from zipfile import ZipFile, is_zipfile
 
 
-_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
 logger = getLogger(__name__)
+
+_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def fetch_version() -> str:
