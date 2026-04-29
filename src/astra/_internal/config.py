@@ -228,7 +228,7 @@ class ConfigModel(BaseModel):
 
 class Project(ConfigModel):
     name: str = Field(min_length=1)
-    version: str | None = Field(default=None, min_length=1)
+    version: str | None = Field(default=None, min_length=1, validate_default=True)
     author: str | None = Field(default=None, min_length=1)
     requires_aviutl2: str | None = Field(default=None, min_length=1)
     variables: dict[str, str] = Field(default_factory=dict)
@@ -246,13 +246,13 @@ class Project(ConfigModel):
 
         variables["PROJECT_NAME"] = self.name
 
-        if version := self.version:
+        if (version := self.version) is not None:
             variables["PROJECT_VERSION"] = version
 
-        if author := self.author:
+        if (author := self.author) is not None:
             variables["PROJECT_AUTHOR"] = author
 
-        if requires_aviutl2 := self.requires_aviutl2:
+        if (requires_aviutl2 := self.requires_aviutl2) is not None:
             variables["PROJECT_REQUIRES_AVIUTL2"] = requires_aviutl2
 
         variables |= cast(dict[str, str], ctx.get(dict, "defines", {}))
@@ -262,14 +262,14 @@ class Project(ConfigModel):
 
 # build時に変数展開する
 class Command(ConfigModel):
-    commands: list[str] = Field(default_factory=list)
+    commands: list[str] | str = Field(default_factory=list)
     artifacts: list[str] = Field(default_factory=list)
 
 
 class Plugin(ConfigModel):
     id: str = Field(min_length=1)
     shell: str | None = Field(default=None, min_length=1)
-    variables: dict[str, str] = Field(default_factory=dict)
+    variables: dict[str, str] = Field(default_factory=dict, validate_default=True)
     release: Command
     debug: Command = Field(default_factory=Command)
 
@@ -293,7 +293,7 @@ class _Script(ConfigModel):
     id: str = Field(min_length=1)
     name: str = Field(default="", min_length=1)
     prefix: Literal["", "@"] = ""
-    suffix: str = ""
+    suffix: str = Field(default="", validate_default=True)
     newline: Literal["\r\n", "\n"] = "\r\n"
     source_encoding: str = "utf-8"
     target_encoding: str = "utf-8"
@@ -440,8 +440,8 @@ class ReleasePackage(ConfigModel):
 
 
 class ReleaseExtension(ConfigModel):
-    directory: _PackageDirectory = ""
-    files: list[Path] = Field(default_factory=list)
+    directory: _PackageDirectory = Field(default="", validate_default=True)
+    files: list[Path] = Field(default_factory=list, validate_default=True)
 
     @field_validator("files", mode="before")
     @classmethod
@@ -478,13 +478,13 @@ class ReleaseExtension(ConfigModel):
 
 
 class ReleaseDocument(ConfigModel):
-    directory: _PackageDirectory = ""
-    files: _ResolvedPaths = Field(default_factory=list)
+    directory: _PackageDirectory = Field(default="", validate_default=True)
+    files: _ResolvedPaths = Field(default_factory=list, validate_default=True)
 
 
 class AssetSource(ConfigModel):
-    directory: _PackageDirectory = ""
-    files: list[Path | str] = Field(default_factory=list)
+    directory: _PackageDirectory = Field(default="", validate_default=True)
+    files: list[Path | str] = Field(default_factory=list, validate_default=True)
 
     @field_validator("files", mode="before")
     @classmethod
@@ -520,7 +520,7 @@ class AssetDocument(ConfigModel):
 
 class ReleaseAsset(ConfigModel):
     name: str = Field(min_length=1)
-    directory: _PackageDirectory = ""
+    directory: _PackageDirectory = Field(default="", validate_default=True)
     sources: list[AssetSource] = Field(default_factory=list)
     documents: list[AssetDocument] = Field(default_factory=list)
 
