@@ -270,6 +270,8 @@ class Builder:
 
             env |= os.environ
 
+            print(env)
+
             tmp = self._dst / "plugins"
             tmp.mkdir(parents=True, exist_ok=True)
 
