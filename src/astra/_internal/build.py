@@ -62,7 +62,7 @@ class Builder:
 
     _IF_PATTERN = re.compile(
         r"""
-        ^[\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*
+        ^[^\S\n]*if\s*(?:\(\s*\.\.\.\s*\)|\.\.\.)\s*then\s*
         (?:(?!\s+else(?:if)?\s+).)+?
         \s*end[^\n]*(?:\n|$)
         """,
