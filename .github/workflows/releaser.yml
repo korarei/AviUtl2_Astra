@@ -28,7 +28,7 @@ jobs:
         arch: x64
 
     - name: Setup python
-      uses: astral-sh/setup-uv@v8
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
       with:
         python-version: '3.14'
 
