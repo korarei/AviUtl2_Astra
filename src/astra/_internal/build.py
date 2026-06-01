@@ -316,7 +316,7 @@ class Builder:
                 logger.warning(f"'{match.group(0)}' is not a valid define")
                 return match.group(0)
 
-            variables[key] = val
+            variables[key] = expand_variables(val, variables)
             return ""
 
         return self._DEFINE_PATTERN.sub(_replacer, text)
