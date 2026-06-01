@@ -28,7 +28,7 @@ jobs:
         arch: x64
 
     - name: Setup python
-      uses: actions/setup-python@v6
+      uses: astral-sh/setup-uv@v8
       with:
         python-version: '3.14'
 
@@ -37,9 +37,10 @@ jobs:
         if ($env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)') { $version = $matches[1] } else { $version = "0.1.0" }
 
         uv sync
-        uv pip install "nuitka[onefile]"
+        uv tool install "nuitka[onefile]"
+        uv tool update-shell
 
-        python -m nuitka `
+        nuitka `
           --assume-yes-for-downloads `
           --onefile `
           --output-filename=astra `
