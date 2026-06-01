@@ -37,10 +37,9 @@ jobs:
         if ($env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)') { $version = $matches[1] } else { $version = "0.1.0" }
 
         uv sync
-        uv tool install "nuitka[onefile]"
-        uv tool update-shell
+        uv pip install "nuitka[onefile]"
 
-        nuitka `
+        python -m nuitka `
           --assume-yes-for-downloads `
           --onefile `
           --output-filename=astra `
