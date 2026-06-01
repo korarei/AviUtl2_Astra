@@ -29,7 +29,7 @@ class Builder:
     )
 
     _PROPERTY_PATTERN = re.compile(
-        r"^[^\n]*?(--\w+@[^\n]*)",
+        r"^[^\S\n]*(?:local[^\S\n]+)?([a-zA-Z_][a-zA-Z0-9_]*)\b.*?(--[^\S\n]*\w+@([a-zA-Z_][a-zA-Z0-9_]*):[^\n]*)",
         re.MULTILINE,
     )
 
@@ -316,7 +316,7 @@ class Builder:
                 logger.warning(f"'{match.group(0)}' is not a valid define")
                 return match.group(0)
 
-            variables[key] = val
+            variables[key] = expand_variables(val, variables)
             return ""
 
         return self._DEFINE_PATTERN.sub(_replacer, text)
@@ -325,7 +325,13 @@ class Builder:
         return self._SECTION_PATTERN.sub("@", text)
 
     def _normalize_properties(self, text: str) -> str:
-        return self._PROPERTY_PATTERN.sub(r"\1", text)
+        def _replacer(match: re.Match[str]) -> str:
+            if match.group(1).strip() != match.group(3).strip():
+                logger.warning(f"Property names do not match in '{match.group(0)}'")
+
+            return match.group(2)
+
+        return self._PROPERTY_PATTERN.sub(_replacer, text)
 
     def _find_include(
         self, quoted: str | None, angled: str | None, includes: list[Path]

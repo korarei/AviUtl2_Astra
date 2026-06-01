@@ -27,14 +27,14 @@ from astra._internal.utils import expand_variables, fetch_version, resolve_glob
 logger = getLogger(__name__)
 
 _PACKAGE_DIRECTORIES = (
-    "Plugin/",
-    "Script/",
-    "Language/",
-    "Alias/",
-    "Default/",
-    "Figure/",
-    "Preset/",
-    "Transition/",
+    "Plugin",
+    "Script",
+    "Language",
+    "Alias",
+    "Default",
+    "Figure",
+    "Preset",
+    "Transition",
 )
 _OLD_SCRIPT_SUFFIXES = (".anm", ".obj", ".cam", ".scn", ".tra")
 _NEW_SCRIPT_SUFFIXES = (".anm2", ".obj2", ".cam2", ".scn2", ".tra2")
@@ -80,7 +80,7 @@ def _check_package_directory(v: str, info: ValidationInfo) -> str:
     variables = cast(dict[str, str], ctx.get(dict, "variables", {}))
     v = expand_variables(v, variables).replace("\\", "/")
 
-    if not v.startswith(_PACKAGE_DIRECTORIES):
+    if v.split("/", 1)[0] not in _PACKAGE_DIRECTORIES:
         logger.warning(f"'{v}' is not a package directory")
 
     return v
@@ -673,7 +673,7 @@ class Config:
                     [
                         extension
                         for extension in extensions
-                        if extension.directory.startswith(_PACKAGE_DIRECTORIES)
+                        if extension.directory.split("/", 1)[0] in _PACKAGE_DIRECTORIES
                     ]
                 ),
             )

@@ -1,0 +1,84 @@
+name: releaser
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+
+    - name: Setup MSVC (x64)
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Setup python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.14'
+
+    - name: Build astra
+      run: |
+        if ($env:GITHUB_REF_NAME -match '^v(\d+\.\d+\.\d+)') { $version = $matches[1] } else { $version = "0.1.0" }
+
+        uv sync
+        uv pip install "nuitka[onefile]"
+
+        python -m nuitka `
+          --assume-yes-for-downloads `
+          --onefile `
+          --output-filename=astra `
+          --lto=yes `
+          --company-name="Korarei" `
+          --product-name="Astra" `
+          --file-version=$version `
+          --product-version=$version `
+          --output-dir=build `
+          src/astra/cli.py
+
+    - name: Create release files
+      run: |
+        Remove-Item release -Recurse -Force -ErrorAction Ignore
+
+        New-Item -ItemType Directory -Force release/tmp | Out-Null
+
+        Copy-Item build/astra.exe release/tmp/
+        Copy-Item LICENSE release/tmp/
+        Copy-Item *.md release/tmp/ -ErrorAction Ignore
+
+        Compress-Archive -Path release/tmp/* -DestinationPath release/astra-$env:GITHUB_REF_NAME-windows-x64.zip
+
+        $changelog = Get-Content CHANGELOG.md -Raw -Encoding utf8
+        $changes = [regex]::Match(
+            $changelog,
+            '(?ms)^##\s+v[^\r\n]+\r?\n(.*?)(?=^##\s+v|\z)'
+        ).Groups[1].Value.Trim()
+
+        "## What's Changed`n`n$changes" | Set-Content release/release_notes.md -Encoding utf8
+
+    - name: Attest
+      uses: actions/attest@v4
+      with:
+        subject-path: 'release/*.zip'
+
+    - name: Create release
+      uses: softprops/action-gh-release@v3
+      with:
+        name: 'Astra_${{ github.ref_name }}'
+        files: 'release/*.zip'
+        body_path: 'release/release_notes.md'
