@@ -39,7 +39,7 @@ jobs:
         uv sync
         uv pip install "nuitka[onefile]"
 
-        python -m nuitka `
+        uv run python -m nuitka `
           --assume-yes-for-downloads `
           --onefile `
           --output-filename=astra `
