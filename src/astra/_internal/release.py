@@ -93,8 +93,9 @@ class Releaser:
 
         if target == readme:
             match = self._CHANGELOG_HEADER_PATTERN.search(text)
-            if not match:
-                raise ValueError("Missing required section: '## Change Log'")
+            if match is None:
+                logger.warning("Missing required section: '## Change Log'")
+                return
 
             text = text[match.end() :]
 
