@@ -24,6 +24,10 @@ uv tool install git+https://github.com/korarei/AviUtl2_Astra.git@v0.6.4
 uv tool update-shell
 ```
 
+### Releases からダウンロード
+
+[こちら](https://github.com/korarei/AviUtl2_Astra/releases)から `astra-v0.6.4-windows-x64.zip` をダウンロードし，同梱の `astra.exe` をパスの通った場所に設置する．
+
 ## 主な機能
 
 ### 仮想環境の構築
