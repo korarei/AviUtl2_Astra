@@ -130,7 +130,7 @@ def _release(args: ReleaseArgs) -> None:
 
         cfg = Config(find_config(), args.version, defines)
 
-        with tempfile.TemporaryDirectory(dir=dst) as tmp:
+        with tempfile.TemporaryDirectory(dir=dst, ignore_cleanup_errors=True) as tmp:
             artifact = build.build(Path(tmp), cfg.load(Build), "release")
             release.release(dst, cfg.load(Release, artifact))
     except Exception as e:

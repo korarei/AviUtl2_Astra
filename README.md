@@ -9,7 +9,7 @@ AviUtl ExEdit2 の拡張機能開発支援およびパッケージ (au2pkg) 作�
 [Git](https://git-scm.com/) および [Python](https://www.python.org/) 3.12 以降を導入し，以下のコマンドを実行する．更新は `-U` 付きで実行する．
 
 ```pwsh
-pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.6.4
+pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.6.5
 ```
 
 > [!NOTE]
@@ -20,7 +20,7 @@ pip install git+https://github.com/korarei/AviUtl2_Astra.git@v0.6.4
 [Git](https://git-scm.com/) および [Python](https://www.python.org/) 3.12 以降を導入し，以下のコマンドを実行する．更新は `--upgrade` 付きで実行する．
 
 ```pwsh
-uv tool install git+https://github.com/korarei/AviUtl2_Astra.git@v0.6.4
+uv tool install git+https://github.com/korarei/AviUtl2_Astra.git@v0.6.5
 uv tool update-shell
 ```
 
@@ -255,7 +255,7 @@ AviUtl2 ExEdit2 パッケージ形式 `au2pkg.zip` の作成やリリースノ�
 # Astra設定
 [astra]
 # 必要astraバージョン
-requires-astra = ">=0.6.4"
+requires-astra = ">=0.6.5"
 
 # プロジェクト設定
 [project]
