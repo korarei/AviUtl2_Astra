@@ -2,7 +2,7 @@
 
 AviUtl および拡張編集 ( ExEdit / ExEdit2 ) 向けのスクリプト・プラグイン開発を支援するビルドツール＆タスクランナー．
 
-スクリプトの前処理，外部ビルドとの連携，AviUtl ExEdit2 の動作確認環境，配布パッケージの作成を `astra.toml` で管理できる．詳しい使い方や設定は [Wiki](./wiki/Home.md) を参照されたい．
+スクリプトの前処理，外部ビルドとの連携，AviUtl ExEdit2 の動作確認環境，配布パッケージの作成を `astra.toml` で管理できる．詳しい使い方や設定は [Wiki](https://github.com/korarei/AviUtl2_Astra/wiki) を参照されたい．
 
 ## 導入
 
@@ -51,10 +51,10 @@ mise exec -- astra --help
 
 ```pwsh
 astra init my-effects --name MyEffects
-Set-Location my-effects
+cd my-effects
 ```
 
-初期化では最小限の `astra.toml` が生成される．[入門ガイド](./wiki/Getting-Started.md) に従ってソースと `builds`・`releases` の構成を追加し，`[astra.run].release` に動作確認用のリリース ID を設定する．
+初期化では最小限の `astra.toml` が生成される．[入門ガイド](https://github.com/korarei/AviUtl2_Astra/wiki/Getting-Started) に従ってソースと `builds`・`releases` の構成を追加し，`[astra.run].release` に動作確認用のリリース ID を設定する．
 
 ```pwsh
 astra build
@@ -68,17 +68,17 @@ astra release
 
 ## ドキュメント
 
-導入後の進め方は [入門ガイド](./wiki/Getting-Started.md) を参照されたい．各機能の詳細は以下の Wiki ページで説明している．
+導入後の進め方は [入門ガイド](https://github.com/korarei/AviUtl2_Astra/wiki/Getting-Started) を参照されたい．各機能の詳細は以下の Wiki ページで説明している．
 
-- [設定ファイル ( astra.toml )](./wiki/Configuration.md)
-- [プリプロセッサ](./wiki/Preprocessor.md)
-- [ビルド設定](./wiki/Build-Targets.md)
-- [プロパティと多言語化](./wiki/Properties-and-Localization.md)
-- [タスクランナー](./wiki/Tasks.md)
-- [実行環境と動作確認](./wiki/Testing-and-Runtime.md)
-- [リリースとパッケージング](./wiki/Releases-and-Packaging.md)
-- [キャッシュとクリーン](./wiki/Cache-and-Cleanup.md)
-- [コマンドリファレンス](./wiki/CLI-Reference.md)
+- [設定ファイル ( astra.toml )](https://github.com/korarei/AviUtl2_Astra/wiki/Configuration)
+- [プリプロセッサ](https://github.com/korarei/AviUtl2_Astra/wiki/Preprocessor)
+- [ビルド設定](https://github.com/korarei/AviUtl2_Astra/wiki/Build-Targets)
+- [プロパティと多言語化](https://github.com/korarei/AviUtl2_Astra/wiki/Properties-and-Localization)
+- [タスクランナー](https://github.com/korarei/AviUtl2_Astra/wiki/Tasks)
+- [実行環境と動作確認](https://github.com/korarei/AviUtl2_Astra/wiki/Testing-and-Runtime)
+- [リリースとパッケージング](https://github.com/korarei/AviUtl2_Astra/wiki/Releases-and-Packaging)
+- [キャッシュとクリーン](https://github.com/korarei/AviUtl2_Astra/wiki/Cache-and-Cleanup)
+- [コマンドリファレンス](https://github.com/korarei/AviUtl2_Astra/wiki/CLI-Reference)
 
 ## ライセンス
 

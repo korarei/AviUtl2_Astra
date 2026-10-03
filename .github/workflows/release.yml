@@ -58,6 +58,8 @@ jobs:
           $name = "astra-$tag-" + "${{ matrix.archive }}".Replace("astra-", "")
           New-Item -ItemType Directory -Path staging
           Copy-Item "${{ matrix.binary }}" staging/astra.exe
+          if (Test-Path "README.md") { Copy-Item "README.md" staging/ }
+          if (Test-Path "CHANGELOG.md") { Copy-Item "CHANGELOG.md" staging/ }
           if (Test-Path "LICENSE") { Copy-Item "LICENSE" staging/ }
           if (Test-Path "THIRD_PARTY_LICENSES.md") { Copy-Item "THIRD_PARTY_LICENSES.md" staging/ }
           Compress-Archive -Path "staging/*" -DestinationPath $name
@@ -72,6 +74,8 @@ jobs:
           name="astra-${tag}-${archive#astra-}"
           mkdir -p staging
           cp "${{ matrix.binary }}" staging/astra
+          [ -f "README.md" ] && cp README.md staging/
+          [ -f "CHANGELOG.md" ] && cp CHANGELOG.md staging/
           [ -f "LICENSE" ] && cp LICENSE staging/
           [ -f "THIRD_PARTY_LICENSES.md" ] && cp THIRD_PARTY_LICENSES.md staging/
           tar -czf "$name" -C staging .
