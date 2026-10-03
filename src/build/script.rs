@@ -688,9 +688,12 @@ impl<'a> Builder<'a> {
                         );
                     }
 
-                    if !parse_int(prop.key.trim()).is_some_and(|val| (0..=0xff_ffff).contains(&val)) {
+                    if prop.key.trim() != "nil"
+                        && !parse_int(prop.key.trim()).is_some_and(|val| (0..=0xff_ffff).contains(&val))
+                    {
                         bail!(
-                            "{}: argument of 'color' must be an integer between 0x000000 and 0xffffff, got '{}'",
+                            "{}: argument of 'color' must be 'nil' or an integer \
+                             between 0x000000 and 0xffffff, got '{}'",
                             prop.pos,
                             prop.key.trim()
                         );
@@ -907,9 +910,9 @@ impl<'a> Builder<'a> {
                         );
                     }
 
-                    if !parse_int(args[0]).is_some_and(|val| (0..=0xff_ffff).contains(&val)) {
+                    if args[0] != "nil" && !parse_int(args[0]).is_some_and(|val| (0..=0xff_ffff).contains(&val)) {
                         bail!(
-                            "{pos}: argument 1 of '{kind}' must be an integer between \
+                            "{pos}: argument 1 of '{kind}' must be 'nil' or an integer between \
                              0x000000 and 0xffffff, got '{}'",
                             args[0]
                         );
@@ -1468,9 +1471,10 @@ fn assign_props(kind: &str, val: &str, rest: String) -> anyhow::Result<String> {
             }
         }
         "color" => {
-            let Some(parsed) = parse_int(val) else {
-                bail!("assignment value '{val}' of '{kind}' must be an integer");
-            };
+            let parsed = parse_int(val);
+            if val != "nil" && parsed.is_none() {
+                bail!("assignment value '{val}' of '{kind}' must be 'nil' or an integer");
+            }
 
             let mut parts: Vec<Cow<str>> = rest.split(',').map(Cow::Borrowed).collect();
             if parts.len() >= 2 {
@@ -1478,7 +1482,7 @@ fn assign_props(kind: &str, val: &str, rest: String) -> anyhow::Result<String> {
                 if target == "_" {
                     parts[1] = Cow::Owned(parts[1].replacen('_', val, 1));
                     return Ok(parts.join(","));
-                } else if parse_int(target) != Some(parsed) {
+                } else if (val == "nil" && target != "nil") || (val != "nil" && parse_int(target) != parsed) {
                     bail!("default value '{target}' does not match assignment value '{val}'");
                 }
             }

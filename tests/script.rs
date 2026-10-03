@@ -405,6 +405,10 @@ newline_str = "aaa\nbbb" --text@ _ : nl_prop, _
 newline_matched = "first\nsecond" --text@ _ : nl_match_prop, first\nsecond
 sample_color = 0xff0000 --color@ _ : col_prop, _
 hex_color = 0xFF0000 --color@ _ : hex_prop, 0xff0000
+nil_color = nil --color@_:nil_prop,nil
+sample_nil_color = nil --color@ _ : sample_nil_prop, _
+--color@default_nil_color:default_nil_prop,nil
+--color:nil
 val_num = 1.5 --value@ _ : val_num_prop, _
 val_str = "hello" --value@ _ : val_str_prop, _
 val_tbl = { 1, 2 } --value@ _ : val_tbl_prop, _
@@ -457,6 +461,10 @@ ignored_at_space = 3 --track @ignored_at_space:0,100,1
         "--text@ newline_matched : nl_match_prop, first\\nsecond",
         "--color@ sample_color : col_prop, 0xff0000",
         "--color@ hex_color : hex_prop, 0xff0000",
+        "--color@nil_color:nil_prop,nil",
+        "--color@ sample_nil_color : sample_nil_prop, nil",
+        "--color@default_nil_color:default_nil_prop,nil",
+        "--color:nil",
         "--value@ val_num : val_num_prop, 1.5",
         "--value@ val_str : val_str_prop, \"hello\"",
         "--value@ val_tbl : val_tbl_prop, { 1, 2 }",
@@ -548,14 +556,26 @@ ignored_at_space = 3 --track @ignored_at_space:0,100,1
             "default value '0x000000' does not match assignment value '0xffffff'",
         ),
         (
+            "local value = nil --color@_:A,0xffffff",
+            "default value '0xffffff' does not match assignment value 'nil'",
+        ),
+        (
+            "local value = 0xffffff --color@_:A,nil",
+            "default value 'nil' does not match assignment value '0xffffff'",
+        ),
+        (
+            "local value = nil --color@_:A,invalid",
+            "default value 'invalid' does not match assignment value 'nil'",
+        ),
+        (
             "--color@_:A,0x1000000\n",
-            "must be an integer between 0x000000 and 0xffffff",
+            "must be 'nil' or an integer between 0x000000 and 0xffffff",
         ),
         (
             "--color:0x1000000\n",
-            "must be an integer between 0x000000 and 0xffffff",
+            "must be 'nil' or an integer between 0x000000 and 0xffffff",
         ),
-        ("--color:invalid\n", "must be an integer"),
+        ("--color:invalid\n", "must be 'nil' or an integer"),
         (
             "local value = 1 --select@_:C=2,item1=1,item2=2",
             "default value '2' does not match assignment value '1'",
@@ -567,7 +587,10 @@ ignored_at_space = 3 --track @ignored_at_space:0,100,1
         ),
         ("local value = 1 --checksection@_:B,true", "must be 'true' or 'false'"),
         ("local value = 'str' --select@_:C=1,item1=1", "must be an integer"),
-        ("local value = 'str' --color@_:A,0xffffff", "must be an integer"),
+        (
+            "local value = 'str' --color@_:A,0xffffff",
+            "must be 'nil' or an integer",
+        ),
         ("local value = raw_ident --file@_:A", "must be a string"),
         (
             "local value = 1 --value@_:A,2",
