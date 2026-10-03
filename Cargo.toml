@@ -1,6 +1,6 @@
 [package]
 name = "astra"
-version = "0.7.0"
+version = "0.7.1"
 authors = ["Korarei"]
 description = "Build tool and task runner for AviUtl ExEdit extensions"
 edition = "2024"
