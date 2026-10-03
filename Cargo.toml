@@ -1,0 +1,59 @@
+[package]
+name = "astra"
+version = "0.7.0"
+authors = ["Korarei"]
+description = "Build tool and task runner for AviUtl ExEdit extensions"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "astra"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+cel-interpreter = "0.10"
+chardetng = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+dotenvy = "0.15"
+encoding_rs = "0.8"
+fd-lock = "4.0"
+wax = "0.7"
+indexmap = { version = "2.14", features = ["serde"] }
+regex = "1.13"
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "native-tls",
+] }
+semver = "1.0"
+schemars = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_with = { version = "3.22", features = ["indexmap_2", "schemars_1"] }
+tempfile = "3.27"
+toml_edit = "0.25"
+textwrap = "0.16"
+toml = { version = "1.1", features = ["preserve_order"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+validator = { version = "0.21", features = ["derive"] }
+which = "8.0"
+xxhash-rust = { version = "0.8", features = ["const_xxh3", "xxh3"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+clone_on_ref_ptr = "warn"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
