@@ -1,0 +1,196 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025-vs2026
+            target: x86_64-pc-windows-msvc
+            archive: astra-windows-x64.zip
+            binary: target/x86_64-pc-windows-msvc/release/astra.exe
+            is_windows: true
+
+          - os: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            archive: astra-windows-arm64.zip
+            binary: target/aarch64-pc-windows-msvc/release/astra.exe
+            is_windows: true
+
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: astra-linux-x64.tar.gz
+            binary: target/x86_64-unknown-linux-gnu/release/astra
+            is_windows: false
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@v4
+        with:
+          install: true
+
+      - run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - if: matrix.is_windows
+        id: package-windows
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $name = "astra-$tag-" + "${{ matrix.archive }}".Replace("astra-", "")
+          New-Item -ItemType Directory -Path staging
+          Copy-Item "${{ matrix.binary }}" staging/astra.exe
+          if (Test-Path "LICENSE") { Copy-Item "LICENSE" staging/ }
+          if (Test-Path "THIRD_PARTY_LICENSES.md") { Copy-Item "THIRD_PARTY_LICENSES.md" staging/ }
+          Compress-Archive -Path "staging/*" -DestinationPath $name
+          "archive=$name" >> $env:GITHUB_OUTPUT
+
+      - if: "!matrix.is_windows"
+        id: package-linux
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          archive="${{ matrix.archive }}"
+          name="astra-${tag}-${archive#astra-}"
+          mkdir -p staging
+          cp "${{ matrix.binary }}" staging/astra
+          [ -f "LICENSE" ] && cp LICENSE staging/
+          [ -f "THIRD_PARTY_LICENSES.md" ] && cp THIRD_PARTY_LICENSES.md staging/
+          tar -czf "$name" -C staging .
+          echo "archive=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.package-windows.outputs.archive || steps.package-linux.outputs.archive }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - uses: actions/attest@v4
+        with:
+          subject-path: packages/*
+
+      - shell: pwsh
+        run: |
+          $changelogPath = "CHANGELOG.md"
+          if (-not (Test-Path $changelogPath)) {
+              exit 0
+          }
+
+          $src = (Get-Content $changelogPath -Raw) -replace "\r\n", "`n" -replace "\r", "`n"
+
+          $headerMatch = [regex]::Match($src, "(?im)^[^\S\n]*(?<hashes>#+)[^\S\n]*(?:change[^\S\n]*logs?\b)")
+          if (-not $headerMatch.Success) {
+              exit 0
+          }
+
+          $changelogLevel = $headerMatch.Groups["hashes"].Value.Length
+          $afterHeader = $src.Substring($headerMatch.Index + $headerMatch.Length)
+          $lines = $afterHeader -split "`n"
+
+          $versionPattern = [regex]"^(?i)[^\S\n]*(?:#+[^\S\n]*(?:\*\*)?|[-*][^\S\n]*\*\*)\[?v?\d+"
+          $inSection = $false
+          $contentLines = [System.Collections.Generic.List[string]]::new()
+
+          foreach ($line in $lines) {
+              $trimmed = $line.TrimStart()
+              $hashes = 0
+              while ($hashes -lt $trimmed.Length -and $trimmed[$hashes] -eq [char]'#') { $hashes++ }
+
+              if ($hashes -gt 0 -and $hashes -le $changelogLevel) {
+                  break
+              }
+
+              if (-not $inSection) {
+                  if ($versionPattern.IsMatch($line)) {
+                      $inSection = $true
+                      continue
+                  }
+              } else {
+                  if ($versionPattern.IsMatch($line)) {
+                      break
+                  }
+                  $contentLines.Add($line)
+              }
+          }
+
+          if (-not $inSection) {
+              exit 0
+          }
+
+          $nonEmptyLines = $contentLines | Where-Object { $_ -match "\S" }
+          $minIndent = [int]::MaxValue
+          foreach ($l in $nonEmptyLines) {
+              $indent = 0
+              while ($indent -lt $l.Length -and ($l[$indent] -eq [char]' ' -or $l[$indent] -eq [char]"`t")) { $indent++ }
+              if ($indent -lt $minIndent) { $minIndent = $indent }
+          }
+          if ($minIndent -eq [int]::MaxValue) { $minIndent = 0 }
+
+          $dedented = ($contentLines | ForEach-Object {
+              if ($_.Length -ge $minIndent) { $_.Substring($minIndent) } else { $_ }
+          }) -join "`n"
+
+          $headingPattern = [regex]"(?m)^(?<indent>[^\S\n]*)(?<hashes>#+)(?<rest>[^\S\n].*|$)"
+          $matches = $headingPattern.Matches($dedented)
+          $minHeading = [int]::MaxValue
+          foreach ($m in $matches) {
+              $len = $m.Groups["hashes"].Value.Length
+              if ($len -lt $minHeading) { $minHeading = $len }
+          }
+
+          if ($minHeading -lt [int]::MaxValue) {
+              $dedented = $headingPattern.Replace($dedented, {
+                  param($m)
+                  $indent = $m.Groups["indent"].Value
+                  $hashes = $m.Groups["hashes"].Value.Length
+                  $rest = $m.Groups["rest"].Value
+                  $newHashes = "#" * ($hashes + 3 - $minHeading)
+                  return "$indent$newHashes$rest"
+              })
+          }
+
+          $result = "## What's Changed`n`n" + $dedented.Trim() + "`n"
+          [System.IO.File]::WriteAllText("RELEASE_NOTES.md", $result, [System.Text.Encoding]::UTF8)
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          name: "${{ github.ref_name }}"
+          files: packages/*
+          body_path: ${{ hashFiles('RELEASE_NOTES.md') != '' && 'RELEASE_NOTES.md' || '' }}
+          generate_release_notes: ${{ hashFiles('RELEASE_NOTES.md') == '' }}

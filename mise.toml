@@ -1,0 +1,24 @@
+[settings]
+lockfile = true
+
+[tools]
+rust = { version = "1.99", profile = "minimal", components = [
+    "clippy",
+    "rust-analyzer",
+    "rustfmt",
+] }
+
+[tasks.check]
+usage = 'flag "--help" help="Show task help"'
+tools."cargo:cargo-deny" = "0.20"
+run = ["cargo clippy --locked", "cargo deny --locked check"]
+
+[tasks.licenses]
+usage = 'flag "--help" help="Show task help"'
+tools."cargo:cargo-about" = { version = "0.9", features = "cli" }
+run = "cargo about generate --locked about.hbs -o THIRD_PARTY_LICENSES.md"
+
+[tasks.outdated]
+usage = 'flag "--help" help="Show task help"'
+tools."cargo:cargo-outdated" = "0.19"
+run = "cargo outdated"
