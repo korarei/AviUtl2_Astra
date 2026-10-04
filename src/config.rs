@@ -1,4 +1,4 @@
-use crate::vars::{self, Scope};
+use crate::vars::{self, Scope, Vars};
 use anyhow::{Context, bail};
 use indexmap::IndexMap;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -197,6 +197,10 @@ impl Config {
             .join(id)
             .to_string_lossy()
             .into_owned();
+
+        #[cfg(windows)]
+        let dir = dir.replace('/', "\\");
+
         let vars = IndexMap::from([
             ("BUILD_TYPE".to_owned(), build_type.as_lowercase().to_owned()),
             (
@@ -431,11 +435,11 @@ impl Astra {
         }
 
         if let Some(dir) = &mut self.build_dir {
-            *dir = vars::expand(dir, scope)?;
+            *dir = convert_path(vars::expand(dir, scope)?);
         }
 
         if let Some(dir) = &mut self.dist_dir {
-            *dir = vars::expand(dir, scope)?;
+            *dir = convert_path(vars::expand(dir, scope)?);
         }
 
         Ok(())
@@ -457,37 +461,19 @@ impl Astra {
     }
 
     pub(crate) fn verify(&self, file: &Path) -> anyhow::Result<()> {
-        let normalize = |path: &Path| -> anyhow::Result<PathBuf> {
-            let mut target = PathBuf::new();
-            for part in std::path::absolute(path)?.components() {
-                match part {
-                    Component::CurDir => {}
-                    Component::ParentDir => {
-                        target.pop();
-                    }
-                    _ => target.push(part.as_os_str()),
-                }
-            }
-            #[cfg(windows)]
-            target.as_mut_os_string().make_ascii_lowercase();
-            Ok(target)
-        };
-
-        let root = normalize(
+        let root = crate::fs::to_key(
             file.parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or(Path::new(".")),
         )?;
 
-        let managed = root.join(".astra");
-
         let check_dir = |dir: &str, kind: &str| -> anyhow::Result<()> {
-            let target = normalize(&root.join(dir))?;
+            let target = crate::fs::to_key(&root.join(dir))?;
             if root.starts_with(&target) {
                 bail!("{kind} directory must not resolve to the project root or one of its parents: '{dir}'");
             }
 
-            if target.starts_with(&managed) {
+            if target.starts_with(crate::fs::to_key(&root.join(".astra"))?) {
                 bail!("{kind} directory must not be '.astra' or one of its children: '{dir}'");
             }
 
@@ -844,8 +830,32 @@ impl Build {
             call.expanded(&scope)?;
         }
 
-        for path in self.include_dirs.iter_mut().chain(&mut self.artifacts) {
-            *path = vars::expand(path, &scope)?;
+        for path in &mut self.include_dirs {
+            *path = convert_path(vars::expand(path, &scope)?);
+        }
+
+        if !self.artifacts.is_empty() {
+            let mut vars = IndexMap::new();
+            for key in ["BUILD_DIR", "BUILD_DIRECTORY"] {
+                if let Some(val) = scope.get(key) {
+                    let val = if cfg!(windows) {
+                        Cow::Owned(val.replace('\\', "/"))
+                    } else {
+                        Cow::Borrowed(val)
+                    };
+
+                    if val.contains('\\') {
+                        bail!("variable '{key}' must not contain backslashes when expanding artifacts");
+                    }
+
+                    vars.insert(key.to_owned(), val.into_owned());
+                }
+            }
+
+            let artifact_scope = scope.set(Arc::new(vars));
+            for pattern in &mut self.artifacts {
+                *pattern = vars::expand(pattern, &artifact_scope)?;
+            }
         }
 
         self.scope = scope;
@@ -1032,6 +1042,12 @@ impl Validate for Build {
             }
         }
 
+        for pattern in &self.artifacts {
+            if let Err(e) = validate_glob(pattern) {
+                errors.add("artifacts", e);
+            }
+        }
+
         if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 }
@@ -1130,14 +1146,14 @@ impl BuildTarget {
     pub(crate) fn expanded(&mut self, parent: &Scope) -> anyhow::Result<()> {
         let scope = expand_map(&mut self.vars, parent)?;
 
-        self.path = vars::expand(&self.path, &scope)?;
+        self.path = convert_path(vars::expand(&self.path, &scope)?);
 
         if let Some(name) = &mut self.name {
             *name = vars::expand(name, &scope)?;
         }
 
         for dir in &mut self.include_dirs {
-            *dir = vars::expand(dir, &scope)?;
+            *dir = convert_path(vars::expand(dir, &scope)?);
         }
 
         if let Some(encoding) = &mut self.encoding {
@@ -1357,7 +1373,7 @@ pub struct ReleaseNotes {
 
 impl ReleaseNotes {
     pub(crate) fn expanded(&mut self, scope: &Scope) -> anyhow::Result<()> {
-        self.changelog = vars::expand(&self.changelog, scope)?;
+        self.changelog = convert_path(vars::expand(&self.changelog, scope)?);
 
         if let Some(filename) = &mut self.filename {
             *filename = vars::expand(filename, scope)?;
@@ -1612,7 +1628,7 @@ pub struct PackageContent {
 
 impl PackageContent {
     pub(crate) fn expanded(&mut self, scope: &Scope) -> anyhow::Result<()> {
-        self.dir = vars::expand(&self.dir, scope)?;
+        self.dir = convert_path(vars::expand(&self.dir, scope)?);
 
         for source in &mut self.sources {
             source.expanded(scope)?;
@@ -1735,7 +1751,7 @@ impl PackageSourceBuild {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PackageSourcePath {
-    #[validate(length(min = 1))]
+    #[validate(length(min = 1), custom(function = "validate_glob"))]
     path: String,
 }
 
@@ -1801,6 +1817,12 @@ impl Validate for PackageSourceUrl {
                 "pick",
                 ValidationError::new("requires_extract").with_message("pick requires extract = true".into()),
             );
+        }
+
+        if let Some(pick) = &self.pick
+            && let Err(e) = validate_picker(pick)
+        {
+            errors.add("pick", e);
         }
 
         if errors.is_empty() { Ok(()) } else { Err(errors) }
@@ -1911,6 +1933,17 @@ fn expand_map(vars: &mut IndexMap<String, String>, parent: &Scope) -> anyhow::Re
     Ok(scope)
 }
 
+fn convert_path(path: String) -> String {
+    #[cfg(windows)]
+    let path = if path.contains('/') {
+        path.replace('/', "\\")
+    } else {
+        path
+    };
+
+    path
+}
+
 fn validate_requires_astra(ver: &str) -> Result<(), ValidationError> {
     semver::VersionReq::parse(ver)
         .map(|_| ())
@@ -1970,6 +2003,57 @@ fn validate_directory(dir: &str) -> Result<(), ValidationError> {
             "must be a relative path without leading/trailing whitespace, '..', root directory, or drive letters"
                 .into(),
         ));
+    }
+
+    Ok(())
+}
+
+fn validate_glob(pattern: &str) -> Result<(), ValidationError> {
+    let bytes = pattern.as_bytes();
+    let expr = if bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1) == Some(&b':') {
+        if bytes.get(2) != Some(&b'/') {
+            return Err(
+                ValidationError::new("invalid_glob").with_message("drive-relative paths are not allowed".into())
+            );
+        }
+
+        &pattern[2..]
+    } else {
+        pattern
+    };
+
+    let (prefix, _) = wax::Glob::new(expr)
+        .map_err(|err| ValidationError::new("invalid_glob").with_message(err.to_string().into()))?
+        .partition();
+
+    if let Some(Component::Prefix(component)) = prefix.components().next()
+        && (!matches!(component.kind(), std::path::Prefix::Disk(_)) || !prefix.has_root())
+    {
+        return Err(ValidationError::new("invalid_glob")
+            .with_message("only drive-absolute paths are allowed as Windows path prefixes".into()));
+    }
+
+    Ok(())
+}
+
+fn validate_picker(pattern: &str) -> Result<(), ValidationError> {
+    let (prefix, _) = wax::Glob::new(pattern)
+        .map_err(|err| ValidationError::new("invalid_picker").with_message(err.to_string().into()))?
+        .partition();
+
+    let cleaned = clean_path::clean(&prefix);
+
+    if [&prefix, &cleaned].into_iter().any(|path| {
+        let text = path.to_string_lossy();
+        let bytes = text.as_bytes();
+        (bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1) == Some(&b':'))
+            || path
+                .components()
+                .any(|c| matches!(c, Component::RootDir | Component::Prefix(_)))
+    }) || cleaned.components().any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(ValidationError::new("invalid_picker")
+            .with_message("pick must resolve to a relative path within the zip archive".into()));
     }
 
     Ok(())

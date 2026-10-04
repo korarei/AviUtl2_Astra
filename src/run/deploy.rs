@@ -3,7 +3,7 @@ use crate::config::Package;
 use crate::package::PackageCache;
 use anyhow::{Context, bail};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(super) fn deploy(
     data_dir: &Path,
@@ -18,7 +18,10 @@ pub(super) fn deploy(
         let content = content?;
         for src in content.sources() {
             for file in cache.resolve(Path::new(content.dir()), src, outputs)? {
-                links.insert(file.dst.to_string_lossy().replace('\\', "/"), file.src);
+                let dst = file.dst.to_string_lossy().into_owned();
+                #[cfg(windows)]
+                let dst = dst.replace('/', "\\");
+                links.insert(dst, file.src);
             }
         }
     }
@@ -38,7 +41,21 @@ pub(super) fn deploy(
     let hash = cache.hash(package.contents())?;
     let targets: BTreeMap<_, _> = links
         .iter()
-        .map(|(dst, target)| (dst.clone(), describe(cache.root(), target)))
+        .map(|(dst, target)| {
+            let encode = |path: &Path| {
+                #[cfg(windows)]
+                return path.to_string_lossy().replace('/', "\\");
+                #[cfg(not(windows))]
+                path.to_string_lossy().into_owned()
+            };
+
+            (
+                dst.clone(),
+                target
+                    .strip_prefix(cache.root())
+                    .map_or_else(|_| encode(target), encode),
+            )
+        })
         .collect();
     manifest.config = None;
     manifest.build = None;
@@ -61,11 +78,12 @@ pub(super) fn deploy(
 
     for (dst, target) in &links {
         let path = data_dir.join(dst);
-        if !is_same_link(&path, target) {
+        if !is_same_link(&path, target)? {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create directory '{}'", parent.display()))?;
             }
+
             crate::fs::remove(&path)?;
             link(&path, target)?;
         }
@@ -116,40 +134,19 @@ fn link(dst: &Path, src: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn read_link_target(path: &Path) -> Option<PathBuf> {
-    let target = std::fs::read_link(path).ok()?;
-    Some(if target.is_absolute() {
-        target
+pub(super) fn is_same_link(path: &Path, target: &Path) -> anyhow::Result<bool> {
+    let Ok(link) = std::fs::read_link(path) else {
+        return Ok(false);
+    };
+
+    let path = if link.is_absolute() {
+        link
     } else {
-        path.parent()?.join(target)
-    })
-}
-
-pub(super) fn is_same_link(path: &Path, target: &Path) -> bool {
-    read_link_target(path).is_some_and(|path| {
-        let Ok(path) = std::path::absolute(path) else {
-            return false;
+        let Some(dir) = path.parent() else {
+            return Ok(false);
         };
+        dir.join(link)
+    };
 
-        let Ok(target) = std::path::absolute(target) else {
-            return false;
-        };
-
-        #[cfg(windows)]
-        {
-            path.to_string_lossy().eq_ignore_ascii_case(&target.to_string_lossy())
-        }
-
-        #[cfg(not(windows))]
-        {
-            path == target
-        }
-    })
-}
-
-fn describe(cache_dir: &Path, target: &Path) -> String {
-    target.strip_prefix(cache_dir).map_or_else(
-        |_| target.to_string_lossy().replace('\\', "/"),
-        |path| path.to_string_lossy().replace('\\', "/"),
-    )
+    Ok(crate::fs::to_key(&path)? == crate::fs::to_key(target)?)
 }

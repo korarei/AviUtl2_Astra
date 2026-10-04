@@ -139,7 +139,8 @@ pub(crate) fn run(build: &Build, config: &Config, astra: &Astra, build_type: Bui
     }
 
     for pattern in build.artifacts() {
-        for entry in wax::Glob::new(pattern)?.walk(".") {
+        let (prefix, glob) = crate::fs::resolve_glob(pattern)?;
+        for entry in glob.walk(prefix) {
             artifacts.push(std::path::absolute(entry?.path())?);
         }
     }

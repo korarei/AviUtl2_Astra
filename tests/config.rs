@@ -63,8 +63,14 @@ artifacts = "${{ AVIUTL2_VERSION }}"
         IndexMap::from([("ROOT".to_owned(), "project".to_owned())]),
         Some(" 2.0.0 "),
     )?;
-    assert_eq!(config.astra().build_dir(), "project/build");
-    assert_eq!(config.astra().dist_dir(), "project/dist");
+    assert_eq!(
+        config.astra().build_dir(),
+        Path::new("project").join("build").to_str().unwrap()
+    );
+    assert_eq!(
+        config.astra().dist_dir(),
+        Path::new("project").join("dist").to_str().unwrap()
+    );
     assert_eq!(config.astra().run().release_id(), Some("main"));
     assert_eq!(config.task(&TaskCall::Simple("main".to_owned()))?.shell(), Some("pwsh"));
 
@@ -336,7 +342,7 @@ newline = "\r\n"
     assert_eq!(no_suffix_build.suffix(), None);
     let dir = Path::new("out").join("main").to_string_lossy().into_owned();
     assert_eq!(build.include_dirs()[1], dir);
-    assert_eq!(build.artifacts(), &[dir.clone()]);
+    assert_eq!(build.artifacts(), &["out/main".to_owned()]);
 
     assert_eq!(
         config.build("boolean_true", BuildType::Debug)?.artifacts(),
@@ -374,7 +380,10 @@ newline = "\r\n"
     let targets = build.targets().collect::<anyhow::Result<Vec<_>>>()?;
     assert_eq!(targets.len(), 2);
     assert_eq!(targets[0].name(), "named");
-    assert_eq!(targets[0].path(), "scripts/main.lua");
+    assert_eq!(
+        targets[0].path(),
+        Path::new("scripts").join("main.lua").to_str().unwrap()
+    );
     assert_eq!(targets[0].include_dirs(), &["include".to_owned()]);
     assert_eq!(
         targets[0].vars().get("TARGET_LOCAL").map(String::as_str),
@@ -565,7 +574,7 @@ source = "HTTP://${{ HOST }}/archive.zip"
 
 [[release.publish.package.content]]
 dir = "Alias/${{ LOCAL }}"
-source = "custom://${{ PATH_VALUE }}"
+source = "custom/${{ PATH_VALUE }}"
 
 [[release.publish.package.content]]
 dir = "Figure/${{ LOCAL }}"
@@ -661,7 +670,7 @@ changelog = "changes"
     assert!(
         matches!(&contents[2].sources()[0], PackageSource::Url(src) if src.url() == "HTTP://example.com/archive.zip")
     );
-    assert!(matches!(&contents[3].sources()[0], PackageSource::Path(src) if src.path() == "custom://assets/data.txt"));
+    assert!(matches!(&contents[3].sources()[0], PackageSource::Path(src) if src.path() == "custom/assets/data.txt"));
     assert!(matches!(&contents[4].sources()[0], PackageSource::Build(src) if src.id() == "core"));
     assert!(matches!(&contents[5].sources()[0], PackageSource::Path(src) if src.path() == "assets/data.txt"));
     let PackageSource::Url(url) = &contents[6].sources()[0] else {
@@ -709,6 +718,236 @@ changelog = "changes"
     assert_eq!(file.content().as_ref(), "plain");
     assert_eq!(file.encoding(), encoding_rs::UTF_8);
     assert_eq!(file.newline(), None);
+    Ok(())
+}
+
+#[test]
+fn converts_paths_without_converting_globs_or_urls() -> anyhow::Result<()> {
+    let config = load_config(
+        r#"
+version = 2
+
+[project]
+name = "demo"
+
+[variables]
+ROOT = 'root/part\leaf'
+GLOB = 'assets/**/file\?.lua'
+
+[astra]
+build-dir = '${{ ROOT }}/build'
+dist-dir = '${{ ROOT }}/dist'
+
+[build.main]
+suffix = ".anm2"
+include-dirs = ['${{ ROOT }}/include']
+artifacts = ['${{ BUILD_DIR }}/**/*.anm2', '${{ BUILD_DIRECTORY }}/single.anm2', '${{ GLOB }}']
+dependencies = [{ task = "prepare" }]
+
+[build.paths]
+suffix = ".anm2"
+include-dirs = ['${{ ROOT }}/include']
+targets = [{ path = '${{ ROOT }}/main.lua', include-dirs = ['${{ ROOT }}/local'] }]
+
+[release.main.notes]
+changelog = '${{ ROOT }}/changes.md'
+
+[release.main.package]
+filename = "demo.zip"
+content = [{ dir = '${{ ROOT }}/dest', source = [
+    { path = '${{ GLOB }}' },
+    { url = 'https://example.com/path/archive.zip', extract = true, pick = '${{ GLOB }}' }
+] }]
+"#,
+    )?;
+    let root = if cfg!(windows) {
+        r"root\part\leaf"
+    } else {
+        r"root/part\leaf"
+    };
+    assert_eq!(
+        config.astra().build_dir(),
+        Path::new(root).join("build").to_str().unwrap()
+    );
+    assert_eq!(
+        config.astra().dist_dir(),
+        Path::new(root).join("dist").to_str().unwrap()
+    );
+
+    let build = config.build("main", BuildType::Debug);
+    #[cfg(not(windows))]
+    {
+        assert!(build.unwrap_err().to_string().contains("backslashes"));
+    }
+    #[cfg(windows)]
+    {
+        let build = build?;
+        assert_eq!(
+            build.artifacts(),
+            &[
+                "root/part/leaf/build/main/**/*.anm2".to_owned(),
+                "root/part/leaf/build/main/single.anm2".to_owned(),
+                r"assets/**/file\?.lua".to_owned(),
+            ]
+        );
+        let TaskCall::Detailed { vars, .. } = &build.depends()[0] else {
+            panic!("detailed dependency expected");
+        };
+        assert_eq!(
+            vars.get("BUILD_DIR").map(String::as_str),
+            Some(r"root\part\leaf\build\main")
+        );
+    }
+
+    let build = config.build("paths", BuildType::Debug)?;
+    assert_eq!(
+        build.include_dirs(),
+        &[Path::new(root).join("include").to_string_lossy().into_owned()]
+    );
+    let target = build.targets().next().unwrap()?;
+    assert_eq!(target.path(), Path::new(root).join("main.lua").to_str().unwrap());
+    assert_eq!(
+        target.include_dirs(),
+        &[Path::new(root).join("local").to_string_lossy().into_owned()]
+    );
+
+    let release = config.release("main")?;
+    assert_eq!(
+        release.notes().unwrap().changelog(),
+        Path::new(root).join("changes.md").to_str().unwrap()
+    );
+    let content = release.package().unwrap().contents().next().unwrap()?;
+    assert_eq!(content.dir(), Path::new(root).join("dest").to_str().unwrap());
+    assert!(matches!(&content.sources()[0], PackageSource::Path(src) if src.path() == r"assets/**/file\?.lua"));
+    let PackageSource::Url(src) = &content.sources()[1] else {
+        panic!("URL source expected");
+    };
+    assert_eq!(src.url(), "https://example.com/path/archive.zip");
+    assert_eq!(src.pick(), Some(r"assets/**/file\?.lua"));
+    Ok(())
+}
+
+#[test]
+fn validates_artifacts_and_package_globs() -> anyhow::Result<()> {
+    for (pattern, valid) in [
+        ("assets/**/*.lua", true),
+        (r"assets/file\?.lua", true),
+        ("../assets/*.lua", true),
+        ("/assets/*.lua", true),
+        ("C:/assets/*.lua", true),
+        ("C:assets/*.lua", false),
+        ("C:", false),
+        ("custom://assets/data.txt", false),
+        ("assets/[", false),
+    ] {
+        let config = load_config(&format!(
+            "version = 2\n[project]\nname = 'demo'\n[build.main]\nartifacts = ['{pattern}']\n"
+        ))?;
+        assert_eq!(config.build("main", BuildType::Debug).is_ok(), valid, "{pattern}");
+        assert_eq!(
+            toml::from_str::<astra::config::PackageSourcePath>(&format!("path = '{pattern}'"))?
+                .validate()
+                .is_ok(),
+            valid,
+            "{pattern}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn validates_zip_pickers() -> anyhow::Result<()> {
+    for (pattern, valid) in [
+        ("assets/**/*.lua", true),
+        ("./assets/*.lua", true),
+        ("assets/../scripts/*.lua", true),
+        (r"assets/file\?.lua", true),
+        ("../assets/*.lua", false),
+        ("assets/../../*.lua", false),
+        ("/assets/*.lua", false),
+        ("C:/assets/*.lua", false),
+        ("C:assets/*.lua", false),
+        ("assets/../C:/scripts/*.lua", false),
+        ("assets/[", false),
+    ] {
+        assert_eq!(
+            toml::from_str::<astra::config::PackageSourceUrl>(&format!(
+                "url = 'https://example.com/archive.zip'\nextract = true\npick = '{pattern}'"
+            ))?
+            .validate()
+            .is_ok(),
+            valid,
+            "{pattern}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn rejects_unsafe_output_directories_without_cleaning_saved_paths() -> anyhow::Result<()> {
+    for field in ["build-dir", "dist-dir"] {
+        for path in [
+            ".",
+            "..",
+            "nested/..",
+            "nested/../..",
+            ".astra",
+            "nested/../.astra/cache",
+        ] {
+            assert!(
+                load_config(&format!(
+                    "version = 2\n[project]\nname = 'demo'\n[astra]\n{field} = '{path}'\n"
+                ))
+                .is_err(),
+                "{field}: {path}"
+            );
+        }
+        let config = load_config(&format!(
+            "version = 2\n[project]\nname = 'demo'\n[astra]\n{field} = 'nested/../output'\n"
+        ))?;
+        assert_eq!(
+            if field == "build-dir" {
+                config.astra().build_dir()
+            } else {
+                config.astra().dist_dir()
+            },
+            if cfg!(windows) {
+                r"nested\..\output"
+            } else {
+                "nested/../output"
+            }
+        );
+        assert_eq!(
+            load_config(&format!(
+                "version = 2\n[project]\nname = 'demo'\n[astra]\n{field} = '.ASTRA/cache'\n"
+            ))
+            .is_ok(),
+            !cfg!(windows),
+            "{field}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn rejects_unicode_case_variants_of_project_ancestors() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir(dir.path().join("Ä"))?;
+    let file = dir.path().join("Ä").join("astra.toml");
+    for field in ["build-dir", "dist-dir"] {
+        std::fs::write(
+            &file,
+            format!("version = 2\n[project]\nname = 'demo'\n[astra]\n{field} = '../ä'\n"),
+        )?;
+        assert!(
+            Config::load(&file, IndexMap::new(), None)
+                .unwrap_err()
+                .to_string()
+                .contains("project root or one of its parents"),
+            "{field}"
+        );
+    }
     Ok(())
 }
 
