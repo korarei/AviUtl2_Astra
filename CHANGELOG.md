@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.2] - 2026-10-05
+
+### Fixed
+
+- HLSL の `cbuffer` 内で，初期化子の括弧が閉じていない宣言を検出できない問題を修正．
+
 ## [0.7.1] - 2026-10-03
 
 ### Fixed
@@ -255,7 +261,9 @@
 
 - Release
 
-[Unreleased]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.5...HEAD
+[0.7.2]: https://github.com/korarei/AviUtl2_Astra/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/korarei/AviUtl2_Astra/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.2...v0.6.3

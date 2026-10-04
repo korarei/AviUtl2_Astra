@@ -64,7 +64,7 @@ struct Source {
 
 impl<'a> Builder<'a> {
     fn build(mut self, src: &str) -> anyhow::Result<Output> {
-        let src = self.process(src, Path::new(self.target.path()))?;
+        let src = self.process(src, Path::new(self.target.path()), 0, 0)?;
         let mut src = self.resolve_header(src)?;
 
         if self.suffix.ends_with('2') && !self.suffix.eq_ignore_ascii_case(".tra2") {
@@ -115,18 +115,8 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn process(&mut self, content: &str, file: &Path) -> anyhow::Result<Source> {
-        self.process_at(content, file, 0, 0)
-    }
-
     #[allow(clippy::too_many_lines)]
-    fn process_at(
-        &mut self,
-        content: &str,
-        file: &Path,
-        line_offset: usize,
-        col_offset: usize,
-    ) -> anyhow::Result<Source> {
+    fn process(&mut self, content: &str, file: &Path, line_offset: usize, col_offset: usize) -> anyhow::Result<Source> {
         let curr_dir = file.parent().unwrap_or(Path::new("."));
         let file: Arc<Path> = file.into();
         let starts = std::iter::once(0)
@@ -228,7 +218,7 @@ impl<'a> Builder<'a> {
                 let body_st = body.as_ptr() as usize - content.as_ptr() as usize;
                 let body_ed = body_st + body.len();
                 let origin = locate(body_st);
-                let mut nested = self.process_at(body, file.as_ref(), origin.line - 1, origin.col - 1)?;
+                let mut nested = self.process(body, file.as_ref(), origin.line - 1, origin.col - 1)?;
                 let end_line = starts.partition_point(|&st| st <= token.span.ed).saturating_sub(1);
                 let end = starts.get(end_line + 1).map_or(content.len(), |st| st - 1);
 
@@ -1299,13 +1289,17 @@ impl<'a> Builder<'a> {
 
     fn load_include(&mut self, file: &Path) -> anyhow::Result<Source> {
         if file.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("hlsl")) {
-            let text = super::shader::build(
+            let mut text = super::shader::build(
                 &crate::fs::read_file(file, self.target.encoding())?,
                 file,
                 self.target,
                 self.include_dirs,
                 self.vars.as_ref(),
             )?;
+
+            if text.ends_with('\n') {
+                text.pop();
+            }
 
             let file: Arc<Path> = file.into();
             let positions = text
@@ -1329,7 +1323,7 @@ impl<'a> Builder<'a> {
 
         self.include_stack.push(file.clone());
 
-        let result = (|| self.process(&crate::fs::read_file(&file, self.target.encoding())?, &file))();
+        let result = (|| self.process(&crate::fs::read_file(&file, self.target.encoding())?, &file, 0, 0))();
 
         let _ = self.include_stack.pop();
 
@@ -1665,7 +1659,7 @@ fn validate_shader_name(name: &str, kind: &str, pos: &preprocess::Position) -> a
         bail!("{pos}: name of '{kind}' must match [A-Za-z_][A-Za-z0-9_]*, got '{name}'");
     }
 
-    if hlsl::is_reserved(name) {
+    if hlsl::parse_builtin(name).is_some() || hlsl::KEYWORDS.contains(&name) {
         bail!("{pos}: name of '{kind}' cannot be an HLSL keyword or reserved word, got '{name}'");
     }
 

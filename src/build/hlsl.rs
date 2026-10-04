@@ -87,6 +87,7 @@ impl<'a> Lexer<'a> {
 impl<'a> Iterator for Lexer<'a> {
     type Item = Token<'a>;
 
+    #[allow(clippy::too_many_lines)]
     fn next(&mut self) -> Option<Self::Item> {
         if self.curr == 0 && self.src.trim().is_empty() {
             self.state.is_directive = false;
@@ -95,83 +96,107 @@ impl<'a> Iterator for Lexer<'a> {
             return None;
         }
         if self.state.is_directive || (!self.state.is_comment && self.is_line_start && self.bytes[self.curr] == b'#') {
-            return Some(self.read_directive());
+            let st = self.curr;
+            let ed = st + self.src[st..].find('\n').unwrap_or(self.src.len() - st);
+            let kind = if self.state.is_directive {
+                TokenKind::Continuation
+            } else {
+                TokenKind::Directive
+            };
+            let mut lexer = Self::new(&self.src[st + usize::from(kind == TokenKind::Directive)..ed]);
+            lexer.state.is_comment = self.state.is_comment;
+            lexer.is_line_start = false;
+            lexer.by_ref().for_each(drop);
+            self.state.is_comment = lexer.state.is_comment;
+            self.state.is_directive = self.src[st..ed].trim_end().ends_with('\\');
+            self.curr = ed + usize::from(ed < self.src.len());
+            self.is_line_start = true;
+            return Some(Token {
+                kind,
+                text: &self.src[st..ed],
+                span: Span { st, ed },
+            });
         }
 
         let st = self.curr;
-        let kind = if self.state.is_comment || self.src[st..].starts_with("/*") {
-            self.curr += if self.state.is_comment { 0 } else { 2 };
-            if let Some(rel) = self.src[self.curr..].find("*/") {
-                self.curr += rel + 2;
-                self.state.is_comment = false;
-            } else {
-                self.curr = self.bytes.len();
-                self.state.is_comment = true;
-            }
-            if self.src[st..self.curr].contains('\n') {
-                self.is_line_start = true;
-            }
-            TokenKind::Comment { is_block: true }
-        } else if self.src[st..].starts_with("//") {
-            self.curr += self.src[st..].find('\n').unwrap_or(self.bytes.len() - st);
-            TokenKind::Comment { is_block: false }
-        } else if self.bytes[st] == b'\n' {
-            self.curr += 1;
-            self.is_line_start = true;
-            TokenKind::Newline
-        } else if self.bytes[st].is_ascii_whitespace() {
-            while self.curr < self.bytes.len()
-                && self.bytes[self.curr].is_ascii_whitespace()
-                && self.bytes[self.curr] != b'\n'
-            {
-                self.curr += 1;
-            }
-            TokenKind::Whitespace
-        } else if matches!(self.bytes[st], b'\'' | b'"') {
-            self.is_line_start = false;
-            self.curr += 1;
-            while self.curr < self.bytes.len() {
-                if self.bytes[self.curr] == b'\\' {
-                    self.curr = (self.curr + 2).min(self.bytes.len());
-                } else if self.bytes[self.curr] == self.bytes[st] {
-                    self.curr += 1;
-                    break;
+        Some(Token {
+            kind: if self.state.is_comment || self.src[st..].starts_with("/*") {
+                self.curr += if self.state.is_comment { 0 } else { 2 };
+                if let Some(rel) = self.src[self.curr..].find("*/") {
+                    self.curr += rel + 2;
+                    self.state.is_comment = false;
                 } else {
+                    self.curr = self.bytes.len();
+                    self.state.is_comment = true;
+                }
+
+                if self.src[st..self.curr].contains('\n') {
+                    self.is_line_start = true;
+                }
+
+                TokenKind::Comment { is_block: true }
+            } else if self.src[st..].starts_with("//") {
+                self.curr += self.src[st..].find('\n').unwrap_or(self.bytes.len() - st);
+                TokenKind::Comment { is_block: false }
+            } else if self.bytes[st] == b'\n' {
+                self.curr += 1;
+                self.is_line_start = true;
+                TokenKind::Newline
+            } else if self.bytes[st].is_ascii_whitespace() {
+                while self.curr < self.bytes.len()
+                    && self.bytes[self.curr].is_ascii_whitespace()
+                    && self.bytes[self.curr] != b'\n'
+                {
                     self.curr += 1;
                 }
-            }
-            TokenKind::String
-        } else if self.bytes[st].is_ascii_digit()
-            || (self.bytes[st] == b'.' && self.bytes.get(st + 1).is_some_and(u8::is_ascii_digit))
-        {
-            self.is_line_start = false;
-            self.curr += 1;
-            while self.curr < self.bytes.len()
-                && (self.bytes[self.curr].is_ascii_alphanumeric()
-                    || matches!(self.bytes[self.curr], b'_' | b'.')
-                    || (matches!(self.bytes[self.curr], b'+' | b'-')
-                        && matches!(self.bytes[self.curr - 1], b'e' | b'E' | b'p' | b'P')))
-            {
+
+                TokenKind::Whitespace
+            } else if matches!(self.bytes[st], b'\'' | b'"') {
+                self.is_line_start = false;
                 self.curr += 1;
-            }
-            TokenKind::Number
-        } else if self.bytes[st].is_ascii_alphabetic() || self.bytes[st] == b'_' || self.bytes[st] >= 0x80 {
-            self.is_line_start = false;
-            while self.curr < self.bytes.len()
-                && (self.bytes[self.curr].is_ascii_alphanumeric()
-                    || self.bytes[self.curr] == b'_'
-                    || self.bytes[self.curr] >= 0x80)
+                while self.curr < self.bytes.len() {
+                    if self.bytes[self.curr] == b'\\' {
+                        self.curr = (self.curr + 2).min(self.bytes.len());
+                    } else if self.bytes[self.curr] == self.bytes[st] {
+                        self.curr += 1;
+                        break;
+                    } else {
+                        self.curr += 1;
+                    }
+                }
+
+                TokenKind::String
+            } else if self.bytes[st].is_ascii_digit()
+                || (self.bytes[st] == b'.' && self.bytes.get(st + 1).is_some_and(u8::is_ascii_digit))
             {
+                self.is_line_start = false;
                 self.curr += 1;
-            }
-            TokenKind::Ident
-        } else {
-            self.is_line_start = false;
-            self.curr += 1;
-            TokenKind::Other(char::from(self.bytes[st]))
-        };
-        Some(Token {
-            kind,
+                while self.curr < self.bytes.len()
+                    && (self.bytes[self.curr].is_ascii_alphanumeric()
+                        || matches!(self.bytes[self.curr], b'_' | b'.')
+                        || (matches!(self.bytes[self.curr], b'+' | b'-')
+                            && matches!(self.bytes[self.curr - 1], b'e' | b'E' | b'p' | b'P')))
+                {
+                    self.curr += 1;
+                }
+
+                TokenKind::Number
+            } else if self.bytes[st].is_ascii_alphabetic() || self.bytes[st] == b'_' || self.bytes[st] >= 0x80 {
+                self.is_line_start = false;
+                while self.curr < self.bytes.len()
+                    && (self.bytes[self.curr].is_ascii_alphanumeric()
+                        || self.bytes[self.curr] == b'_'
+                        || self.bytes[self.curr] >= 0x80)
+                {
+                    self.curr += 1;
+                }
+
+                TokenKind::Ident
+            } else {
+                self.is_line_start = false;
+                self.curr += 1;
+                TokenKind::Other(char::from(self.bytes[st]))
+            },
             text: &self.src[st..self.curr],
             span: Span { st, ed: self.curr },
         })
@@ -193,38 +218,44 @@ pub fn parse_declaration<'a>(tokens: &[Token<'a>]) -> Option<Declaration<'a>> {
         }
         curr += 1;
     }
-    let ty = parse_type(&tokens[curr..]);
-    let mut declaration = Declaration {
+
+    let (ty, len) = parse_type(&tokens[curr..]);
+    let mut decl = Declaration {
         token: *tokens.get(curr)?,
-        ty: ty.0,
+        ty,
         is_row_major,
         members: Vec::new(),
-        has_error: ty.0.is_none() || curr + ty.1 == tokens.len(),
+        has_error: ty.is_none() || curr + len == tokens.len(),
         is_manual: false,
     };
-    curr += ty.1;
+
+    curr += len;
     while curr < tokens.len() {
         let member = tokens[curr];
         if !member.text.starts_with(|ch: char| ch.is_alphabetic() || ch == '_')
             || !member.text.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
         {
-            declaration.has_error = true;
+            decl.has_error = true;
             break;
         }
+
         curr += 1;
-        let mut dimensions = Vec::new();
+        let mut dims = Vec::new();
         while tokens.get(curr).is_some_and(|token| token.text == "[") {
             if tokens.get(curr + 2).is_none_or(|token| token.text != "]") {
-                declaration.has_error = true;
+                decl.has_error = true;
                 break;
             }
-            dimensions.push(tokens.get(curr + 1).and_then(|token| token.text.parse::<usize>().ok()));
+
+            dims.push(tokens.get(curr + 1).and_then(|token| token.text.parse::<usize>().ok()));
             curr += 3;
         }
+
         if tokens.get(curr).is_some_and(|token| token.text == ":") {
-            declaration.is_manual = true;
+            decl.is_manual = true;
             break;
         }
+
         if tokens.get(curr).is_some_and(|token| token.text == "=") {
             let mut depth = 0_usize;
             while let Some(token) = tokens.get(curr).filter(|token| depth > 0 || token.text != ",") {
@@ -235,48 +266,38 @@ pub fn parse_declaration<'a>(tokens: &[Token<'a>]) -> Option<Declaration<'a>> {
                 }
                 curr += 1;
             }
+            decl.has_error |= depth != 0;
         }
-        if declaration.has_error || tokens.get(curr).is_some_and(|token| token.text != ",") {
-            declaration.has_error = true;
+
+        if decl.has_error || tokens.get(curr).is_some_and(|token| token.text != ",") {
+            decl.has_error = true;
             break;
         }
-        declaration.members.push(Member {
+
+        decl.members.push(Member {
             name: member.text,
             span: member.span,
-            dimensions,
+            dimensions: dims,
         });
+
         if curr < tokens.len() {
             curr += 1;
-            declaration.has_error = curr == tokens.len();
+            decl.has_error = curr == tokens.len();
         }
     }
-    Some(declaration)
+    Some(decl)
 }
 
 #[must_use]
 pub fn parse_type<'a>(tokens: &[Token<'a>]) -> (Option<Type<'a>>, usize) {
-    static SCALARS: [&str; 12] = [
-        "float",
-        "uint",
-        "int",
-        "bool",
-        "double",
-        "half",
-        "dword",
-        "min16float",
-        "min10float",
-        "min16int",
-        "min12int",
-        "min16uint",
-    ];
-
     let Some(token) = tokens.first() else {
         return (None, 0);
     };
+
     if token.kind != TokenKind::Ident {
         return (None, 1);
     }
-    let parse = |text: &str| text.parse::<usize>().ok().filter(|&val| (1..=4).contains(&val));
+
     if matches!(token.text, "vector" | "matrix") {
         let is_matrix = token.text == "matrix";
         if tokens.get(1).is_none_or(|token| token.text != "<") {
@@ -301,6 +322,9 @@ pub fn parse_type<'a>(tokens: &[Token<'a>]) -> (Option<Type<'a>>, usize) {
         {
             return (None, 1);
         }
+
+        let parse = |text: &str| text.parse::<usize>().ok().filter(|&val| (1..=4).contains(&val));
+
         return (
             (if is_matrix { parse(args[4].text) } else { Some(1) })
                 .zip(parse(args[if is_matrix { 6 } else { 4 }].text))
@@ -314,22 +338,13 @@ pub fn parse_type<'a>(tokens: &[Token<'a>]) -> (Option<Type<'a>>, usize) {
         );
     }
 
-    let shape = |suffix: &str| match suffix.split_once('x') {
-        Some((rows, cols)) => parse(rows).zip(parse(cols)).map(|(rows, cols)| (rows, cols, true)),
-        None => (if suffix.is_empty() { Some(1) } else { parse(suffix) }).map(|cols| (1, cols, false)),
-    };
-
-    let (scalar, (rows, cols, is_matrix)) = SCALARS
-        .into_iter()
-        .find_map(|name| token.text.strip_prefix(name).and_then(shape).map(|shape| (name, shape)))
-        .unwrap_or((token.text, (1, 1, false)));
     (
-        Some(Type {
-            scalar,
-            rows,
-            cols,
-            is_matrix,
-        }),
+        Some(parse_builtin(token.text).unwrap_or(Type {
+            scalar: token.text,
+            rows: 1,
+            cols: 1,
+            is_matrix: false,
+        })),
         1,
     )
 }
@@ -343,46 +358,21 @@ pub fn parse_directive(token: Token<'_>) -> Option<Directive<'_>> {
             span: token.span,
         });
     }
+
     if token.kind != TokenKind::Directive {
         return None;
     }
+
     let text = token.text.strip_prefix('#')?.trim_start();
     let ed = text
         .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
         .unwrap_or(text.len());
+
     Some(Directive {
         name: &text[..ed],
         rest: text[ed..].trim_start(),
         span: token.span,
     })
-}
-
-#[must_use]
-pub fn is_reserved(name: &str) -> bool {
-    [
-        "float",
-        "int",
-        "uint",
-        "bool",
-        "half",
-        "double",
-        "min10float",
-        "min16float",
-        "min12int",
-        "min16int",
-        "min16uint",
-    ]
-    .into_iter()
-    .any(|ty| {
-        name.strip_prefix(ty).is_some_and(|rest| {
-            let is_dim = |text: &str| text.len() == 1 && matches!(text.as_bytes()[0], b'1'..=b'4');
-            rest.is_empty()
-                || is_dim(rest)
-                || rest
-                    .split_once('x')
-                    .is_some_and(|(rows, cols)| is_dim(rows) && is_dim(cols))
-        })
-    }) || KEYWORDS.contains(&name)
 }
 
 #[must_use]
@@ -401,32 +391,44 @@ pub fn skip_group(tokens: &[Token<'_>], st: usize, open: char, close: char) -> O
     None
 }
 
-impl<'a> Lexer<'a> {
-    fn read_directive(&mut self) -> Token<'a> {
-        let st = self.curr;
-        let ed = st + self.src[st..].find('\n').unwrap_or(self.src.len() - st);
-        let kind = if self.state.is_directive {
-            TokenKind::Continuation
-        } else {
-            TokenKind::Directive
+pub(super) fn parse_builtin(text: &str) -> Option<Type<'static>> {
+    let dim = |text: &str| match *text.as_bytes() {
+        [ch @ b'1'..=b'4'] => Some(usize::from(ch - b'0')),
+        _ => None,
+    };
+
+    SCALARS.iter().find_map(|&(scalar, ..)| {
+        let suffix = text.strip_prefix(scalar)?;
+        let (rows, cols, is_matrix) = match suffix.split_once('x') {
+            Some((rows, cols)) => (dim(rows)?, dim(cols)?, true),
+            None if suffix.is_empty() => (1, 1, false),
+            None => (1, dim(suffix)?, false),
         };
-        let mut lexer = Self::new(&self.src[st + usize::from(kind == TokenKind::Directive)..ed]);
-        lexer.state.is_comment = self.state.is_comment;
-        lexer.is_line_start = false;
-        lexer.by_ref().for_each(drop);
-        self.state.is_comment = lexer.state.is_comment;
-        self.state.is_directive = self.src[st..ed].trim_end().ends_with('\\');
-        self.curr = ed + usize::from(ed < self.src.len());
-        self.is_line_start = true;
-        Token {
-            kind,
-            text: &self.src[st..ed],
-            span: Span { st, ed },
-        }
-    }
+        Some(Type {
+            scalar,
+            rows,
+            cols,
+            is_matrix,
+        })
+    })
 }
 
-static KEYWORDS: [&str; 168] = [
+pub static SCALARS: [(&str, usize, bool); 12] = [
+    ("float", 4, true),
+    ("half", 4, true),
+    ("min16float", 4, true),
+    ("min10float", 4, true),
+    ("double", 8, false),
+    ("uint", 4, false),
+    ("int", 4, false),
+    ("bool", 4, false),
+    ("dword", 4, false),
+    ("min16int", 4, false),
+    ("min12int", 4, false),
+    ("min16uint", 4, false),
+];
+
+pub(super) static KEYWORDS: [&str; 168] = [
     "AppendStructuredBuffer",
     "asm",
     "asm_fragment",
