@@ -70,7 +70,10 @@ pub(super) fn command(args: &Args) -> anyhow::Result<()> {
                 "*.aul2 text eol=crlf linguist-language=ini working-tree-encoding=utf-8\n"
             ),
         ),
-        (".gitignore", "/build/\n/dist/\n/.astra/\n"),
+        (
+            ".gitignore",
+            "/build/\n/dist/\n/.astra/\n\n.env\n.env.*\n!.env.example\n",
+        ),
     ] {
         let file = path.join(name);
         if !file.exists() {

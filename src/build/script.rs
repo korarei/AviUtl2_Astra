@@ -900,7 +900,7 @@ impl Builder<'_> {
                     .or_else(|| key.parse::<i64>().ok())
                     .is_some_and(|value| (0..=0xff_ffff).contains(&value))
                 {
-                    bail!("{pos}: argument of 'color' must be an integer between 0x000000 and 0xffffff, got '{key}'");
+                    bail!("{pos}: default value of 'color' must be an integer between 0x000000 and 0xffffff, got '{key}'");
                 }
             } else if kind == "param" {
                 let (bytes, _, has_unmappable) = encoding_rs::SHIFT_JIS.encode(prop.key);
@@ -1433,7 +1433,7 @@ fn validate_compat_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
             kind if numbered(kind, "check") => {
                 if !matches!(prop.rest.map(str::trim), Some("0" | "1")) {
                     bail!(
-                        "{}: argument of '{kind}' must be '0' or '1', got '{}'",
+                        "{}: default value of '{kind}' must be '0' or '1', got '{}'",
                         prop.pos,
                         prop.rest.unwrap_or("").trim()
                     );
@@ -1450,7 +1450,7 @@ fn validate_compat_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
                 let value = prop.key.trim();
                 if value != "nil" && !parse(value).is_some_and(|val| (0..=0xff_ffff).contains(&val)) {
                     bail!(
-                        "{pos}: argument of 'color' must be 'nil' or an integer \
+                        "{pos}: default value of 'color' must be 'nil' or an integer \
                          between 0x000000 and 0xffffff, got '{value}'"
                     );
                 }
@@ -1567,7 +1567,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
                         let args = rest.split(',').map(str::trim).collect::<Vec<_>>();
                         if !matches!(args[0], "true" | "false") {
                             bail!(
-                                "{pos}: argument 1 of '{kind}' must be 'true' or 'false', got '{}'",
+                                "{pos}: folding of '{kind}' must be 'true' or 'false', got '{}'",
                                 args[0]
                             );
                         }
@@ -1589,10 +1589,10 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
 
                     match prop.key.trim().to_ascii_lowercase().as_str() {
                         "luajit" => {}
-                        "lua" => tracing::warn!("{pos}: argument of '{kind}' is 'Lua'"),
+                        "lua" => tracing::warn!("{pos}: runtime of '{kind}' is 'Lua'"),
                         _ => {
                             bail!(
-                                "{pos}: argument of '{kind}' must be 'LuaJIT' or 'Lua', got '{}'",
+                                "{pos}: runtime of '{kind}' must be 'LuaJIT' or 'Lua', got '{}'",
                                 prop.key.trim()
                             );
                         }
@@ -1652,7 +1652,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
 
                 if !matches!(args[0], "true" | "false" | "0" | "1") {
                     bail!(
-                        "{pos}: argument 1 of '{kind}' must be 'true', 'false', '0', or '1', got '{}'",
+                        "{pos}: default value of '{kind}' must be 'true', 'false', '0', or '1', got '{}'",
                         args[0]
                     );
                 }
@@ -1672,7 +1672,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
 
                 if !matches!(args[0], "true" | "false") {
                     bail!(
-                        "{pos}: argument 1 of 'checksection' must be 'true' or 'false', got '{}'",
+                        "{pos}: default value of 'checksection' must be 'true' or 'false', got '{}'",
                         args[0]
                     );
                 }
@@ -1680,7 +1680,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
                 if let Some(&arg) = args.get(1)
                     && !matches!(arg, "true" | "false")
                 {
-                    bail!("{pos}: argument 2 of 'checksection' must be 'true' or 'false', got '{arg}'");
+                    bail!("{pos}: folding of 'checksection' must be 'true' or 'false', got '{arg}'");
                 }
             }
             "select" => {
@@ -1722,7 +1722,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
                         .is_some_and(|val| (0..=0xff_ffff).contains(&val))
                 {
                     bail!(
-                        "{pos}: argument 1 of '{kind}' must be 'nil' or an integer between \
+                        "{pos}: default value of '{kind}' must be 'nil' or an integer between \
                          0x000000 and 0xffffff, got '{}'",
                         args[0]
                     );
@@ -1749,7 +1749,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
             "data" => {
                 let key = prop.key.trim();
                 if !key.parse::<i64>().is_ok_and(|val| (0..=16_000).contains(&val)) {
-                    bail!("{pos}: argument of '{kind}' must be an integer between 0 and 16000, got '{key}'");
+                    bail!("{pos}: size of '{kind}' must be an integer between 0 and 16000, got '{key}'");
                 }
             }
             _ => {}
@@ -1770,7 +1770,7 @@ fn validate_tra_props(props: &[Prop<'_>], modern: bool) -> anyhow::Result<()> {
             "param" if prop.rest.is_none() => {
                 if prop.key.trim().parse::<f64>().is_err() {
                     bail!(
-                        "{}: argument of 'param' must be a number, got '{}'",
+                        "{}: default value of 'param' must be a number, got '{}'",
                         prop.pos,
                         prop.key.trim()
                     );
@@ -1780,7 +1780,7 @@ fn validate_tra_props(props: &[Prop<'_>], modern: bool) -> anyhow::Result<()> {
                 let pos = prop.pos;
                 if !matches!(prop.key.trim(), "0" | "1") {
                     bail!(
-                        "{pos}: argument 1 of 'speed' must be '0' or '1', got '{}'",
+                        "{pos}: acceleration of 'speed' must be '0' or '1', got '{}'",
                         prop.key.trim()
                     );
                 }
@@ -1798,7 +1798,7 @@ fn validate_tra_props(props: &[Prop<'_>], modern: bool) -> anyhow::Result<()> {
                 }
 
                 if !matches!(args[0], "0" | "1") {
-                    bail!("{pos}: argument 2 of 'speed' must be '0' or '1', got '{}'", args[0]);
+                    bail!("{pos}: deceleration of 'speed' must be '0' or '1', got '{}'", args[0]);
                 }
             }
             _ => {}
@@ -1823,7 +1823,7 @@ fn validate_tra_props(props: &[Prop<'_>], modern: bool) -> anyhow::Result<()> {
 
         if default.len() > 1 {
             tracing::warn!(
-                "{pos}: 'param' has too many default values; expected at most 1, got {}",
+                "{pos}: 'param' has too many arguments; expected at most 1, got {}",
                 default.len()
             );
         }
@@ -1979,17 +1979,17 @@ fn validate_track(prop: &Prop<'_>) -> anyhow::Result<()> {
         );
     }
 
-    let parse = |i, arg: &str| -> anyhow::Result<f64> {
+    let parse = |name: &str, arg: &str| -> anyhow::Result<f64> {
         let Some(value) = arg.parse::<f64>().ok().filter(|v| v.is_finite()) else {
-            bail!("{pos}: argument {} of '{kind}' must be a number, got '{arg}'", i + 1);
+            bail!("{pos}: {name} of '{kind}' must be a number, got '{arg}'");
         };
         Ok(value)
     };
 
-    let min = parse(0, args[0])?;
-    let max = parse(1, args[1])?;
-    let default = parse(2, args[2])?;
-    let step = args.get(3).map(|arg| parse(3, arg)).transpose()?.unwrap_or(0.1);
+    let min = parse("min", args[0])?;
+    let max = parse("max", args[1])?;
+    let default = parse("default value", args[2])?;
+    let step = args.get(3).map(|arg| parse("step", arg)).transpose()?.unwrap_or(0.1);
 
     if !(min <= default && default <= max) {
         bail!("{pos}: default value of '{kind}' must satisfy min ({min}) <= default ({default}) <= max ({max})");
@@ -2014,7 +2014,7 @@ fn validate_track(prop: &Prop<'_>) -> anyhow::Result<()> {
     }
 
     if let Some(&arg) = args.get(5) {
-        parse(5, arg)?;
+        parse("sensitivity", arg)?;
     }
 
     Ok(())

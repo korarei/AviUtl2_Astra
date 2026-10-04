@@ -288,7 +288,6 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
     }
 
     let mut config = config.clone();
-    let mut config_hash = crate::fs::hash_file(config.path()).ok();
     let build_type = args.build_type();
 
     sync_package(&config, build_type, &release, &data_dir, &mut manifest, args.is_refresh)?;
@@ -317,23 +316,18 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                     return Ok(());
                 }
 
-                if let Ok(hash) = crate::fs::hash_file(config.path())
-                    && Some(hash) != config_hash
-                {
-                    match config.reload() {
-                        Ok(new_config) => {
-                            config = new_config;
-                            config_hash = Some(hash);
-                            tracing::info!("Configuration reloaded");
+                match config.reload() {
+                    Ok(new_config) => {
+                        config = new_config;
+                        tracing::info!("Configuration reloaded");
+                    }
+                    Err(e) => {
+                        tracing::error!("failed to reload configuration: {e:#}");
+                        tracing::info!("Fix the configuration and press 'Ctrl+R' or 'r' to retry reload");
+                        if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
+                            continue;
                         }
-                        Err(e) => {
-                            tracing::error!("failed to reload configuration: {e:#}");
-                            tracing::info!("Fix the configuration and press 'Ctrl+R' or 'r' to retry reload");
-                            if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
-                                continue;
-                            }
-                            return Ok(());
-                        }
+                        return Ok(());
                     }
                 }
 
