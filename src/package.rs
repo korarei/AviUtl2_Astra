@@ -258,11 +258,12 @@ impl PackageCache {
         src: &PackageSource,
         outputs: &BTreeMap<String, BuildOutput>,
     ) -> anyhow::Result<Vec<PackageFile>> {
+        let dst = clean_path::clean(dst);
         match src {
-            PackageSource::Build(src) => self.collect_artifacts(dst, src, outputs),
-            PackageSource::Path(src) => self.collect_path(dst, src),
-            PackageSource::Url(src) => self.collect_url(dst, src),
-            PackageSource::File(src) => self.store_file(dst, src),
+            PackageSource::Build(src) => self.collect_artifacts(&dst, src, outputs),
+            PackageSource::Path(src) => self.collect_path(&dst, src),
+            PackageSource::Url(src) => self.collect_url(&dst, src),
+            PackageSource::File(src) => self.store_file(&dst, src),
             PackageSource::Simple(_) => unreachable!("package source must be expanded"),
         }
     }

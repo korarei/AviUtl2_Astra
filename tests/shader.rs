@@ -2,45 +2,11 @@ use astra::build::hlsl::{self, Lexer, State, TokenKind};
 use astra::config::BuildTarget;
 use indexmap::IndexMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-
-// ============================================================================
-// Test Helpers
-// ============================================================================
-
-#[derive(Clone)]
-struct TestLogWriter(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for TestLogWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().write(bytes)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-fn capture_warnings() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard) {
-    let bytes = Arc::new(Mutex::new(Vec::new()));
-    let writer = TestLogWriter(Arc::clone(&bytes));
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_max_level(tracing::Level::WARN)
-        .with_writer(move || writer.clone())
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    (bytes, guard)
-}
-
-// ============================================================================
-// Lexer Tests
-// ============================================================================
 
 #[test]
 fn distinguishes_hlsl_directives_from_comments_and_literals() {
-    let src = "//#define VALUE 1\n/* #if FLAG */\n\"#pragma pack_matrix(row_major)\"\nfloat x; #endif\n #pragma pack_matrix(column_major)\n";
+    let src = "//#define VALUE 1\n/* #if FLAG */\n\"#pragma pack_matrix(row_major)\"\n\
+               float x; #endif\n #pragma pack_matrix(column_major)\n";
     let tokens = Lexer::new(src).collect::<Vec<_>>();
     assert_eq!(
         tokens
@@ -148,10 +114,6 @@ fn preserves_source_spans_for_unicode_and_escaped_strings() {
     assert!(!tokens.iter().any(|token| token.kind == TokenKind::Directive));
 }
 
-// ============================================================================
-// Declaration & Directive Parser Tests
-// ============================================================================
-
 #[test]
 fn parses_types_and_declarations_with_source_spans() {
     let src = "row_major matrix<float, 2, 3> m[2], n";
@@ -219,10 +181,6 @@ fn parses_native_directives_without_astra_directives() {
     assert!(hlsl::parse_directive(Lexer::new("//#define VALUE 1").next().unwrap()).is_none());
 }
 
-// ============================================================================
-// Shader Build & Preprocessing Tests
-// ============================================================================
-
 #[test]
 fn expands_variables_and_preserves_block_comment_directives_in_shaders() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
@@ -244,7 +202,7 @@ fn expands_variables_and_preserves_block_comment_directives_in_shaders() -> anyh
         .replace("//#define RESULT ${VALUE}\n", "")
         .replace("${VALUE}", "4")
         .replace("${RESULT}", "4");
-    assert_eq!(output, expected);
+    assert_eq!(output.text, expected);
     Ok(())
 }
 
@@ -254,7 +212,7 @@ fn skips_inactive_conditionals_in_shaders() -> anyhow::Result<()> {
     let vars = IndexMap::from([("VALUE".to_owned(), "4".to_owned())]);
     let src = "//#if false\n/*\n//#endif\n*/\nint discarded;\n//#endif\nfloat value = ${VALUE};\n";
     let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
-    assert_eq!(output, "float value = 4;\n");
+    assert_eq!(output.text, "float value = 4;\n");
     Ok(())
 }
 
@@ -271,6 +229,7 @@ fn resolves_includes_in_shaders() -> anyhow::Result<()> {
             &[dir.path().to_owned()],
             &IndexMap::new(),
         )
+        .map(|output| output.text)
     };
     assert_eq!(build("float a;")?, "float a;\n");
     assert_eq!(build("float a;\n//#define X 1")?, "float a;\n");
@@ -279,258 +238,24 @@ fn resolves_includes_in_shaders() -> anyhow::Result<()> {
     Ok(())
 }
 
-// ============================================================================
-// Cbuffer Validation & Warning Tests
-// ============================================================================
-
 #[test]
-fn warns_on_non_float_types_and_member_padding_in_cbuffers() -> anyhow::Result<()> {
-    let (bytes, _guard) = capture_warnings();
-    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let build = |src| astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new());
-
-    let src = "//#define TYPE float4\ncbuffer Params {\n float a;\n ${TYPE} b;\n int c;\n float2x2 m;\n};\n";
-    let output = build(src)?;
-    assert!(output.contains(" float4 b;"), "{output}");
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(
-        warnings.contains("test.hlsl:4:10: cbuffer 'Params' member 'b' introduces 12 bytes"),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains("test.hlsl:5:2: cbuffer 'Params' uses non-float"),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains("test.hlsl:6:11: cbuffer 'Params' member 'm' introduces 20 bytes"),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 3, "{warnings}");
-    Ok(())
-}
-
-#[test]
-fn ignores_cbuffers_in_comments_and_disabled_conditionals() -> anyhow::Result<()> {
-    let (bytes, _guard) = capture_warnings();
-    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let build = |src| astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new());
-
-    let src = "/* cbuffer Ignored { int x; }; */\n\
-               // cbuffer IgnoredToo { bool x; };\n\
-               //#if false\ncbuffer Dropped { int x; };\n//#endif\n\
-               cbuffer Packed { float3 a; float b; float c; };\n\
-               cbuffer Vectors { float2 a, b; };\n\
-               cbuffer Generic { vector<float, 3> a; float b; matrix<float, 4, 4> c; };\n";
-    build(src)?;
-    assert!(bytes.lock().unwrap().is_empty());
-    Ok(())
-}
-
-#[test]
-fn warns_on_array_and_matrix_padding_in_cbuffers() -> anyhow::Result<()> {
-    let (bytes, _guard) = capture_warnings();
-    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let build = |src| astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new());
-
-    build("cbuffer Arrays { float a[2]; float3 b; };\ncbuffer Matrices { float2x2 a; float2 b; };")?;
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(
-        warnings.contains("cbuffer 'Arrays' member 'a' introduces 12 bytes of padding (3 floats)"),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains("cbuffer 'Matrices' member 'a' introduces 8 bytes of padding (2 floats)"),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 2, "{warnings}");
-    Ok(())
-}
-
-#[test]
-fn warns_on_matrix_packing_and_pragma_pack_matrix() -> anyhow::Result<()> {
-    let (bytes, _guard) = capture_warnings();
-    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let build = |src| astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new());
-
-    build("cbuffer Rows { row_major float2x3 a; float b; };\ncbuffer Columns { column_major float2x3 a; float2 b; };")?;
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(
-        warnings.contains("cbuffer 'Rows' member 'a' introduces 4 bytes of padding (1 float)"),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains("cbuffer 'Columns' member 'a' introduces 16 bytes of padding (4 floats)"),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 2, "{warnings}");
-
-    bytes.lock().unwrap().clear();
-    let src = "#define UNUSED 1\n\
-               #define MACRO \\\n\
-               //\n\
-               #pragma unrelated\n\
-               # pragma pack_matrix ( row_major ) //\n\
-               cbuffer PragmaRows { float2x3 a; float b; };\n\
-               cbuffer OverrideColumns { column_major float2x3 a; float2 b; };\n\
-               #pragma pack_matrix(column_major)\n\
-               cbuffer PragmaColumns { float2x3 a; float2 b; };\n\
-               cbuffer OverrideRows { row_major float2x3 a; float b; };\n\
-               cbuffer NativeTypes { int a; float4 b; };\n";
-    assert_eq!(build(src)?, src);
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    for (name, padding) in [
-        ("PragmaRows", 4),
-        ("OverrideColumns", 16),
-        ("PragmaColumns", 16),
-        ("OverrideRows", 4),
-        ("NativeTypes", 12),
-    ] {
-        assert!(
-            warnings.contains(&format!("cbuffer '{name}' member"))
-                && warnings.lines().any(|line| line.contains(&format!("cbuffer '{name}'"))
-                    && line.contains(&format!("introduces {padding} bytes"))),
-            "{warnings}"
-        );
-    }
-    assert!(warnings.contains("cbuffer 'NativeTypes' uses non-float"), "{warnings}");
-    assert_eq!(warnings.lines().count(), 6, "{warnings}");
-
-    bytes.lock().unwrap().clear();
-    build(
-        "/*\n#pragma pack_matrix(row_major)\n*/\ncbuffer CommentedPragma { float2x3 a; };\ncbuffer InternalPragma {\n#pragma pack_matrix(/* */ row_major)\nfloat2x3 a;\n#pragma pack_matrix(column_major)\nfloat2x3 b;\n};",
-    )?;
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(
-        warnings.contains("cbuffer 'CommentedPragma' member 'a' introduces 16 bytes"),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains("cbuffer 'InternalPragma' member 'a' introduces 4 bytes"),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains("cbuffer 'InternalPragma' member 'b' introduces 20 bytes"),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 3, "{warnings}");
-    Ok(())
-}
-
-#[test]
-fn warns_on_unknown_array_length_or_ambiguous_packing_in_cbuffers() -> anyhow::Result<()> {
-    let (bytes, _guard) = capture_warnings();
-    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let build = |src| astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new());
-
-    build("cbuffer Unknown { float a[COUNT]; float4 b; };")?;
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(warnings.contains("cannot determine layout"), "{warnings}");
-    assert!(!warnings.contains("bytes of padding"), "{warnings}");
-    assert_eq!(warnings.lines().count(), 1, "{warnings}");
-
-    bytes.lock().unwrap().clear();
-    build(
-        "#if FLAG\n#pragma pack_matrix(row_major)\n#endif\ncbuffer UnknownPacking { float2x3 a; };\ncbuffer ExplicitPacking { row_major float2x3 a; };\n#pragma pack_matrix(column_major)\ncbuffer ResetPacking { float2x3 a; };",
-    )?;
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(
-        warnings.contains("cannot determine layout of declaration in cbuffer 'UnknownPacking'"),
-        "{warnings}"
-    );
-    assert!(!warnings.contains("cbuffer 'UnknownPacking' member"), "{warnings}");
-    assert!(
-        warnings.contains("cbuffer 'ExplicitPacking' member 'a' introduces 4 bytes"),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains("cbuffer 'ResetPacking' member 'a' introduces 16 bytes"),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 3, "{warnings}");
-    Ok(())
-}
-
-#[test]
-fn handles_conditional_compilation_inside_cbuffers() -> anyhow::Result<()> {
-    let (bytes, _guard) = capture_warnings();
-    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let build = |src| astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new());
-
-    build("#if 0\ncbuffer Native { int a; float4 b; };\n#endif\ncbuffer AfterConditional { float3 a; float3 b; };")?;
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(warnings.contains("before HLSL preprocessing"), "{warnings}");
-    assert!(
-        warnings.contains("cbuffer 'AfterConditional' member 'b' introduces 4 bytes"),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 2, "{warnings}");
-
-    bytes.lock().unwrap().clear();
-    build(
-        "cbuffer ConditionalMember { float3 a;\n#if FLAG\nint branch;\n#else\nfloat4 branch;\n#endif\nint b; float4 c; };\ncbuffer Next { float a; float4 b; };",
-    )?;
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(
-        warnings.contains("subsequent offsets in cbuffer 'ConditionalMember'"),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains("cbuffer 'ConditionalMember' uses non-float"),
-        "{warnings}"
-    );
-    assert!(!warnings.contains("member 'branch'"), "{warnings}");
-    assert!(!warnings.contains("member 'c' introduces"), "{warnings}");
-    assert!(
-        warnings.contains("cbuffer 'Next' member 'b' introduces 12 bytes"),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 3, "{warnings}");
-    Ok(())
-}
-
-#[test]
-fn reports_original_positions_for_included_cbuffers_and_pragmas() -> anyhow::Result<()> {
-    let (bytes, _guard) = capture_warnings();
+fn rejects_non_hlsl_includes_in_shaders() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
     let dir = tempfile::tempdir()?;
-    let include = dir.path().join("members.hlsl");
-    std::fs::write(&include, " float4 b;\n bool c;\n")?;
-    let output = astra::build::shader::build(
-        "cbuffer Included { float a;\n//#include <members.hlsl>\n};",
-        Path::new("test.hlsl"),
-        &target,
-        &[dir.path().to_owned()],
-        &IndexMap::new(),
-    )?;
-    assert!(output.contains(" bool c;"), "{output}");
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    let canonical = std::fs::canonicalize(include)?;
-    assert!(
-        warnings.contains(&format!("{}:1:9:", canonical.display())),
-        "{warnings}"
-    );
-    assert!(
-        warnings.contains(&format!("{}:2:2:", canonical.display())),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 2, "{warnings}");
-
-    bytes.lock().unwrap().clear();
-    std::fs::write(dir.path().join("packing.hlsl"), "#pragma pack_matrix(row_major)\n")?;
-    let src = "#pragma pack_matrix(column_major)\n//#include <packing.hlsl>\ncbuffer IncludedPacking { float2x3 a; };";
-    let output = astra::build::shader::build(
-        src,
-        Path::new("test.hlsl"),
-        &target,
-        &[dir.path().to_owned()],
-        &IndexMap::new(),
-    )?;
-    assert!(output.contains("#pragma pack_matrix(row_major)"), "{output}");
-    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-    assert!(
-        warnings.contains("test.hlsl:3:36: cbuffer 'IncludedPacking' member 'a' introduces 4 bytes"),
-        "{warnings}"
-    );
-    assert_eq!(warnings.lines().count(), 1, "{warnings}");
+    std::fs::write(dir.path().join("tail.lua"), "return 1")?;
+    std::fs::write(dir.path().join("tail.txt"), "float c;")?;
+    let build = |src| {
+        astra::build::shader::build(
+            src,
+            Path::new("test.hlsl"),
+            &target,
+            &[dir.path().to_owned()],
+            &IndexMap::new(),
+        )
+    };
+    let err = build("//#include <tail.lua>").unwrap_err();
+    assert!(err.to_string().contains("cannot include non-HLSL file"));
+    let err = build("//#include <tail.txt>").unwrap_err();
+    assert!(err.to_string().contains("cannot include non-HLSL file"));
     Ok(())
 }

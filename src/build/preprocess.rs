@@ -7,7 +7,7 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) struct Position {
     pub(super) file: Arc<Path>,
     pub(super) line: usize,
@@ -18,6 +18,74 @@ impl fmt::Display for Position {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}:{}", self.file.display(), self.line, self.col)
     }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct Origin {
+    pub(super) pos: Position,
+    pub(super) cols: Vec<Column>,
+}
+
+impl Origin {
+    pub(super) fn locate(&self, src: &str, at: usize) -> Position {
+        let mut pos = self.pos.clone();
+        if let Some(col) = self
+            .cols
+            .partition_point(|col| col.st <= at)
+            .checked_sub(1)
+            .and_then(|i| self.cols.get(i))
+        {
+            pos.col = col.col
+                + if col.replaced {
+                    0
+                } else {
+                    src[col.st..at].chars().count()
+                };
+        } else {
+            pos.col = src[..at].chars().count() + 1;
+        }
+        pos
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Column {
+    pub(super) st: usize,
+    pub(super) col: usize,
+    pub(super) replaced: bool,
+}
+
+pub(super) fn map_lines(src: &str, pos: &Position, cols: &[Column]) -> Vec<Origin> {
+    let mut st = 0;
+    src.split('\n')
+        .map(|line| {
+            let col = cols[cols.partition_point(|col| col.st <= st) - 1];
+            let origin = Origin {
+                pos: pos.clone(),
+                cols: std::iter::once(Column {
+                    st: 0,
+                    col: col.col
+                        + if col.replaced {
+                            0
+                        } else {
+                            src[col.st..st].chars().count()
+                        },
+                    replaced: col.replaced,
+                })
+                .chain(
+                    cols.iter()
+                        .filter(|col| st < col.st && col.st <= st + line.len())
+                        .map(|col| Column {
+                            st: col.st - st,
+                            ..*col
+                        }),
+                )
+                .collect(),
+            };
+            st += line.len() + 1;
+            origin
+        })
+        .collect()
 }
 
 enum Directive<'a> {

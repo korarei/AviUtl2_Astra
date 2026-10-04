@@ -2,6 +2,7 @@ use astra::build::script;
 use astra::config::BuildTarget;
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 fn build_script(
     src: &str,
@@ -14,6 +15,52 @@ fn build_script(
         "path": file.to_string_lossy().into_owned(),
     }))?;
     script::build(src, &target, dirs, vars, bundled, ".anm2").map(|output| output.script)
+}
+
+#[derive(Clone)]
+struct TestLogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for TestLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn capture_warnings() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard) {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let writer = TestLogWriter(Arc::clone(&bytes));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || writer.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    (bytes, guard)
+}
+
+fn build_shader(src: &str, dirs: &[PathBuf]) -> anyhow::Result<String> {
+    let prefix = "--[[pixelshader@main:\n";
+    let suffix = "\nfloat4 main() : SV_Target { return 0; }\n]]\n";
+    build_script(
+        &format!("{prefix}{src}{suffix}"),
+        Path::new("test.anm2"),
+        dirs,
+        &IndexMap::new(),
+        false,
+    )
+    .map(|output| {
+        output
+            .strip_prefix(prefix)
+            .unwrap()
+            .strip_suffix(suffix)
+            .unwrap()
+            .to_owned()
+    })
 }
 
 #[test]
@@ -127,7 +174,7 @@ inline_define_leaked = true
 --#endif
 value = 10 --track@_:val,0,100,_,1
 global = true --check@global:glob,true
-color = 0xffffff --color@color:col,0xffffff
+primary = 0xffffff --color@primary:col,0xffffff
 local no_init --track@_:no_init,0,50,0,1
 spaced = 20 --track@ _ : spaced_val, 0, 100, _ , 1
 spaced_chk = true --check@ _ : chk, _
@@ -183,7 +230,7 @@ ignored_at_space = 3 --track @ignored_at_space:0,100,1
         "inline = true --#define INLINE 1",
         "--track@value:val,0,100,10,1",
         "--check@global:glob,true",
-        "--color@color:col,0xffffff",
+        "--color@primary:col,0xffffff",
         "--track@no_init:no_init,0,50,0,1",
         "--track@ spaced : spaced_val, 0, 100, 20 , 1",
         "--check@ spaced_chk : chk, true",
@@ -959,7 +1006,6 @@ fn resolves_pragma_once_in_ini_includes() -> anyhow::Result<()> {
     assert!(result.contains("[a]"), "{result}");
     assert!(result.contains("[main]"), "{result}");
 
-    // Trailing comment on pragma once
     let header_comment = dir.path().join("header_comment.ini");
     std::fs::write(
         &header_comment,
@@ -969,14 +1015,12 @@ fn resolves_pragma_once_in_ini_includes() -> anyhow::Result<()> {
     let result = astra::build::ini::build(src, &target, &[], &IndexMap::new())?;
     assert_eq!(result.matches("[comment]").count(), 1, "{result}");
 
-    // Unknown pragma is treated as a normal comment and kept
     let header_unknown = dir.path().join("header_unknown.ini");
     std::fs::write(&header_unknown, ";#pragma message(\"hello\")\n[unknown]\nval = 1\n")?;
     let src = ";#include \"header_unknown.ini\"\n";
     let result = astra::build::ini::build(src, &target, &[], &IndexMap::new())?;
     assert!(result.contains(";#pragma message(\"hello\")"), "{result}");
 
-    // pragma once inside #if 0 is ignored
     let header_if0 = dir.path().join("header_if0.ini");
     std::fs::write(&header_if0, ";#if 0\n;#pragma once\n;#endif\n[if0]\nval = 1\n")?;
     let src = ";#include \"header_if0.ini\"\n;#include \"header_if0.ini\"\n";
@@ -1103,5 +1147,337 @@ fn errors_on_invalid_or_unclosed_placeholders_in_script_ini_and_shader() -> anyh
         );
     }
 
+    Ok(())
+}
+
+#[test]
+fn warns_on_non_float_types_and_member_padding_in_cbuffers() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let build = |src| build_shader(src, &[]);
+
+    let src = "--#define TYPE float4\ncbuffer Params {\n float a;\n ${TYPE} b;\n int c;\n float2x2 m;\n};\n";
+    let output = build(src)?;
+    assert!(output.contains(" float4 b;"), "{output}");
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(
+        warnings.contains("test.anm2:5:10: cbuffer 'Params' member 'b' introduces 12 bytes"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("test.anm2:6:2: cbuffer 'Params' uses non-float"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("test.anm2:7:11: cbuffer 'Params' member 'm' introduces 20 bytes"),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 3, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn ignores_cbuffers_in_comments_and_disabled_conditionals() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let build = |src| build_shader(src, &[]);
+
+    let src = "/* cbuffer Ignored { int x; }; */\n\
+               // cbuffer IgnoredToo { bool x; };\n\
+               --#if false\ncbuffer Dropped { int x; };\n--#endif\n\
+               cbuffer Packed { float3 a; float b; float c; };\n\
+               cbuffer Vectors { float2 a, b; };\n\
+               cbuffer Generic { vector<float, 3> a; float b; matrix<float, 4, 4> c; };\n";
+    build(src)?;
+    assert!(bytes.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[test]
+fn warns_on_array_and_matrix_padding_in_cbuffers() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let build = |src| build_shader(src, &[]);
+
+    build("cbuffer Arrays { float a[2]; float3 b; };\ncbuffer Matrices { float2x2 a; float2 b; };")?;
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(
+        warnings.contains("cbuffer 'Arrays' member 'a' introduces 12 bytes of padding (3 floats)"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("cbuffer 'Matrices' member 'a' introduces 8 bytes of padding (2 floats)"),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 2, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn warns_on_matrix_packing_and_pragma_pack_matrix() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let build = |src| build_shader(src, &[]);
+
+    build("cbuffer Rows { row_major float2x3 a; float b; };\ncbuffer Columns { column_major float2x3 a; float2 b; };")?;
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(
+        warnings.contains("cbuffer 'Rows' member 'a' introduces 4 bytes of padding (1 float)"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("cbuffer 'Columns' member 'a' introduces 16 bytes of padding (4 floats)"),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 2, "{warnings}");
+
+    bytes.lock().unwrap().clear();
+    let src = "#define UNUSED 1\n\
+               #define MACRO \\\n\
+               //\n\
+               #pragma unrelated\n\
+               # pragma pack_matrix ( row_major ) //\n\
+               cbuffer PragmaRows { float2x3 a; float b; };\n\
+               cbuffer OverrideColumns { column_major float2x3 a; float2 b; };\n\
+               #pragma pack_matrix(column_major)\n\
+               cbuffer PragmaColumns { float2x3 a; float2 b; };\n\
+               cbuffer OverrideRows { row_major float2x3 a; float b; };\n\
+               cbuffer NativeTypes { int a; float4 b; };\n";
+    assert_eq!(build(src)?, src);
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    for (name, padding) in [
+        ("PragmaRows", 4),
+        ("OverrideColumns", 16),
+        ("PragmaColumns", 16),
+        ("OverrideRows", 4),
+        ("NativeTypes", 12),
+    ] {
+        assert!(
+            warnings.contains(&format!("cbuffer '{name}' member"))
+                && warnings.lines().any(|line| line.contains(&format!("cbuffer '{name}'"))
+                    && line.contains(&format!("introduces {padding} bytes"))),
+            "{warnings}"
+        );
+    }
+    assert!(warnings.contains("cbuffer 'NativeTypes' uses non-float"), "{warnings}");
+    assert_eq!(warnings.lines().count(), 6, "{warnings}");
+
+    bytes.lock().unwrap().clear();
+    build(
+        "/*\n#pragma pack_matrix(row_major)\n*/\ncbuffer CommentedPragma { float2x3 a; };\ncbuffer InternalPragma {\n\
+         #pragma pack_matrix(/* */ row_major)\nfloat2x3 a;\n#pragma pack_matrix(column_major)\nfloat2x3 b;\n};",
+    )?;
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(
+        warnings.contains("cbuffer 'CommentedPragma' member 'a' introduces 16 bytes"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("cbuffer 'InternalPragma' member 'a' introduces 4 bytes"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("cbuffer 'InternalPragma' member 'b' introduces 20 bytes"),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 3, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn warns_on_unknown_array_length_or_ambiguous_packing_in_cbuffers() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let build = |src| build_shader(src, &[]);
+
+    build("cbuffer Unknown { float a[COUNT]; float4 b; };")?;
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(warnings.contains("cannot determine layout"), "{warnings}");
+    assert!(!warnings.contains("bytes of padding"), "{warnings}");
+    assert_eq!(warnings.lines().count(), 1, "{warnings}");
+
+    bytes.lock().unwrap().clear();
+    build(
+        "#if FLAG\n#pragma pack_matrix(row_major)\n#endif\ncbuffer UnknownPacking { float2x3 a; };\n\
+         cbuffer ExplicitPacking { row_major float2x3 a; };\n\
+         #pragma pack_matrix(column_major)\ncbuffer ResetPacking { float2x3 a; };",
+    )?;
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(
+        warnings.contains("cannot determine layout of declaration in cbuffer 'UnknownPacking'"),
+        "{warnings}"
+    );
+    assert!(!warnings.contains("cbuffer 'UnknownPacking' member"), "{warnings}");
+    assert!(
+        warnings.contains("cbuffer 'ExplicitPacking' member 'a' introduces 4 bytes"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("cbuffer 'ResetPacking' member 'a' introduces 16 bytes"),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 3, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn handles_conditional_compilation_inside_cbuffers() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let build = |src| build_shader(src, &[]);
+
+    build("#if 0\ncbuffer Native { int a; float4 b; };\n#endif\ncbuffer AfterConditional { float3 a; float3 b; };")?;
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(warnings.contains("before HLSL preprocessing"), "{warnings}");
+    assert!(
+        warnings.contains("cbuffer 'AfterConditional' member 'b' introduces 4 bytes"),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 2, "{warnings}");
+
+    bytes.lock().unwrap().clear();
+    build(
+        "cbuffer ConditionalMember { float3 a;\n#if FLAG\nint branch;\n#else\nfloat4 branch;\n#endif\n\
+         int b; float4 c; };\ncbuffer Next { float a; float4 b; };",
+    )?;
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(
+        warnings.contains("subsequent offsets in cbuffer 'ConditionalMember'"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("cbuffer 'ConditionalMember' uses non-float"),
+        "{warnings}"
+    );
+    assert!(!warnings.contains("member 'branch'"), "{warnings}");
+    assert!(!warnings.contains("member 'c' introduces"), "{warnings}");
+    assert!(
+        warnings.contains("cbuffer 'Next' member 'b' introduces 12 bytes"),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 3, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn reports_original_positions_for_included_cbuffers_and_pragmas() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let dir = tempfile::tempdir()?;
+    let include = dir.path().join("members.hlsl");
+    std::fs::write(&include, " float4 b;\n bool c;\n")?;
+    let output = build_shader(
+        "cbuffer Included { float a;\n--#include <members.hlsl>\n};",
+        &[std::fs::canonicalize(dir.path())?],
+    )?;
+    assert!(output.contains(" bool c;"), "{output}");
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    let canonical = std::fs::canonicalize(include)?;
+    assert!(
+        warnings.contains(&format!("{}:1:9:", canonical.display())),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains(&format!("{}:2:2:", canonical.display())),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 2, "{warnings}");
+
+    bytes.lock().unwrap().clear();
+    std::fs::write(dir.path().join("packing.hlsl"), "#pragma pack_matrix(row_major)\n")?;
+    let src = "#pragma pack_matrix(column_major)\n--#include <packing.hlsl>\ncbuffer IncludedPacking { float2x3 a; };";
+    let output = build_shader(src, &[std::fs::canonicalize(dir.path())?])?;
+    assert!(output.contains("#pragma pack_matrix(row_major)"), "{output}");
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    assert!(
+        warnings.contains("test.anm2:4:36: cbuffer 'IncludedPacking' member 'a' introduces 4 bytes"),
+        "{warnings}"
+    );
+    assert_eq!(warnings.lines().count(), 1, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn reports_original_positions_through_nested_hlsl_includes() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir(dir.path().join("sub"))?;
+    std::fs::write(
+        dir.path().join("a.hlsl"),
+        "//#define TYPE float4\n//#if false\nint ignored;\n//#endif\ncbuffer Outer { float a;\n\
+         //#include \"sub/b.hlsl\"\n};\ncbuffer After { float a; float4 b; };\n",
+    )?;
+    std::fs::write(
+        dir.path().join("sub/b.hlsl"),
+        "//#pragma once\n ${TYPE} b;\n bool c;\n//#include \"c.hlsl\"\n",
+    )?;
+    std::fs::write(dir.path().join("sub/c.hlsl"), " float2x2 m;\n")?;
+
+    let output = build_shader("    --#include <a.hlsl>", &[std::fs::canonicalize(dir.path())?])?;
+    assert!(!output.contains("ignored"), "{output}");
+    assert!(output.contains("float4 b;"), "{output}");
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    for (file, pos, msg) in [
+        ("sub/b.hlsl", "2:10", "cbuffer 'Outer' member 'b' introduces 12 bytes"),
+        ("sub/b.hlsl", "3:2", "cbuffer 'Outer' uses non-float"),
+        ("sub/c.hlsl", "1:11", "cbuffer 'Outer' member 'm' introduces 20 bytes"),
+        ("a.hlsl", "8:33", "cbuffer 'After' member 'b' introduces 12 bytes"),
+    ] {
+        assert!(
+            warnings.contains(&format!(
+                "{}:{pos}: {msg}",
+                std::fs::canonicalize(dir.path().join(file))?.display()
+            )),
+            "{warnings}"
+        );
+    }
+    assert_eq!(warnings.lines().count(), 4, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn reports_placeholder_positions_for_multiline_hlsl_values() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("values.hlsl");
+    std::fs::write(&file, "cbuffer Values { float a; ${MEMBERS} float4 tail; };\n")?;
+    let output = build_script(
+        "--[[pixelshader@main:\n--#include <values.hlsl>\nfloat4 main() : SV_Target { return 0; }\n]]\n",
+        Path::new("test.anm2"),
+        &[std::fs::canonicalize(dir.path())?],
+        &IndexMap::from([("MEMBERS".to_owned(), "float4 b;\nbool c;".to_owned())]),
+        false,
+    )?;
+    assert!(output.contains("float4 b;\nbool c; float4 tail;"), "{output}");
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    let file = std::fs::canonicalize(file)?;
+    for (col, msg) in [
+        (27, "cbuffer 'Values' member 'b' introduces 12 bytes"),
+        (27, "cbuffer 'Values' uses non-float"),
+        (45, "cbuffer 'Values' member 'tail' introduces 12 bytes"),
+    ] {
+        assert!(
+            warnings.contains(&format!("{}:1:{col}: {msg}", file.display())),
+            "{warnings}"
+        );
+    }
+    assert_eq!(warnings.lines().count(), 3, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn reports_placeholder_positions_for_multiline_lua_values() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let output = build_script(
+        "--[[pixelshader@main:\ncbuffer Values { float a; ${MEMBERS} float4 tail; };\n\
+         float4 main() : SV_Target { return 0; }\n]]\n",
+        Path::new("test.anm2"),
+        &[],
+        &IndexMap::from([("MEMBERS".to_owned(), "float4 b;\nbool c;".to_owned())]),
+        false,
+    )?;
+    assert!(output.contains("float4 b;\nbool c; float4 tail;"), "{output}");
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+    for (col, msg) in [
+        (27, "cbuffer 'Values' member 'b' introduces 12 bytes"),
+        (27, "cbuffer 'Values' uses non-float"),
+        (45, "cbuffer 'Values' member 'tail' introduces 12 bytes"),
+    ] {
+        assert!(warnings.contains(&format!("test.anm2:2:{col}: {msg}")), "{warnings}");
+    }
+    assert_eq!(warnings.lines().count(), 3, "{warnings}");
     Ok(())
 }

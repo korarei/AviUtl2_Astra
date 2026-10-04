@@ -376,6 +376,109 @@ pub fn parse_directive(token: Token<'_>) -> Option<Directive<'_>> {
 }
 
 #[must_use]
+pub fn find_entry_point(src: &str, name: &str, shader: &str) -> Option<Span> {
+    let tokens = Lexer::new(src)
+        .filter(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Whitespace
+                    | TokenKind::Newline
+                    | TokenKind::Comment { .. }
+                    | TokenKind::Directive
+                    | TokenKind::Continuation
+            )
+        })
+        .collect::<Vec<_>>();
+    let kind = |i: usize| tokens.get(i).map(|token| token.kind);
+    let has_numthreads = |mut i: usize| {
+        while i > 0 && kind(i - 1) == Some(TokenKind::Ident) {
+            i -= 1;
+        }
+
+        while i > 0 && kind(i - 1) == Some(TokenKind::Other(']')) {
+            let mut depth = 0_usize;
+            let mut j = i - 1;
+            loop {
+                match kind(j) {
+                    Some(TokenKind::Other(']')) => depth += 1,
+                    Some(TokenKind::Other('[')) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                if j == 0 {
+                    return false;
+                }
+                j -= 1;
+            }
+
+            if kind(j + 1) == Some(TokenKind::Ident) && tokens[j + 1].text == "numthreads" {
+                return true;
+            }
+
+            i = j;
+        }
+        false
+    };
+
+    let mut curr = 0;
+    let mut initializer = false;
+
+    while let Some(token) = tokens.get(curr) {
+        if !initializer
+            && token.kind == TokenKind::Ident
+            && token.text == name
+            && curr > 0
+            && matches!(kind(curr - 1), Some(TokenKind::Ident | TokenKind::Other('>')))
+            && if shader == "computeshader" {
+                kind(curr - 1) == Some(TokenKind::Ident) && tokens[curr - 1].text == "void" && has_numthreads(curr - 1)
+            } else {
+                kind(curr - 1) != Some(TokenKind::Ident) || tokens[curr - 1].text != "void"
+            }
+            && kind(curr + 1) == Some(TokenKind::Other('('))
+            && let Some(mut ed) = skip_group(&tokens, curr + 1, '(', ')')
+        {
+            if kind(ed) == Some(TokenKind::Other(':')) {
+                ed += 1;
+                if kind(ed) == Some(TokenKind::Ident) {
+                    ed += 1;
+                }
+            }
+            if kind(ed) == Some(TokenKind::Other('{')) && skip_group(&tokens, ed, '{', '}').is_some() {
+                return Some(token.span);
+            }
+        }
+        match token.kind {
+            TokenKind::Other(open @ ('{' | '(' | '[')) => {
+                curr = skip_group(
+                    &tokens,
+                    curr,
+                    open,
+                    match open {
+                        '{' => '}',
+                        '(' => ')',
+                        _ => ']',
+                    },
+                )
+                .unwrap_or(tokens.len());
+                if open == '{' {
+                    initializer = false;
+                }
+                continue;
+            }
+            TokenKind::Other('=') => initializer = true,
+            TokenKind::Other(';') => initializer = false,
+            _ => {}
+        }
+        curr += 1;
+    }
+    None
+}
+
+#[must_use]
 pub fn skip_group(tokens: &[Token<'_>], st: usize, open: char, close: char) -> Option<usize> {
     let mut depth = 0_usize;
     for (i, token) in tokens.iter().enumerate().skip(st) {

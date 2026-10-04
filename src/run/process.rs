@@ -1,5 +1,6 @@
 #![allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
 
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -77,7 +78,67 @@ pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
     Ok(closed)
 }
 
+struct StatusBar {
+    height: SHORT,
+}
+
+impl StatusBar {
+    fn start() -> Option<Self> {
+        use std::io::IsTerminal;
+        if !std::io::stderr().is_terminal() {
+            return None;
+        }
+
+        let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+
+        let mut mode = 0;
+        if unsafe { GetConsoleMode(handle, &raw mut mode) } == 0 {
+            return None;
+        }
+
+        if mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0
+            && unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) } == 0
+        {
+            return None;
+        }
+
+        let mut csbi = unsafe { std::mem::zeroed::<CONSOLE_SCREEN_BUFFER_INFO>() };
+        if unsafe { GetConsoleScreenBufferInfo(handle, &raw mut csbi) } == 0 {
+            return None;
+        }
+
+        let height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+        if height < 4 {
+            return None;
+        }
+
+        eprint!("\x1b[1;{}r", height - 1);
+        eprint!("\x1b[{height};1H Ctrl+C: Stop | Ctrl+R / r+Enter: Reload\x1b[K");
+        eprint!("\x1b[{};1H", height - 1);
+        let _ = std::io::stderr().flush();
+
+        Some(Self { height })
+    }
+}
+
+impl Drop for StatusBar {
+    fn drop(&mut self) {
+        eprint!("\x1b[r\x1b[{};1H\x1b[2K", self.height);
+        let _ = std::io::stderr().flush();
+    }
+}
+
 pub(super) fn run_process(exe: &Path, is_running: &AtomicBool) -> anyhow::Result<MonitorExit> {
+    let _status_bar = if let Some(bar) = StatusBar::start() {
+        Some(bar)
+    } else {
+        tracing::info!("Press 'Ctrl+C' to stop, 'Ctrl+R' or 'r + Enter' to reload");
+        None
+    };
+
     let child = AviUtl2Process::spawn(exe)?;
     let exit = child.monitor(is_running)?;
     match exit {
@@ -483,7 +544,7 @@ fn log_output(event: &DEBUG_EVENT, process_handle: HANDLE) {
     };
 
     for line in text.trim_end_matches('\0').lines() {
-        println!("{}", colorize_debug_line(line));
+        eprintln!("{}", colorize_debug_line(line));
     }
 }
 
@@ -492,7 +553,7 @@ fn colorize_debug_line(line: &str) -> String {
     use std::sync::LazyLock;
 
     static USE_COLOR: LazyLock<bool> =
-        LazyLock::new(|| std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none());
+        LazyLock::new(|| std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none());
 
     if !*USE_COLOR {
         return line.to_string();
@@ -592,6 +653,7 @@ type LPTHREAD_START_ROUTINE = Option<unsafe extern "system" fn(LPVOID) -> DWORD>
 type LPVOID = *mut core::ffi::c_void;
 type LPWSTR = *mut u16;
 type PDWORD = *mut DWORD;
+type SHORT = i16;
 type SIZE_T = usize;
 type UINT = u32;
 type WNDENUMPROC = Option<unsafe extern "system" fn(HWND, LPARAM) -> BOOL>;
@@ -624,6 +686,8 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const CP_ACP: UINT = 0;
 const ERROR_INSUFFICIENT_BUFFER: DWORD = 122;
 const STD_INPUT_HANDLE: DWORD = (-10_i32).cast_unsigned();
+const STD_ERROR_HANDLE: DWORD = (-12_i32).cast_unsigned();
+const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
 const KEY_EVENT: WORD = 0x0001;
 const MONITOR_TIMEOUT: DWORD = 50;
 const INPUT_RECORDS: usize = 64;
@@ -818,6 +882,32 @@ type LPPROCESSENTRY32W = *mut PROCESSENTRY32W;
 type LPSTARTUPINFOW = *mut STARTUPINFOW;
 type PINPUT_RECORD = *mut INPUT_RECORD;
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct COORD {
+    X: SHORT,
+    Y: SHORT,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct SMALL_RECT {
+    Left: SHORT,
+    Top: SHORT,
+    Right: SHORT,
+    Bottom: SHORT,
+}
+
+#[repr(C)]
+struct CONSOLE_SCREEN_BUFFER_INFO {
+    dwSize: COORD,
+    dwCursorPosition: COORD,
+    wAttributes: WORD,
+    srWindow: SMALL_RECT,
+    dwMaximumWindowSize: COORD,
+}
+type PCONSOLE_SCREEN_BUFFER_INFO = *mut CONSOLE_SCREEN_BUFFER_INFO;
+
 unsafe extern "system" {
     fn CreateProcessW(
         lpApplicationName: LPCWSTR,
@@ -892,4 +982,10 @@ unsafe extern "system" {
     ) -> BOOL;
     fn DebugActiveProcessStop(dwProcessId: DWORD) -> BOOL;
     fn GetLastError() -> DWORD;
+    fn GetConsoleMode(hConsoleHandle: HANDLE, lpMode: LPDWORD) -> BOOL;
+    fn SetConsoleMode(hConsoleHandle: HANDLE, dwMode: DWORD) -> BOOL;
+    fn GetConsoleScreenBufferInfo(
+        hConsoleOutput: HANDLE,
+        lpConsoleScreenBufferInfo: PCONSOLE_SCREEN_BUFFER_INFO,
+    ) -> BOOL;
 }
