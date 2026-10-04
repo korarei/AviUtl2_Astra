@@ -1,8 +1,12 @@
 use astra::build::hlsl::{self, Lexer, State, TokenKind};
+use astra::config::BuildTarget;
+use indexmap::IndexMap;
+use std::path::Path;
 
 #[test]
 fn distinguishes_hlsl_directives_from_comments_and_literals() {
-    let src = "//#define VALUE 1\n/* #if FLAG */\n\"#pragma pack_matrix(row_major)\"\nfloat x; #endif\n #pragma pack_matrix(column_major)\n";
+    let src = "//#define VALUE 1\n/* #if FLAG */\n\"#pragma pack_matrix(row_major)\"\n\
+               float x; #endif\n #pragma pack_matrix(column_major)\n";
     let tokens = Lexer::new(src).collect::<Vec<_>>();
     assert_eq!(
         tokens
@@ -175,4 +179,83 @@ fn parses_native_directives_without_astra_directives() {
     assert_eq!(directive.rest, "pack_matrix(row_major)");
     assert_eq!(&src[directive.span.st..directive.span.ed], src);
     assert!(hlsl::parse_directive(Lexer::new("//#define VALUE 1").next().unwrap()).is_none());
+}
+
+#[test]
+fn expands_variables_and_preserves_block_comment_directives_in_shaders() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    let vars = IndexMap::from([("VALUE".to_owned(), "4".to_owned())]);
+    let src = "/*\n\
+               //#define VALUE 99\n\
+               //#undef VALUE\n\
+               //#if false\n\
+               //#include \"missing.hlsl\"\n\
+               //#endif\n\
+               //#pragma once\n\
+               ${VALUE}\n\
+               */\n\
+               // /* ${VALUE}\n\
+               //#define RESULT ${VALUE}\n\
+               float value = ${RESULT};\n";
+    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
+    let expected = src
+        .replace("//#define RESULT ${VALUE}\n", "")
+        .replace("${VALUE}", "4")
+        .replace("${RESULT}", "4");
+    assert_eq!(output.text, expected);
+    Ok(())
+}
+
+#[test]
+fn skips_inactive_conditionals_in_shaders() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    let vars = IndexMap::from([("VALUE".to_owned(), "4".to_owned())]);
+    let src = "//#if false\n/*\n//#endif\n*/\nint discarded;\n//#endif\nfloat value = ${VALUE};\n";
+    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
+    assert_eq!(output.text, "float value = 4;\n");
+    Ok(())
+}
+
+#[test]
+fn resolves_includes_in_shaders() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("tail.hlsl"), "float b;")?;
+    let build = |src| {
+        astra::build::shader::build(
+            src,
+            Path::new("test.hlsl"),
+            &target,
+            &[dir.path().to_owned()],
+            &IndexMap::new(),
+        )
+        .map(|output| output.text)
+    };
+    assert_eq!(build("float a;")?, "float a;\n");
+    assert_eq!(build("float a;\n//#define X 1")?, "float a;\n");
+    assert_eq!(build("//#include <tail.hlsl>\nfloat a;")?, "float b;\nfloat a;\n");
+    assert_eq!(build("float a;\n//#include <tail.hlsl>")?, "float a;\nfloat b;\n");
+    Ok(())
+}
+
+#[test]
+fn rejects_non_hlsl_includes_in_shaders() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join("tail.lua"), "return 1")?;
+    std::fs::write(dir.path().join("tail.txt"), "float c;")?;
+    let build = |src| {
+        astra::build::shader::build(
+            src,
+            Path::new("test.hlsl"),
+            &target,
+            &[dir.path().to_owned()],
+            &IndexMap::new(),
+        )
+    };
+    let err = build("//#include <tail.lua>").unwrap_err();
+    assert!(err.to_string().contains("cannot include non-HLSL file"));
+    let err = build("//#include <tail.txt>").unwrap_err();
+    assert!(err.to_string().contains("cannot include non-HLSL file"));
+    Ok(())
 }

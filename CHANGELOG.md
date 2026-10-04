@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.7.2] - 2026-10-05
+
+### Added
+
+- `astra run` のプロセス監視中，仮想端末 (VT) 対応コンソールにおいて最下行へ操作ガイド (`Ctrl+C` による終了，`Ctrl+R` / `r+Enter` による再起動) を固定ステータスバーとして表示する機能を追加．非対応環境ではログ案内を出力する．
+- スクリプト内の `pixelshader` / `computeshader` 定義に対しても `cbuffer` のレイアウト検証 (非 `float` 型やパディング，レイアウト未確定の警告) を実行し，前処理や変数展開後でも元のソース位置を追跡して報告する機能を追加．
+- HLSL の `#include` において，`.lua` だけでなく `.hlsl` 以外の拡張子を持つファイルのインクルードを拒否するバリデーションを追加．
+
+### Changed
+
+- `astra run` における AviUtl2 デバッグ出力の出力先を標準エラー出力 (`stderr`) に変更．
+- `astra init` で生成される `.gitignore` に `.env` と `.env.*` を追加し，`.env.example` を除外するように変更．
+- スクリプトビルド時のプロパティバリデーションにおけるエラー・警告メッセージの引数表記を，役割に応じた具体的なパラメータ名で報告するように改善．
+
+### Fixed
+
+- HLSL の `cbuffer` 内で，初期化子の括弧が閉じていない宣言を検出できない問題を修正．
+- `astra run` で設置失敗後 `finally` タスクが実行されない問題を修正．
+- `astra run` でリロード時に `.env` が変更されていても再読み込みされない問題を修正．
+- 一部 Windows 環境において，パスの大文字・小文字や区切り文字の違いによりシンボリックリンクの一致判定やパッケージ配置先の重複検知が正しく行われない問題を修正．
+- `BUILD_DIR` のパス区切り文字を Windows 環境では `\` とするように変更．
+- `artifacts` 内の `BUILD_DIR` のパス区切り文字を `/` とするように変更．
+- ドライブレターを含む絶対パスの Glob パターン探索に対応．
+- パッケージ設定の `pick` で，ZIP アーカイブ外を参照するパス (パストラバーサルや絶対パス) を検出・拒否するバリデーションを追加．
+- トラックバーのプロパティ定義 (`track` 等) において，移動単位 (`step`) の指定を省略可能とし，最小 3 引数 (`min, max, default`) から記述できるように修正．
+- 旧スクリプト形式をビルドする場合，厳格に拡張編集の構文チェックを行うように修正．
+- 新スクリプト形式をビルドする場合，旧スクリプト構文も認識するように修正．
+
 ## [0.7.1] - 2026-10-03
 
 ### Fixed
@@ -255,7 +283,9 @@
 
 - Release
 
-[Unreleased]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.5...HEAD
+[0.7.2]: https://github.com/korarei/AviUtl2_Astra/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/korarei/AviUtl2_Astra/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.2...v0.6.3

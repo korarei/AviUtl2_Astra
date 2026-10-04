@@ -1,5 +1,106 @@
 use anyhow::Context;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub(crate) fn resolve_glob(pattern: &str) -> anyhow::Result<(PathBuf, wax::Glob<'_>)> {
+    let bytes = pattern.as_bytes();
+    let (drive, expr) = if bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1) == Some(&b':') {
+        pattern.split_at(2)
+    } else {
+        ("", pattern)
+    };
+
+    let (prefix, glob) = wax::Glob::new(expr)?.partition();
+    let prefix = if drive.is_empty() {
+        Path::new(".").join(prefix)
+    } else {
+        let mut path = std::ffi::OsString::from(drive);
+        path.push(prefix.as_os_str());
+        PathBuf::from(path)
+    };
+
+    std::fs::symlink_metadata(&prefix).with_context(|| format!("failed to read '{}'", prefix.display()))?;
+
+    Ok((prefix, glob.unwrap_or_else(wax::Glob::empty)))
+}
+
+pub(crate) fn to_key(path: &Path) -> anyhow::Result<PathBuf> {
+    let path = clean_path::clean(
+        std::path::absolute(path).with_context(|| format!("failed to resolve absolute path '{}'", path.display()))?,
+    );
+
+    #[cfg(windows)]
+    #[allow(clippy::upper_case_acronyms, non_camel_case_types, non_snake_case)]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        type BOOLEAN = u8;
+        type NTSTATUS = i32;
+        type USHORT = u16;
+        type WCHAR = u16;
+        type PWSTR = *mut WCHAR;
+        type PUNICODE_STRING = *mut UNICODE_STRING;
+        type PCUNICODE_STRING = *const UNICODE_STRING;
+
+        const FALSE: BOOLEAN = 0;
+
+        #[repr(C)]
+        struct UNICODE_STRING {
+            Length: USHORT,
+            MaximumLength: USHORT,
+            Buffer: PWSTR,
+        }
+
+        unsafe extern "system" {
+            fn RtlUpcaseUnicodeString(
+                DestinationString: PUNICODE_STRING,
+                SourceString: PCUNICODE_STRING,
+                AllocateDestinationString: BOOLEAN,
+            ) -> NTSTATUS;
+        }
+
+        let mut src: Vec<WCHAR> = path
+            .as_os_str()
+            .encode_wide()
+            .map(|ch| if ch == u16::from(b'/') { u16::from(b'\\') } else { ch })
+            .collect();
+
+        let len = USHORT::try_from(src.len())?
+            .checked_mul(2)
+            .context("path is too long to convert to a comparison key")?;
+
+        let mut buf = vec![0_u16; src.len()];
+        let mut dst = UNICODE_STRING {
+            Length: 0,
+            MaximumLength: len,
+            Buffer: buf.as_mut_ptr(),
+        };
+
+        let status = unsafe {
+            RtlUpcaseUnicodeString(
+                &raw mut dst,
+                &UNICODE_STRING {
+                    Length: len,
+                    MaximumLength: len,
+                    Buffer: src.as_mut_ptr(),
+                },
+                FALSE,
+            )
+        };
+
+        if status < 0 {
+            anyhow::bail!(
+                "failed to convert path '{}' to a comparison key: NTSTATUS {status:#010x}",
+                path.display()
+            );
+        }
+
+        Ok(PathBuf::from(OsString::from_wide(&buf[..usize::from(dst.Length) / 2])))
+    }
+
+    #[cfg(not(windows))]
+    Ok(path)
+}
 
 pub(crate) fn create_managed_dir(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("failed to create directory '{}'", dir.display()))?;
@@ -100,6 +201,51 @@ pub(crate) fn hash_file(path: &Path) -> anyhow::Result<u128> {
 mod tests {
     use super::*;
     use std::fs;
+    use wax::walk::Entry;
+
+    #[test]
+    fn walks_absolute_globs_and_fixed_paths() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        assert!(dir.path().is_absolute());
+        let one = dir.path().join("one.dll");
+        let nested = dir.path().join("nested");
+        let two = nested.join("two.dll");
+        fs::create_dir(&nested)?;
+        fs::write(&one, b"one")?;
+        fs::write(&two, b"two")?;
+        fs::write(dir.path().join("other.txt"), b"other")?;
+
+        let base = dir.path().to_string_lossy().replace('\\', "/");
+        #[cfg(windows)]
+        let base = format!("{}{}", &base[..2], wax::escape(&base[2..]));
+        #[cfg(not(windows))]
+        let base = wax::escape(&base);
+
+        for (suffix, mut expected) in [
+            ("*.dll", vec![one.clone()]),
+            ("**/*.dll", vec![one.clone(), two]),
+            ("one.dll", vec![one]),
+            ("nested", vec![nested]),
+            ("*.missing", Vec::new()),
+        ] {
+            let pattern = format!("{base}/{suffix}");
+            let (prefix, glob) = resolve_glob(&pattern)?;
+            let mut paths = glob
+                .walk(prefix)
+                .map(|entry| entry.map(|entry| entry.path().to_path_buf()))
+                .collect::<Result<Vec<_>, _>>()?;
+            paths.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(paths, expected, "{pattern}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_glob_syntax() {
+        assert!(resolve_glob("[").is_err());
+    }
 
     #[test]
     fn removes_files_directories_and_symlinks() {

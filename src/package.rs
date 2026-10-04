@@ -50,7 +50,7 @@ pub(crate) struct PackageCache {
     client: Option<&'static Client>,
     urls: BTreeMap<String, UrlFile>,
     archives: BTreeMap<PathBuf, PathBuf>,
-    paths: BTreeSet<String>,
+    paths: BTreeSet<PathBuf>,
 }
 
 impl PackageCache {
@@ -94,6 +94,7 @@ impl PackageCache {
         &self.root
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn hash<'a>(
         &self,
         contents: impl IntoIterator<Item = anyhow::Result<&'a PackageContent>>,
@@ -117,7 +118,8 @@ impl PackageCache {
                     }
                     PackageSource::Path(src) => {
                         let mut paths = Vec::new();
-                        for entry in wax::Glob::new(src.path())?.walk(".") {
+                        let (prefix, glob) = fs::resolve_glob(src.path())?;
+                        for entry in glob.walk(prefix) {
                             let entry = entry?;
                             if !entry.path().is_dir() {
                                 paths.push(std::path::absolute(entry.path())?);
@@ -236,24 +238,13 @@ impl PackageCache {
     pub(crate) fn reserve(&mut self, dst: &Path) -> anyhow::Result<()> {
         use std::ops::Bound::{Included, Unbounded};
 
-        let key = dst
-            .components()
-            .filter(|c| !matches!(c, Component::CurDir))
-            .collect::<PathBuf>()
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        #[cfg(windows)]
-        let key = key.to_ascii_lowercase();
-
-        let prefix = format!("{key}/");
-        if self.paths.contains(&key)
-            || key.match_indices('/').any(|(ed, _)| self.paths.contains(&key[..ed]))
+        let key = fs::to_key(dst)?;
+        if key.ancestors().any(|path| self.paths.contains(path))
             || self
                 .paths
-                .range::<str, _>((Included(prefix.as_str()), Unbounded))
+                .range::<Path, _>((Included(key.as_path()), Unbounded))
                 .next()
-                .is_some_and(|path| path.starts_with(&prefix))
+                .is_some_and(|path| path.starts_with(&key))
         {
             bail!("package destination is specified more than once: '{}'", dst.display());
         }
@@ -268,11 +259,12 @@ impl PackageCache {
         src: &PackageSource,
         outputs: &BTreeMap<String, BuildOutput>,
     ) -> anyhow::Result<Vec<PackageFile>> {
+        let dst = clean_path::clean(dst);
         match src {
-            PackageSource::Build(src) => self.collect_artifacts(dst, src, outputs),
-            PackageSource::Path(src) => self.collect_path(dst, src),
-            PackageSource::Url(src) => self.collect_url(dst, src),
-            PackageSource::File(src) => self.store_file(dst, src),
+            PackageSource::Build(src) => self.collect_artifacts(&dst, src, outputs),
+            PackageSource::Path(src) => self.collect_path(&dst, src),
+            PackageSource::Url(src) => self.collect_url(&dst, src),
+            PackageSource::File(src) => self.store_file(&dst, src),
             PackageSource::Simple(_) => unreachable!("package source must be expanded"),
         }
     }
@@ -301,7 +293,8 @@ impl PackageCache {
     fn collect_path(&mut self, dst: &Path, src: &PackageSourcePath) -> anyhow::Result<Vec<PackageFile>> {
         let mut files = Vec::new();
 
-        for entry in wax::Glob::new(src.path())?.walk(".") {
+        let (prefix, glob) = fs::resolve_glob(src.path())?;
+        for entry in glob.walk(prefix) {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
@@ -327,16 +320,6 @@ impl PackageCache {
             .map(wax::Glob::new)
             .transpose()?
             .map_or_else(|| (PathBuf::new(), Some(wax::Glob::tree())), wax::Glob::partition);
-
-        if prefix
-            .components()
-            .any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
-        {
-            bail!(
-                "pick must stay within the zip archive: '{}'",
-                src.pick().unwrap_or_default()
-            );
-        }
 
         self.download(src.url(), self.is_refresh)?;
 
@@ -525,13 +508,10 @@ impl PackageCache {
                     let mut path = PathBuf::new();
 
                     while let Some(part) = parts.next() {
-                        #[cfg(windows)]
-                        path.push(part.as_os_str().to_ascii_lowercase());
-                        #[cfg(not(windows))]
                         path.push(part.as_os_str());
 
                         let is_file = parts.peek().is_none() && !file.is_dir();
-                        if let Some(has_file) = entries.insert(path.clone(), is_file)
+                        if let Some(has_file) = entries.insert(fs::to_key(&path)?, is_file)
                             && (has_file || is_file)
                         {
                             bail!(

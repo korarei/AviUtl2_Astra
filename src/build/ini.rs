@@ -13,19 +13,17 @@ pub fn build(
     include_dirs: &[PathBuf],
     vars: &IndexMap<String, String>,
 ) -> anyhow::Result<String> {
-    let mut include_stack = Vec::new();
-    if let Ok(file) = std::fs::canonicalize(target.path()) {
-        include_stack.push(file);
-    }
-
-    Builder {
+    let mut builder = Builder {
         target,
         include_dirs,
         vars: Cow::Borrowed(vars),
-        include_stack,
+        include_stack: std::fs::canonicalize(target.path()).into_iter().collect(),
         once_files: HashSet::new(),
-    }
-    .process(src, Path::new(target.path()))
+        output: String::with_capacity(src.len()),
+    };
+
+    builder.process(src, Path::new(target.path()))?;
+    Ok(builder.output)
 }
 
 struct Builder<'a> {
@@ -34,13 +32,13 @@ struct Builder<'a> {
     vars: Cow<'a, IndexMap<String, String>>,
     include_stack: Vec<PathBuf>,
     once_files: HashSet<PathBuf>,
+    output: String,
 }
 
 impl Builder<'_> {
-    fn process(&mut self, content: &str, file: &Path) -> anyhow::Result<String> {
+    fn process(&mut self, content: &str, file: &Path) -> anyhow::Result<()> {
         let curr_dir = file.parent().unwrap_or(Path::new("."));
         let file: Arc<Path> = file.into();
-        let mut output = String::with_capacity(content.len());
         let mut conditions = Conditions::default();
 
         for (i, line) in content.split_inclusive('\n').enumerate() {
@@ -57,20 +55,20 @@ impl Builder<'_> {
                 line: i + 1,
                 col: line[..at].chars().count() + 1,
             };
+            let locate_in = |text: &str, at| locate(text.as_ptr() as usize - line.as_ptr() as usize + at);
             let pos = locate(line.len() - line.trim_start().len() + usize::from(comment.is_some()));
 
             match preprocess::resolve(comment, &mut conditions, self.vars.as_ref(), &pos)? {
                 Action::Keep => {
-                    output.push_str(&Self::expand(line, self.vars.as_ref(), locate)?);
+                    self.output.push_str(&Self::expand(line, self.vars.as_ref(), locate)?);
                     if is_newline {
-                        output.push('\n');
+                        self.output.push('\n');
                     }
                 }
                 Action::Drop => {}
                 Action::PragmaOnce => {
-                    let canonical =
-                        std::fs::canonicalize(file.as_ref()).unwrap_or_else(|_| file.as_ref().to_path_buf());
-                    self.once_files.insert(canonical);
+                    self.once_files
+                        .insert(std::fs::canonicalize(file.as_ref()).unwrap_or_else(|_| file.as_ref().to_path_buf()));
                 }
                 Action::Define(key, val) => {
                     if RESERVED_VARIABLES.contains(&key) {
@@ -80,10 +78,7 @@ impl Builder<'_> {
                     let vars = self.vars.to_mut();
                     vars.insert(
                         key.to_owned(),
-                        Self::expand(val, vars, |at| {
-                            locate(val.as_ptr() as usize - line.as_ptr() as usize + at)
-                        })?
-                        .into_owned(),
+                        Self::expand(val, vars, |at| locate_in(val, at))?.into_owned(),
                     );
                 }
                 Action::Undef(key) => {
@@ -91,7 +86,7 @@ impl Builder<'_> {
                 }
                 Action::Include(include, is_quoted) => {
                     let include = Self::expand(&include, self.vars.as_ref(), |at| match &include {
-                        Cow::Borrowed(text) => locate(text.as_ptr() as usize - line.as_ptr() as usize + at),
+                        Cow::Borrowed(text) => locate_in(text, at),
                         Cow::Owned(_) => pos.clone(),
                     })?;
                     let file = is_quoted
@@ -110,32 +105,36 @@ impl Builder<'_> {
                             )
                         })?;
 
-                    let file = std::fs::canonicalize(&file)
-                        .with_context(|| format!("failed to canonicalize include file '{}'", file.display()))?;
-
-                    if self.once_files.contains(&file) {
-                        continue;
-                    }
-
-                    if self.include_stack.contains(&file) {
-                        bail!("circular include detected: '{}'", file.display());
-                    }
-
-                    self.include_stack.push(file.clone());
-                    let nested = (|| self.process(&crate::fs::read_file(&file, self.target.encoding())?, &file))();
-                    let _ = self.include_stack.pop();
-                    let nested = nested?;
-
-                    output.push_str(&nested);
-                    if is_newline && !nested.is_empty() && !nested.ends_with('\n') {
-                        output.push('\n');
-                    }
+                    self.load_include(&file, is_newline)?;
                 }
             }
         }
 
-        conditions.finish()?;
-        Ok(output)
+        conditions.finish()
+    }
+
+    fn load_include(&mut self, file: &Path, is_newline: bool) -> anyhow::Result<()> {
+        let file = std::fs::canonicalize(file)
+            .with_context(|| format!("failed to canonicalize include file '{}'", file.display()))?;
+        if self.once_files.contains(&file) {
+            return Ok(());
+        }
+
+        if self.include_stack.contains(&file) {
+            bail!("circular include detected: '{}'", file.display());
+        }
+
+        let st = self.output.len();
+        self.include_stack.push(file.clone());
+        let res = crate::fs::read_file(&file, self.target.encoding()).and_then(|src| self.process(&src, &file));
+        let _ = self.include_stack.pop();
+        res?;
+
+        if is_newline && self.output.len() > st && !self.output.ends_with('\n') {
+            self.output.push('\n');
+        }
+
+        Ok(())
     }
 
     fn expand<'text>(

@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
+#[cfg_attr(not(windows), allow(dead_code))]
 mod deploy;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod runtime;
 
 pub(crate) const RUNTIME_DIR: &str = ".astra/runtime";
@@ -58,25 +60,15 @@ impl RuntimeManifest {
         };
 
         let mut invalid = false;
-        manifest.aviutl2.links.retain(|dst, _| {
-            let mut normal = false;
-            let valid = !dst.contains('\\')
-                && Path::new(dst).components().all(|component| match component {
-                    Component::Normal(_) => {
-                        normal = true;
-                        true
-                    }
-                    Component::CurDir => true,
-                    _ => false,
-                })
-                && normal;
 
-            if !valid {
+        manifest.aviutl2.links.retain(|dst, _| {
+            if !validate_link(dst) {
                 tracing::warn!("invalid link path '{dst}' in runtime manifest; it will be redeployed");
                 invalid = true;
+                return false;
             }
 
-            valid
+            true
         });
 
         if invalid {
@@ -85,13 +77,36 @@ impl RuntimeManifest {
             manifest.aviutl2.package = None;
         }
 
+        #[cfg(windows)]
+        {
+            manifest.aviutl2.links = std::mem::take(&mut manifest.aviutl2.links)
+                .into_iter()
+                .map(|(dst, target)| (dst.replace('/', "\\"), target.replace('/', "\\")))
+                .collect();
+        }
+
         manifest.path = path;
         Ok(manifest)
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn write(&self) -> anyhow::Result<()> {
         crate::fs::write_file(&self.path, serde_json::to_string_pretty(self)?.as_bytes())
     }
+}
+
+fn validate_link(path: &str) -> bool {
+    let mut normal = false;
+    (cfg!(windows) || !path.contains('\\'))
+        && Path::new(path).components().all(|component| match component {
+            Component::Normal(_) => {
+                normal = true;
+                true
+            }
+            Component::CurDir => true,
+            _ => false,
+        })
+        && normal
 }
 
 #[derive(Debug, Clone, clap::Args)]
@@ -128,6 +143,7 @@ pub(crate) struct Args {
 }
 
 impl Args {
+    #[cfg_attr(not(windows), allow(dead_code))]
     #[must_use]
     fn build_type(&self) -> BuildType {
         if self.release {
@@ -276,7 +292,6 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
     }
 
     let mut config = config.clone();
-    let mut config_hash = crate::fs::hash_file(config.path()).ok();
     let build_type = args.build_type();
 
     sync_package(&config, build_type, &release, &data_dir, &mut manifest, args.is_refresh)?;
@@ -305,23 +320,18 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                     return Ok(());
                 }
 
-                if let Ok(hash) = crate::fs::hash_file(config.path())
-                    && Some(hash) != config_hash
-                {
-                    match config.reload() {
-                        Ok(new_config) => {
-                            config = new_config;
-                            config_hash = Some(hash);
-                            tracing::info!("Configuration reloaded");
+                match config.reload() {
+                    Ok(new_config) => {
+                        config = new_config;
+                        tracing::info!("Configuration reloaded");
+                    }
+                    Err(e) => {
+                        tracing::error!("failed to reload configuration: {e:#}");
+                        tracing::info!("Fix the configuration and press 'Ctrl+R' or 'r' to retry reload");
+                        if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
+                            continue;
                         }
-                        Err(e) => {
-                            tracing::error!("failed to reload configuration: {e:#}");
-                            tracing::info!("Fix the configuration and press 'Ctrl+R' or 'r' to retry reload");
-                            if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
-                                continue;
-                            }
-                            return Ok(());
-                        }
+                        return Ok(());
                     }
                 }
 
@@ -373,17 +383,16 @@ fn select_release(config: &Config) -> anyhow::Result<Release> {
 #[cfg(windows)]
 fn sync_package(
     config: &Config,
-    build_type: BuildType,
+    kind: BuildType,
     release: &Release,
-    data_dir: &Path,
+    dst_dir: &Path,
     manifest: &mut RuntimeManifest,
-    is_refresh: bool,
+    refresh: bool,
 ) -> anyhow::Result<()> {
     let package = release
         .package()
         .ok_or_else(|| anyhow::anyhow!("release '{}' has no package", release.id()))?;
-    let config_hash =
-        xxhash_rust::const_xxh3::xxh3_128(&serde_json::to_vec(&(config, release, build_type.as_lowercase()))?);
+    let config_hash = xxhash_rust::const_xxh3::xxh3_128(&serde_json::to_vec(&(config, release, kind.as_lowercase()))?);
 
     let mut outputs = BTreeMap::new();
 
@@ -396,19 +405,12 @@ fn sync_package(
                     continue;
                 }
 
-                let build = config.build(id, build_type)?;
-                if build.is_enabled(build_type) {
+                let build = config.build(id, kind)?;
+                if build.is_enabled(kind) {
                     tracing::info!("Building dependency '{}' for release '{}'", id, release.id());
-                    outputs.insert(
-                        id.to_owned(),
-                        crate::build::run(&build, config, config.astra(), build_type)?,
-                    );
+                    outputs.insert(id.to_owned(), crate::build::run(&build, config, config.astra(), kind)?);
                 } else {
-                    tracing::warn!(
-                        "build '{}' is disabled for {} build type",
-                        id,
-                        build_type.as_lowercase()
-                    );
+                    tracing::warn!("build '{}' is disabled for {} build type", id, kind.as_lowercase());
                 }
             }
             ReleaseDependency::Task(call) => {
@@ -430,41 +432,31 @@ fn sync_package(
         Some(hash.digest128())
     };
 
-    let mut cache = crate::package::PackageCache::new(is_refresh)?;
-    let mut package_hash = if is_refresh {
-        None
-    } else {
-        cache.hash(package.contents())?
-    };
+    let mut package_hash = None;
+    let mut dirty = false;
 
-    let should_deploy = is_refresh
-        || manifest.config != Some(config_hash)
-        || manifest.build != build_hash
-        || package_hash.is_none()
-        || manifest.aviutl2.package != package_hash
-        || !manifest.aviutl2.links.iter().all(|(dst, target)| {
-            let target = Path::new(target);
-            let target = if target.is_absolute() {
-                target.to_path_buf()
-            } else {
-                cache.root().join(target)
-            };
+    let mut err = (|| -> anyhow::Result<()> {
+        let mut cache = crate::package::PackageCache::new(refresh)?;
+        package_hash = if refresh { None } else { cache.hash(package.contents())? };
 
-            let path = data_dir.join(dst);
-            path.exists() && deploy::is_same_link(&path, &target)
-        });
+        dirty = refresh
+            || manifest.config != Some(config_hash)
+            || manifest.build != build_hash
+            || package_hash.is_none()
+            || manifest.aviutl2.package != package_hash;
 
-    let mut err = if should_deploy {
-        match deploy::deploy(data_dir, package, &outputs, manifest, &mut cache) {
-            Ok(hash) => {
-                package_hash = hash;
-                None
-            }
-            Err(err) => Some(err.context("package deployment failed; rerun 'astra run' to deploy again")),
+        if !dirty {
+            dirty = !check_links(&manifest.aviutl2.links, cache.root(), dst_dir)?;
         }
-    } else {
-        None
-    };
+
+        if dirty {
+            package_hash = deploy::deploy(dst_dir, package, &outputs, manifest, &mut cache)
+                .context("package deployment failed; rerun 'astra run' to deploy again")?;
+        }
+
+        Ok(())
+    })()
+    .err();
 
     for call in release.finally() {
         tracing::debug!("calling finally task '{}'", call.id());
@@ -481,16 +473,30 @@ fn sync_package(
         return Err(e);
     }
 
-    if should_deploy {
+    if dirty {
         manifest.config = Some(config_hash);
         manifest.build = build_hash;
         manifest.aviutl2.package = package_hash;
+
         if let Err(err) = manifest.write() {
             manifest.config = None;
             return Err(err);
         }
     }
+
     Ok(())
+}
+
+#[cfg(windows)]
+fn check_links(links: &BTreeMap<String, String>, src_dir: &Path, dst_dir: &Path) -> anyhow::Result<bool> {
+    for (dst, src) in links {
+        let dst = dst_dir.join(dst);
+        if !dst.exists() || !deploy::is_same_link(&dst, &src_dir.join(src))? {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -508,7 +514,11 @@ mod tests {
         manifest.aviutl2.version = 2_005_400;
         manifest.config = Some(1);
         manifest.build = Some(2);
-        manifest.aviutl2.links = BTreeMap::from([(String::from("Script/main.lua"), String::from("blob"))]);
+        let dst = std::path::Path::new("Script")
+            .join("main.lua")
+            .to_string_lossy()
+            .into_owned();
+        manifest.aviutl2.links = BTreeMap::from([(dst, String::from("blob"))]);
         manifest.write()?;
         assert_eq!(RuntimeManifest::read(dir.path())?, manifest);
 
