@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
+#[cfg_attr(not(windows), allow(dead_code))]
 mod deploy;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod runtime;
 
 pub(crate) const RUNTIME_DIR: &str = ".astra/runtime";
@@ -87,6 +89,7 @@ impl RuntimeManifest {
         Ok(manifest)
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn write(&self) -> anyhow::Result<()> {
         crate::fs::write_file(&self.path, serde_json::to_string_pretty(self)?.as_bytes())
     }
@@ -140,6 +143,7 @@ pub(crate) struct Args {
 }
 
 impl Args {
+    #[cfg_attr(not(windows), allow(dead_code))]
     #[must_use]
     fn build_type(&self) -> BuildType {
         if self.release {

@@ -94,6 +94,7 @@ impl PackageCache {
         &self.root
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn hash<'a>(
         &self,
         contents: impl IntoIterator<Item = anyhow::Result<&'a PackageContent>>,

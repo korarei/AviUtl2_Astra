@@ -169,12 +169,9 @@ impl Config {
         Ok(config)
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn reload(&self) -> anyhow::Result<Self> {
         Self::load(&self.path, self.defines.clone(), self.project_version.as_deref())
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
     }
 
     #[must_use]
@@ -182,6 +179,7 @@ impl Config {
         &self.astra
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn project(&self) -> &Project {
         &self.project
     }

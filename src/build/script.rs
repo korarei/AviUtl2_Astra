@@ -900,7 +900,9 @@ impl Builder<'_> {
                     .or_else(|| key.parse::<i64>().ok())
                     .is_some_and(|value| (0..=0xff_ffff).contains(&value))
                 {
-                    bail!("{pos}: default value of 'color' must be an integer between 0x000000 and 0xffffff, got '{key}'");
+                    bail!(
+                        "{pos}: default value of 'color' must be an integer between 0x000000 and 0xffffff, got '{key}'"
+                    );
                 }
             } else if kind == "param" {
                 let (bytes, _, has_unmappable) = encoding_rs::SHIFT_JIS.encode(prop.key);

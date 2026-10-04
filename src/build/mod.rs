@@ -14,6 +14,7 @@ use wax::walk::Entry;
 
 pub(crate) struct BuildOutput {
     pub(crate) artifacts: Vec<PathBuf>,
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) hash: u128,
 }
 
