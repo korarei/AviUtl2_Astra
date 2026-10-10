@@ -7,20 +7,20 @@ use std::fmt::Write as _;
 use std::path::Path;
 use validator::Validate;
 
-fn load_config_with(source: &str, defines: IndexMap<String, String>, ver: Option<&str>) -> anyhow::Result<Config> {
+fn load_config_with(src: &str, defines: IndexMap<String, String>, ver: Option<&str>) -> anyhow::Result<Config> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("astra.toml");
-    std::fs::write(&file, source)?;
+    std::fs::write(&file, src)?;
     Config::load(file, defines, ver)
 }
 
-fn load_config(source: &str) -> anyhow::Result<Config> {
-    load_config_with(source, IndexMap::new(), None)
+fn load_config(src: &str) -> anyhow::Result<Config> {
+    load_config_with(src, IndexMap::new(), None)
 }
 
 #[test]
 fn loads_project_astra_defaults_and_aliases() -> anyhow::Result<()> {
-    let source = r#"
+    let src = r#"
 version = 2
 
 [variables]
@@ -59,7 +59,7 @@ artifacts = "${{ AVIUTL2_VERSION }}"
 "#;
 
     let config = load_config_with(
-        source,
+        src,
         IndexMap::from([("ROOT".to_owned(), "project".to_owned())]),
         Some(" 2.0.0 "),
     )?;
@@ -123,6 +123,7 @@ suffix = ".anm2"
         ))?;
         assert_eq!(config.astra().build_dir(), "custom-build", "{key}");
     }
+
     for key in [
         "dist_dir",
         "dist-dir",
@@ -138,6 +139,7 @@ suffix = ".anm2"
         ))?;
         assert_eq!(config.astra().dist_dir(), "custom-dist", "{key}");
     }
+
     for key in [
         "venv_dir",
         "venv-dir",
@@ -160,10 +162,13 @@ suffix = ".anm2"
     for (value, expected) in [("2010701", 2_010_701), ("2.1.7a", 2_010_701), ("v2.1.8", 2_010_800)] {
         assert_eq!(AviUtl2Version::String(value.to_owned()).resolve()?, expected);
     }
+
     assert_eq!(AviUtl2Version::Number(2_010_701).resolve()?, 2_010_701);
+
     for value in ["", "invalid"] {
         assert!(AviUtl2Version::String(value.to_owned()).resolve().is_err());
     }
+
     Ok(())
 }
 
@@ -181,11 +186,12 @@ fn resolves_build_modes_suffixes_targets_and_calls() -> anyhow::Result<()> {
         ("scn", ".scn", false),
         ("cam", ".cam", false),
     ];
-    let mut source = String::from("version = 2\n\n[project]\nname = \"demo\"\n");
+    let mut src = String::from("version = 2\n\n[project]\nname = \"demo\"\n");
     for &(id, suffix, _) in &suffixes {
-        let _ = writeln!(source, "\n[build.{id}]\nsuffix = \"{suffix}\"");
+        let _ = writeln!(src, "\n[build.{id}]\nsuffix = \"{suffix}\"");
     }
-    source.push_str(
+
+    src.push_str(
         r#"
 [build.no_suffix]
 outputs = ["artifact.bin"]
@@ -296,7 +302,7 @@ newline = "\r\n"
 "#,
     );
 
-    let config = load_config(&source)?;
+    let config = load_config(&src)?;
     assert_eq!(BuildType::Debug.as_lowercase(), "debug");
     assert_eq!(BuildType::Release.to_string(), "Release");
 
@@ -657,6 +663,7 @@ changelog = "changes"
     ] {
         assert_eq!(meta[key], value, "{key}");
     }
+
     assert_eq!(meta["uninstall_subdirectory_files"], true);
 
     let contents = package.contents().collect::<anyhow::Result<Vec<_>>>()?;
@@ -852,6 +859,7 @@ fn validates_artifacts_and_package_globs() -> anyhow::Result<()> {
             "{pattern}"
         );
     }
+
     Ok(())
 }
 
@@ -880,6 +888,7 @@ fn validates_zip_pickers() -> anyhow::Result<()> {
             "{pattern}"
         );
     }
+
     Ok(())
 }
 
@@ -902,6 +911,7 @@ fn rejects_unsafe_output_directories_without_cleaning_saved_paths() -> anyhow::R
                 "{field}: {path}"
             );
         }
+
         let config = load_config(&format!(
             "version = 2\n[project]\nname = 'demo'\n[astra]\n{field} = 'nested/../output'\n"
         ))?;
@@ -926,6 +936,7 @@ fn rejects_unsafe_output_directories_without_cleaning_saved_paths() -> anyhow::R
             "{field}"
         );
     }
+
     Ok(())
 }
 
@@ -948,12 +959,13 @@ fn rejects_unicode_case_variants_of_project_ancestors() -> anyhow::Result<()> {
             "{field}"
         );
     }
+
     Ok(())
 }
 
 #[test]
 fn rejects_invalid_configuration_patterns() -> anyhow::Result<()> {
-    for source in [
+    for src in [
         "version = 1\n\n[project]\nname = \"demo\"\n",
         "[project]\nname = \"demo\"\n",
         "version = 2\n\n[project]\nname = \"\"\n",
@@ -969,12 +981,12 @@ fn rejects_invalid_configuration_patterns() -> anyhow::Result<()> {
         "version = 2\n\n[project]\nname = \"demo\"\n\n[astra]\nrequires-astra = \">=999.0.0\"\n",
         "version = 2\n\n[project]\nname = \"demo\"\n\n[defaults.run]\nshell = \"\"\n",
     ] {
-        assert!(load_config(source).is_err(), "{source}");
+        assert!(load_config(src).is_err(), "{src}");
     }
 
     for field in ["build-dir", "dist-dir"] {
-        let source = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[astra]\n{field} = \"\"\n");
-        assert!(load_config(&source).is_err(), "{field}");
+        let src = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[astra]\n{field} = \"\"\n");
+        assert!(load_config(&src).is_err(), "{field}");
     }
 
     for id in [".astra", ".astra-cache", ".astratest", ".git", ".github", ".gitignore"] {
@@ -983,18 +995,12 @@ fn rejects_invalid_configuration_patterns() -> anyhow::Result<()> {
             format!("[build.\"{id}\"]\nsuffix = \".anm2\""),
             format!("[release.\"{id}\"]"),
         ] {
-            let source = format!("version = 2\n\n[project]\nname = \"demo\"\n\n{section}\n");
-            assert!(
-                load_config(&source).unwrap_err().to_string().contains("reserved"),
-                "{id}"
-            );
+            let src = format!("version = 2\n\n[project]\nname = \"demo\"\n\n{section}\n");
+            assert!(load_config(&src).unwrap_err().to_string().contains("reserved"), "{id}");
         }
 
-        let source = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.main.package]\nid = \"{id}\"\n");
-        assert!(
-            load_config(&source).unwrap_err().to_string().contains("reserved"),
-            "{id}"
-        );
+        let src = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.main.package]\nid = \"{id}\"\n");
+        assert!(load_config(&src).unwrap_err().to_string().contains("reserved"), "{id}");
     }
 
     assert!(load_config("version = 2\n\n[project]\nname = \"demo\"\n").is_ok());
@@ -1079,6 +1085,7 @@ variables = { BUILD_DIR = "other" }
 variables = { BUILD_DIR = "other" }
 "#,
     )?;
+
     for id in [
         "bad_missing_suffix",
         "bad_suffix",
@@ -1092,6 +1099,7 @@ variables = { BUILD_DIR = "other" }
     ] {
         assert!(config.build(id, BuildType::Debug).is_err(), "{id}");
     }
+
     assert!(config.build("missing", BuildType::Debug).is_err());
     assert!(config.release("missing").is_err());
     assert!(
@@ -1102,9 +1110,11 @@ variables = { BUILD_DIR = "other" }
             .unwrap()
             .is_err()
     );
+
     for id in ["empty_run", "empty_command", "empty_shell", "empty_dependency"] {
         assert!(config.task(&TaskCall::Simple(id.to_owned())).is_err(), "{id}");
     }
+
     assert!(config.task(&TaskCall::Simple("reserved_vars".to_owned())).is_err());
     assert!(config.release("reserved_vars").is_err());
 
@@ -1131,14 +1141,14 @@ variables = { BUILD_DIR = "other" }
         } else {
             format!("changelog = \"changes\"\n{field} = {value}")
         };
-        let source = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.bad.notes]\n{notes}\n");
-        assert!(load_config(&source)?.release("bad").is_err(), "{field}");
+        let src = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.bad.notes]\n{notes}\n");
+        assert!(load_config(&src)?.release("bad").is_err(), "{field}");
     }
 
     for filename in ["", ".zip", "demo.tar.gz", " demo.zip", "demo.zip ", "../demo.zip"] {
-        let source =
+        let src =
             format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.bad.package]\nfilename = \"{filename}\"\n");
-        assert!(load_config(&source)?.release("bad").is_err(), "{filename:?}");
+        assert!(load_config(&src)?.release("bad").is_err(), "{filename:?}");
     }
 
     let config = load_config(

@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn extracts_release_notes() {
-        for (source, expected) in [
+        for (src, expected) in [
             (
                 "## Changelog\n### v1.0.0\n- Added\n- Fixed\n\n### v0.9.0\n- Old\n",
                 "## What's Changed\n\n- Added\n- Fixed\n",
@@ -324,8 +324,9 @@ mod tests {
             ),
             ("## Changelog\r### v1.0.0\r- CR\r", "## What's Changed\n\n- CR\n"),
         ] {
-            assert_eq!(extract_release_notes(source).as_deref(), Some(expected), "{source:?}");
+            assert_eq!(extract_release_notes(src).as_deref(), Some(expected), "{src:?}");
         }
+
         assert!(extract_release_notes("## Changelog\n## [2] 2026\n- Same level\n").is_none());
         assert!(extract_release_notes("# Project\n## Installation\nUse it\n").is_none());
     }

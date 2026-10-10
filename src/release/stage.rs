@@ -53,6 +53,7 @@ fn copy(dst: &Path, src: &Path) -> anyhow::Result<()> {
 
     if meta.is_dir() {
         std::fs::create_dir_all(dst).with_context(|| format!("failed to create directory '{}'", dst.display()))?;
+
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
             copy(&dst.join(entry.file_name()), &entry.path())?;

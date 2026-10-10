@@ -328,9 +328,11 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                     Err(e) => {
                         tracing::error!("failed to reload configuration: {e:#}");
                         tracing::info!("Fix the configuration and press 'Ctrl+R' or 'r' to retry reload");
+
                         if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
                             continue;
                         }
+
                         return Ok(());
                     }
                 }
@@ -340,9 +342,11 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                     Err(e) => {
                         tracing::error!("{e:#}");
                         tracing::info!("Fix the configuration and press 'Ctrl+R' or 'r' to retry reload");
+
                         if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
                             continue;
                         }
+
                         return Ok(());
                     }
                 };
@@ -352,9 +356,11 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                     Err(e) => {
                         tracing::error!("{e:#}");
                         tracing::info!("Fix the build error and press 'Ctrl+R' or 'r' to retry reload");
+
                         if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
                             continue;
                         }
+
                         return Ok(());
                     }
                 }

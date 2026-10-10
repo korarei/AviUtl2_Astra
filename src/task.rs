@@ -73,13 +73,13 @@ fn exec_default(cmd: &str, env: &IndexMap<String, String>) -> anyhow::Result<()>
     tracing::info!("$ {cmd}");
 
     let mut process = if cfg!(windows) {
-        let mut p = Command::new("cmd");
-        p.args(["/d", "/s", "/c"]).arg(cmd);
-        p
+        let mut process = Command::new("cmd");
+        process.args(["/d", "/s", "/c"]).arg(cmd);
+        process
     } else {
-        let mut p = Command::new("sh");
-        p.args(["-e", "-c"]).arg(cmd);
-        p
+        let mut process = Command::new("sh");
+        process.args(["-e", "-c"]).arg(cmd);
+        process
     };
 
     process.envs(env);
@@ -309,6 +309,7 @@ impl Runner {
                 writer.write_all(script.as_bytes())?;
             }
         }
+
         writer.flush()
     }
 }

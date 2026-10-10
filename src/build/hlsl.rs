@@ -92,9 +92,11 @@ impl<'a> Iterator for Lexer<'a> {
         if self.curr == 0 && self.src.trim().is_empty() {
             self.state.is_directive = false;
         }
+
         if self.curr >= self.bytes.len() {
             return None;
         }
+
         if self.state.is_directive || (!self.state.is_comment && self.is_line_start && self.bytes[self.curr] == b'#') {
             let st = self.curr;
             let ed = st + self.src[st..].find('\n').unwrap_or(self.src.len() - st);
@@ -122,6 +124,7 @@ impl<'a> Iterator for Lexer<'a> {
         Some(Token {
             kind: if self.state.is_comment || self.src[st..].starts_with("/*") {
                 self.curr += if self.state.is_comment { 0 } else { 2 };
+
                 if let Some(rel) = self.src[self.curr..].find("*/") {
                     self.curr += rel + 2;
                     self.state.is_comment = false;
@@ -216,6 +219,7 @@ pub fn parse_declaration<'a>(tokens: &[Token<'a>]) -> Option<Declaration<'a>> {
             | "centroid" | "noperspective" | "sample" | "snorm" | "unorm" | "globallycoherent" => {}
             _ => break,
         }
+
         curr += 1;
     }
 
@@ -264,8 +268,10 @@ pub fn parse_declaration<'a>(tokens: &[Token<'a>]) -> Option<Declaration<'a>> {
                     ")" | "]" | "}" => depth = depth.saturating_sub(1),
                     _ => {}
                 }
+
                 curr += 1;
             }
+
             decl.has_error |= depth != 0;
         }
 
@@ -311,10 +317,12 @@ pub fn parse_type<'a>(tokens: &[Token<'a>]) -> (Option<Type<'a>>, usize) {
                 1,
             );
         }
+
         let len = if is_matrix { 8 } else { 6 };
         let Some(args) = tokens.get(..len) else {
             return (None, 1);
         };
+
         if args[2].kind != TokenKind::Ident
             || args[3].text != ","
             || args[len - 1].text != ">"
@@ -403,12 +411,14 @@ pub fn find_entry_point(src: &str, name: &str, shader: &str) -> Option<Span> {
                     Some(TokenKind::Other(']')) => depth += 1,
                     Some(TokenKind::Other('[')) => {
                         depth -= 1;
+
                         if depth == 0 {
                             break;
                         }
                     }
                     _ => {}
                 }
+
                 if j == 0 {
                     return false;
                 }
@@ -443,14 +453,17 @@ pub fn find_entry_point(src: &str, name: &str, shader: &str) -> Option<Span> {
         {
             if kind(ed) == Some(TokenKind::Other(':')) {
                 ed += 1;
+
                 if kind(ed) == Some(TokenKind::Ident) {
                     ed += 1;
                 }
             }
+
             if kind(ed) == Some(TokenKind::Other('{')) && skip_group(&tokens, ed, '{', '}').is_some() {
                 return Some(token.span);
             }
         }
+
         match token.kind {
             TokenKind::Other(open @ ('{' | '(' | '[')) => {
                 curr = skip_group(
@@ -464,15 +477,18 @@ pub fn find_entry_point(src: &str, name: &str, shader: &str) -> Option<Span> {
                     },
                 )
                 .unwrap_or(tokens.len());
+
                 if open == '{' {
                     initializer = false;
                 }
+
                 continue;
             }
             TokenKind::Other('=') => initializer = true,
             TokenKind::Other(';') => initializer = false,
             _ => {}
         }
+
         curr += 1;
     }
     None
@@ -486,6 +502,7 @@ pub fn skip_group(tokens: &[Token<'_>], st: usize, open: char, close: char) -> O
             depth += 1;
         } else if token.kind == TokenKind::Other(close) {
             depth = depth.checked_sub(1)?;
+
             if depth == 0 {
                 return Some(i + 1);
             }

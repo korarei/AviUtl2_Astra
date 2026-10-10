@@ -144,6 +144,7 @@ pub fn expand<V: Vars>(input: &str, vars: V) -> anyhow::Result<String> {
         if key.is_empty() {
             bail!("empty variable name in placeholder");
         }
+
         if !is_ident(key) {
             bail!("invalid variable name '{key}' in placeholder");
         }
@@ -157,6 +158,7 @@ pub fn expand<V: Vars>(input: &str, vars: V) -> anyhow::Result<String> {
     }
 
     result.push_str(rest);
+
     if result.contains("${{") {
         bail!("unexpanded variable remains in '{result}'");
     }

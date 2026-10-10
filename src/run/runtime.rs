@@ -105,6 +105,7 @@ pub(super) fn setup(ver: u32, config: &Config) -> anyhow::Result<()> {
                 aviutl2_dir.display()
             )));
         }
+
         return Err(err);
     }
 

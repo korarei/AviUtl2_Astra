@@ -44,6 +44,7 @@ fn preserves_comments_and_directive_continuations_across_chunks() {
         tokens.extend(lexer.by_ref());
         state = lexer.state;
     }
+
     assert_eq!(
         tokens.iter().filter(|token| token.kind == TokenKind::Directive).count(),
         1
@@ -81,6 +82,7 @@ fn ends_directive_continuation_on_an_empty_chunk() {
         tokens.extend(lexer.by_ref());
         state = lexer.state;
     }
+
     assert!(!tokens.iter().any(|token| token.kind == TokenKind::Continuation));
     assert!(
         tokens
@@ -98,6 +100,7 @@ fn preserves_source_spans_for_unicode_and_escaped_strings() {
         assert!(src.is_char_boundary(token.span.ed));
         assert_eq!(token.text, &src[token.span.st..token.span.ed]);
     }
+
     assert!(
         tokens
             .iter()

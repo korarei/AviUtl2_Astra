@@ -164,6 +164,7 @@ impl<'a> Iterator for Lexer<'a> {
             while self.curr < self.bytes.len() {
                 if self.bytes[self.curr] == b'\\' {
                     self.curr += 1;
+
                     if self.curr < self.bytes.len() {
                         self.curr += 1;
                     }
@@ -296,6 +297,7 @@ fn parse(src: &str, block: bool) -> Option<Directive<'_>> {
                                 path.push(escape);
                             }
                         }
+
                         curr += escape.len_utf8();
                         st = curr;
                     } else {
@@ -440,6 +442,7 @@ pub(super) fn placeholder(src: &str, st: usize) -> Result<Option<(&str, usize)>,
     if name.is_empty() {
         return Err(PlaceholderError::Empty);
     }
+
     if !is_ident(name) {
         return Err(PlaceholderError::InvalidIdent(name));
     }
@@ -603,6 +606,7 @@ fn eval(expr: &str, vars: &IndexMap<String, String>) -> Result<bool, String> {
                                 expanded.push_str(&expr[curr..token.st]);
                                 replaced = true;
                             }
+
                             expanded.push_str(&raw[st..at]);
                             expanded.push_str(key);
                             st = ed;
@@ -611,6 +615,7 @@ fn eval(expr: &str, vars: &IndexMap<String, String>) -> Result<bool, String> {
                             scan = at + 1;
                         }
                     }
+
                     if replaced {
                         expanded.as_mut().unwrap().push_str(&raw[st..]);
                         curr = token.ed;
@@ -620,6 +625,7 @@ fn eval(expr: &str, vars: &IndexMap<String, String>) -> Result<bool, String> {
             _ => {}
         }
     }
+
     let text = if let Some(mut expanded) = expanded {
         expanded.push_str(&expr[curr..]);
         Cow::Owned(expanded)
@@ -658,6 +664,7 @@ fn eval(expr: &str, vars: &IndexMap<String, String>) -> Result<bool, String> {
                     while look.peek().is_some_and(|next| next.kind == Kind::Space) {
                         let _ = look.next();
                     }
+
                     look.next_if(|next| next.kind == Kind::Other(')')).map(|token| token.ed)
                 } else if separated {
                     Some(ed)
@@ -673,6 +680,7 @@ fn eval(expr: &str, vars: &IndexMap<String, String>) -> Result<bool, String> {
                     while tokens.peek().is_some_and(|next| next.st < ed) {
                         let _ = tokens.next();
                     }
+
                     continue;
                 }
             }
@@ -686,6 +694,7 @@ fn eval(expr: &str, vars: &IndexMap<String, String>) -> Result<bool, String> {
             Kind::Operator("~=") => Some("!="),
             _ => None,
         };
+
         if let Some(replacement) = replacement {
             let result = result.get_or_insert_with(|| String::with_capacity(text.len()));
             result.push_str(&text[curr..token.st]);
@@ -712,6 +721,7 @@ fn eval(expr: &str, vars: &IndexMap<String, String>) -> Result<bool, String> {
         let Kind::Ident(name) = token.kind else {
             continue;
         };
+
         if matches!(name, "true" | "false" | "null") || !names.insert(name) {
             continue;
         }

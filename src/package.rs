@@ -111,9 +111,11 @@ impl PackageCache {
                         else {
                             return Ok(None);
                         };
+
                         if file.path.parent() != Some(self.blobs.as_path()) || !file.path.is_file() {
                             return Ok(None);
                         }
+
                         hash.update(&serde_json::to_vec(&file)?);
                     }
                     PackageSource::Path(src) => {
@@ -125,6 +127,7 @@ impl PackageCache {
                                 paths.push(std::path::absolute(entry.path())?);
                             }
                         }
+
                         paths.sort_unstable();
                         hash.update(&serde_json::to_vec(&paths)?);
                     }
@@ -132,6 +135,7 @@ impl PackageCache {
                 }
             }
         }
+
         Ok(Some(hash.digest128()))
     }
 
@@ -174,6 +178,7 @@ impl PackageCache {
                 let Some(file) = UrlFile::read(&path)? else {
                     continue;
                 };
+
                 if file.path.parent() != Some(self.blobs.as_path())
                     || !keep.contains(&file.path)
                     || !file.path.is_file()
@@ -415,6 +420,7 @@ impl PackageCache {
             "{:032x}.json",
             xxhash_rust::const_xxh3::xxh3_128(url.as_bytes())
         ));
+
         if !is_refresh
             && let Some(file) = UrlFile::read(&manifest)?
             && file.path.parent() == Some(self.blobs.as_path())
@@ -669,13 +675,13 @@ mod tests {
             stream.write_all(&bytes).unwrap();
         });
 
-        let source: PackageSource = serde_json::from_value(serde_json::json!({
+        let src: PackageSource = serde_json::from_value(serde_json::json!({
             "url": url.clone(),
             "extract": true
         }))?;
         let (_dir, mut cache) = PackageCache::create_temp()?;
-        let first = cache.resolve(Path::new("Plugin"), &source, &BTreeMap::new())?;
-        let second = cache.resolve(Path::new("Script"), &source, &BTreeMap::new())?;
+        let first = cache.resolve(Path::new("Plugin"), &src, &BTreeMap::new())?;
+        let second = cache.resolve(Path::new("Script"), &src, &BTreeMap::new())?;
         assert_eq!(first[0].src, second[0].src);
         assert_eq!(
             fs::read(&first[0].src).with_context(|| format!("failed to read '{}'", first[0].src.display()))?,
@@ -689,13 +695,13 @@ mod tests {
             paths: BTreeSet::new(),
             ..cache
         };
-        let third = cache.resolve(Path::new("Plugin"), &source, &BTreeMap::new())?;
+        let third = cache.resolve(Path::new("Plugin"), &src, &BTreeMap::new())?;
         assert_eq!(first[0].src, third[0].src);
         assert_eq!(fs::read_dir(cache.root().join("blobs"))?.count(), 1);
         assert_eq!(fs::read_dir(cache.root().join("trees"))?.count(), 1);
 
-        let source: PackageSource = serde_json::from_value(serde_json::json!({ "url": url }))?;
-        let raw = cache.resolve(Path::new("Raw"), &source, &BTreeMap::new())?;
+        let src: PackageSource = serde_json::from_value(serde_json::json!({ "url": url }))?;
+        let raw = cache.resolve(Path::new("Raw"), &src, &BTreeMap::new())?;
         assert_eq!(raw[0].dst, PathBuf::from("Raw/archive.zip"));
 
         server.join().unwrap();
@@ -721,19 +727,19 @@ mod tests {
             }
         });
 
-        let source: PackageSource = serde_json::from_value(serde_json::json!({ "url": url }))?;
+        let src: PackageSource = serde_json::from_value(serde_json::json!({ "url": url }))?;
         let (_dir, mut cache) = PackageCache::create_temp()?;
 
         assert_eq!(cache.refresh()?, 0);
 
-        let files = cache.resolve(Path::new("Raw"), &source, &BTreeMap::new())?;
+        let files = cache.resolve(Path::new("Raw"), &src, &BTreeMap::new())?;
         assert_eq!(fs::read(&files[0].src)?, b"initial");
 
         let refreshed = cache.refresh()?;
         assert_eq!(refreshed, 1);
 
         cache.paths.clear();
-        let files = cache.resolve(Path::new("Raw"), &source, &BTreeMap::new())?;
+        let files = cache.resolve(Path::new("Raw"), &src, &BTreeMap::new())?;
         assert_eq!(fs::read(&files[0].src)?, b"updated");
 
         server.join().unwrap();

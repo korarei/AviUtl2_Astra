@@ -260,6 +260,7 @@ ignored_at_space = 3 --track @ignored_at_space:0,100,1
     ] {
         assert!(result.contains(expected), "missing {expected:?}\n{result}");
     }
+
     for unexpected in [
         "selected = \"if\"",
         "selected = \"else\"",
@@ -291,6 +292,7 @@ ignored_at_space = 3 --track @ignored_at_space:0,100,1
             expected
         );
     }
+
     for (src, bundled) in [("@custom\nlocal value = 1", false)] {
         assert!(build_script(src, Path::new("test.lua"), &[], &IndexMap::new(), bundled).is_err());
     }
@@ -410,6 +412,7 @@ ignored_at_space = 3 --track @ignored_at_space:0,100,1
         let error = build_script(src, Path::new("test.lua"), &[], &IndexMap::new(), false).unwrap_err();
         assert!(error.to_string().contains(message), "{src:?}: {error}");
     }
+
     Ok(())
 }
 
@@ -510,6 +513,7 @@ fn validates_shader_definition_names_as_hlsl_identifiers() -> anyhow::Result<()>
         let output = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false)?;
         assert_eq!(output, "return 1\n");
     }
+
     Ok(())
 }
 
@@ -703,6 +707,7 @@ fn reports_original_positions_in_shader_blocks() -> anyhow::Result<()> {
             "test.lua:3:3: unclosed conditional directive at end of file"
         );
     }
+
     Ok(())
 }
 
@@ -792,6 +797,7 @@ fn resolves_includes_and_require_forms() -> anyhow::Result<()> {
     } else {
         include.join(r"escaped\quoted.txt")
     };
+
     if let Some(parent) = escaped.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -810,6 +816,7 @@ result = "${RELATIVE_VALUE}"
         &IndexMap::new(),
         false,
     )?;
+
     for expected in [
         "relative = true",
         "quoted = true",
@@ -822,6 +829,7 @@ result = "${RELATIVE_VALUE}"
 
     let module = dir.path().join("submod.lua");
     std::fs::write(&module, "local M = {}\nfunction M.greet() return 'hi' end\nreturn M\n")?;
+
     for req in [
         "local sub = require(\"submod\")",
         "local sub = require \"submod\"",
@@ -851,6 +859,7 @@ result = "${RELATIVE_VALUE}"
     std::fs::create_dir_all(&pkg)?;
     std::fs::write(pkg.join("mod.lua"), "return true\n")?;
     std::fs::write(pkg.join("init.lua"), "return 'package'\n")?;
+
     for req in [
         r#"require("pkg.mod")"#,
         r#"require("pkg/mod")"#,
@@ -866,6 +875,7 @@ result = "${RELATIVE_VALUE}"
         assert!(result.contains("(function()"), "{req}");
         assert!(!result.contains(req), "{req}");
     }
+
     let result = build_script(
         "--#include \"pkg/init.lua\"\nrequire(\"pkg\")\n",
         &main,
@@ -899,6 +909,7 @@ result = "${RELATIVE_VALUE}"
         if src.contains("actual.lua") {
             std::fs::write(dir.path().join("actual.lua"), "return true\n")?;
         }
+
         let error = build_script(src, &main, &[], &IndexMap::new(), false).unwrap_err();
         assert!(error.to_string().contains(message), "{src}: {error}");
     }
@@ -1035,6 +1046,7 @@ fn errors_on_undefined_variable_in_script_ini_and_shader() -> anyhow::Result<()>
     let target: BuildTarget = serde_json::from_value(serde_json::json!({
         "path": "test.anm2",
     }))?;
+
     for (src, pos) in [
         ("x = \"${UNDEFINED}\"", "1:6"),
         ("\n  x = ${UNDEFINED} -- note", "2:7"),
@@ -1057,6 +1069,7 @@ fn errors_on_undefined_variable_in_script_ini_and_shader() -> anyhow::Result<()>
     let ini_target: BuildTarget = serde_json::from_value(serde_json::json!({
         "path": "test.ini",
     }))?;
+
     for (src, pos) in [
         ("val = ${{ MISSING }}", "1:7"),
         ("\n項目=${MISSING}", "2:4"),
@@ -1075,6 +1088,7 @@ fn errors_on_undefined_variable_in_script_ini_and_shader() -> anyhow::Result<()>
     let shader_target: BuildTarget = serde_json::from_value(serde_json::json!({
         "path": "test.hlsl",
     }))?;
+
     for (src, pos) in [
         ("float x = ${NOT_DEFINED};", "1:11"),
         ("\n  float x = ${NOT_DEFINED};", "2:13"),
@@ -1099,6 +1113,7 @@ fn errors_on_invalid_or_unclosed_placeholders_in_script_ini_and_shader() -> anyh
     let target: BuildTarget = serde_json::from_value(serde_json::json!({
         "path": "test.anm2",
     }))?;
+
     for (src, expected) in [
         ("--${{}}", "empty variable name in placeholder"),
         ("--${}", "empty variable name in placeholder"),
@@ -1119,6 +1134,7 @@ fn errors_on_invalid_or_unclosed_placeholders_in_script_ini_and_shader() -> anyh
     let ini_target: BuildTarget = serde_json::from_value(serde_json::json!({
         "path": "test.ini",
     }))?;
+
     for (src, expected) in [
         ("val = ${{}}", "empty variable name in placeholder"),
         ("val = ${{ 123 }}", "invalid variable name '123' in placeholder"),
@@ -1134,6 +1150,7 @@ fn errors_on_invalid_or_unclosed_placeholders_in_script_ini_and_shader() -> anyh
     let shader_target: BuildTarget = serde_json::from_value(serde_json::json!({
         "path": "test.hlsl",
     }))?;
+
     for (src, expected) in [
         ("float x = ${{}};", "empty variable name in placeholder"),
         ("float x = ${{ 123 }};", "invalid variable name '123' in placeholder"),
@@ -1255,6 +1272,7 @@ fn warns_on_matrix_packing_and_pragma_pack_matrix() -> anyhow::Result<()> {
             "{warnings}"
         );
     }
+
     assert!(warnings.contains("cbuffer 'NativeTypes' uses non-float"), "{warnings}");
     assert_eq!(warnings.lines().count(), 6, "{warnings}");
 
@@ -1424,6 +1442,7 @@ fn reports_original_positions_through_nested_hlsl_includes() -> anyhow::Result<(
             "{warnings}"
         );
     }
+
     assert_eq!(warnings.lines().count(), 4, "{warnings}");
     Ok(())
 }
@@ -1454,6 +1473,7 @@ fn reports_placeholder_positions_for_multiline_hlsl_values() -> anyhow::Result<(
             "{warnings}"
         );
     }
+
     assert_eq!(warnings.lines().count(), 3, "{warnings}");
     Ok(())
 }
@@ -1478,6 +1498,7 @@ fn reports_placeholder_positions_for_multiline_lua_values() -> anyhow::Result<()
     ] {
         assert!(warnings.contains(&format!("test.anm2:2:{col}: {msg}")), "{warnings}");
     }
+
     assert_eq!(warnings.lines().count(), 3, "{warnings}");
     Ok(())
 }

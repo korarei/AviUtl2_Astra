@@ -61,6 +61,7 @@ impl Builder<'_> {
             match preprocess::resolve(comment, &mut conditions, self.vars.as_ref(), &pos)? {
                 Action::Keep => {
                     self.output.push_str(&Self::expand(line, self.vars.as_ref(), locate)?);
+
                     if is_newline {
                         self.output.push('\n');
                     }

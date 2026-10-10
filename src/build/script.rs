@@ -131,6 +131,7 @@ impl Builder<'_> {
                 {
                     col = token.span.st - st;
                 }
+
                 if token.span.st >= st && token.span.ed > ed {
                     blocked = blocked.max(token.span.ed);
                 }
@@ -222,14 +223,16 @@ impl Builder<'_> {
                         });
                     },
                 )?;
+
                 if emitted {
                     dst.push('\n');
                 }
 
                 if let Some(origin) = nested.positions.first_mut() {
-                    for column in &mut origin.cols {
-                        column.st += body_st - st;
+                    for col in &mut origin.cols {
+                        col.st += body_st - st;
                     }
+
                     origin.cols.insert(
                         0,
                         preprocess::Column {
@@ -239,6 +242,7 @@ impl Builder<'_> {
                         },
                     );
                 }
+
                 dst.push_str(&src[st..body_st]);
                 dst.push_str(&nested.text);
                 dst.push_str(suffix.as_ref());
@@ -253,6 +257,7 @@ impl Builder<'_> {
                             ..col
                         }));
                 }
+
                 positions.extend(nested.positions);
                 positions.extend(origins);
 
@@ -316,11 +321,11 @@ impl Builder<'_> {
 
                 let Source {
                     text: nested,
-                    positions: mut locations,
+                    positions: mut locs,
                 } = self.load_include(&file)?;
 
-                if locations.is_empty() {
-                    locations.push(preprocess::Origin {
+                if locs.is_empty() {
+                    locs.push(preprocess::Origin {
                         pos: pos.clone(),
                         cols: Vec::new(),
                     });
@@ -333,18 +338,20 @@ impl Builder<'_> {
                 let st = dst.len();
                 let indent = first.as_ref().map_or("", |token| &line[..token.span.st - lines[i]]);
                 dst.push_str(&textwrap::indent(&nested, indent));
+
                 if !indent.is_empty() {
-                    for origin in &mut locations {
-                        if let Some(column) = origin.cols.first().copied() {
-                            for column in &mut origin.cols {
-                                column.st += indent.len();
+                    for origin in &mut locs {
+                        if let Some(col) = origin.cols.first().copied() {
+                            for col in &mut origin.cols {
+                                col.st += indent.len();
                             }
+
                             origin.cols.insert(
                                 0,
                                 preprocess::Column {
                                     st: 0,
                                     replaced: true,
-                                    ..column
+                                    ..col
                                 },
                             );
                         }
@@ -367,7 +374,7 @@ impl Builder<'_> {
                     ));
                 }
 
-                positions.extend(locations);
+                positions.extend(locs);
 
                 emitted = true;
                 i += 1;
@@ -408,9 +415,9 @@ impl Builder<'_> {
         }
 
         let text = dst;
-        let locations = positions;
+        let locs = positions;
         let mut dst = String::with_capacity(text.len());
-        let mut positions = Vec::with_capacity(locations.len());
+        let mut positions = Vec::with_capacity(locs.len());
         let mut curr = 0;
         let mut line = 0;
 
@@ -423,7 +430,7 @@ impl Builder<'_> {
             let ed_line = st_line + nested.matches('\n').count();
             let req_line = ed_line + text[*ed..found.st].matches('\n').count();
             let req_st = text[..found.st].rfind('\n').map_or(0, |st| st + 1);
-            let pos = locations[req_line].locate(&text[req_st..], found.st - req_st);
+            let pos = locs[req_line].locate(&text[req_st..], found.st - req_st);
 
             let name = std::str::from_utf8(&found.name).map_err(|_| {
                 anyhow::anyhow!("{pos}: require module name is not valid UTF-8 after include '{include}'")
@@ -456,20 +463,20 @@ impl Builder<'_> {
                 textwrap::indent(nested, &format!("{indent}    "))
             );
 
-            positions.extend_from_slice(&locations[line..*st_line]);
-            positions
-                .extend_from_slice(&locations[ed_line + usize::from(text[*ed..found.st].starts_with('\n'))..=req_line]);
-            positions.extend(locations[*st_line..=ed_line].iter().cloned().map(|mut origin| {
-                if let Some(column) = origin.cols.first().copied() {
-                    for column in &mut origin.cols {
-                        column.st = column.st.saturating_sub(*padding) + indent.len() + 4;
+            positions.extend_from_slice(&locs[line..*st_line]);
+            positions.extend_from_slice(&locs[ed_line + usize::from(text[*ed..found.st].starts_with('\n'))..=req_line]);
+            positions.extend(locs[*st_line..=ed_line].iter().cloned().map(|mut origin| {
+                if let Some(col) = origin.cols.first().copied() {
+                    for col in &mut origin.cols {
+                        col.st = col.st.saturating_sub(*padding) + indent.len() + 4;
                     }
+
                     origin.cols.insert(
                         0,
                         preprocess::Column {
                             st: 0,
                             replaced: true,
-                            ..column
+                            ..col
                         },
                     );
                 }
@@ -482,7 +489,7 @@ impl Builder<'_> {
         }
 
         dst.push_str(&text[curr..]);
-        positions.extend_from_slice(&locations[line..]);
+        positions.extend_from_slice(&locs[line..]);
 
         Ok(Source { text: dst, positions })
     }
@@ -573,6 +580,7 @@ impl Builder<'_> {
                                 dst.push_str(&text[curr..token.span.st]);
                                 replaced = true;
                             }
+
                             dst.push_str(&raw[st..at]);
                             record((dst.len(), token.span.st + at, true));
                             dst.push_str(val);
@@ -583,6 +591,7 @@ impl Builder<'_> {
                             scan = at + 1;
                         }
                     }
+
                     if replaced {
                         dst.as_mut().unwrap().push_str(&raw[st..]);
                         curr = token.span.ed;
@@ -943,6 +952,7 @@ impl Builder<'_> {
                         _ => None,
                     } {
                         counts[index] += 1;
+
                         if counts[index] > 4 {
                             bail!(
                                 "{pos}: 'dialog' has too many '/{ctrl}' items; expected at most 4, got {}",
@@ -1010,6 +1020,7 @@ impl Builder<'_> {
 
             let mut check = |key| -> anyhow::Result<()> {
                 validate(key, pos)?;
+
                 if key.contains("dialog::") {
                     bail!("{pos}: property name cannot contain 'dialog::', got '{key}'");
                 }
@@ -1017,6 +1028,7 @@ impl Builder<'_> {
                 if !seen.insert(key) {
                     bail!("{pos}: duplicate property name '{key}'");
                 }
+
                 Ok(())
             };
 
@@ -1050,6 +1062,7 @@ impl Builder<'_> {
                         disp.insert(var.to_owned(), String::new());
                         tips.insert(var.to_owned(), String::new());
                     }
+
                     continue;
                 }
                 (None, "dialog") => {
@@ -1072,9 +1085,11 @@ impl Builder<'_> {
                             .unwrap_or(name);
 
                         validate(name, pos)?;
+
                         if name.contains("dialog::") {
                             bail!("{pos}: property name cannot contain 'dialog::', got '{name}'");
                         }
+
                         names.push(name);
                         *counts.entry(name).or_insert(0_usize) += 1;
                         disp.insert(name.rsplit("::").next().unwrap_or(name).to_owned(), String::new());
@@ -1085,6 +1100,7 @@ impl Builder<'_> {
                         *count -= 1;
                         tips.insert(format!("{}{name}", "dialog::".repeat(*count)), String::new());
                     }
+
                     continue;
                 }
                 (None, "group" | "separator") => {
@@ -1126,9 +1142,11 @@ impl Builder<'_> {
                         if name.contains("dialog::") {
                             bail!("{pos}: property name cannot contain 'dialog::', got '{name}'");
                         }
+
                         if !names.insert(name) {
                             bail!("{pos}: duplicate item '{name}' in 'select'");
                         }
+
                         disp.insert(name.rsplit("::").next().unwrap_or(name).to_owned(), String::new());
                     }
                 }
@@ -1382,6 +1400,7 @@ fn assign_props(kind: &str, val: &str, rest: String) -> anyhow::Result<String> {
         }
         _ => {}
     }
+
     Ok(rest)
 }
 
@@ -1419,6 +1438,7 @@ fn validate_compat_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
                      only one color, file, param, or dialog is allowed"
                 );
             }
+
             exclusive = Some(prop.kind);
         }
 
@@ -1487,6 +1507,7 @@ fn validate_compat_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
                             prop.pos
                         );
                     }
+
                     if !vars.insert(var.to_owned()) {
                         bail!("{pos}: duplicate variable name '{var}'");
                     }
@@ -1602,6 +1623,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
                 }
                 _ => {}
             }
+
             continue;
         };
 
@@ -1610,6 +1632,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
             if !matches!(tokens.next().map(|token| token.kind), Some(TokenKind::Ident(_))) || tokens.next().is_some() {
                 bail!("{pos}: variable name of '{kind}' must be a valid Lua identifier, got '{var}'");
             }
+
             Ok(())
         };
 
@@ -1617,6 +1640,7 @@ fn validate_modern_props(props: &[Prop<'_>], vars: &mut HashSet<String>) -> anyh
             "track" | "check" | "checksection" | "color" | "file" | "folder" | "string" | "text" | "font"
             | "figure" | "select" | "value" => {
                 validate(var)?;
+
                 if !vars.insert(var.to_owned()) {
                     bail!("{pos}: duplicate variable name '{var}'");
                 }
@@ -2105,9 +2129,11 @@ fn validate_cbuffers(src: &str) -> Vec<(hlsl::Span, String)> {
                 span,
                 format!("cannot determine cbuffer '{name}' layout before HLSL preprocessing"),
             ));
+
             for token in body {
                 let _ = packing.apply(token);
             }
+
             continue;
         }
 
@@ -2133,13 +2159,16 @@ fn validate_buffer(
                         format!("cannot determine subsequent offsets in cbuffer '{name}' before HLSL preprocessing"),
                     ));
                 }
+
                 offset = None;
             }
+
             st = i + 1;
         } else if token.text == ";" {
             if st != i && packing.depth == 0 {
                 validate_declaration(&tokens[st..i], name, &mut offset, packing.is_row_major, issues);
             }
+
             st = i + 1;
         }
     }
@@ -2194,6 +2223,7 @@ fn validate_declaration(
                 })
             });
         }
+
         let placement = (*offset).zip(layout).and_then(|(st, layout)| {
             let at = align(st, layout.alignment)?;
             let at = if layout.alignment < 16 && at % 16 + layout.size > 16 {
@@ -2204,6 +2234,7 @@ fn validate_declaration(
             Some((at.checked_add(layout.size)?, (at - st) + (layout.size - layout.payload)))
         });
         *offset = placement.map(|(ed, _)| ed);
+
         if let Some((_, bytes)) = placement.filter(|&(_, bytes)| bytes != 0) {
             issues.push((
                 member.span,

@@ -57,6 +57,7 @@ where
         let mut lines = text.lines();
         if let Some(first) = lines.next() {
             write!(writer, "{first}")?;
+
             if !visitor.fields.is_empty() {
                 for (k, v) in &visitor.fields {
                     write!(writer, " {k}={v}")?;

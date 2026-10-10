@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn resolves_aviutl2_version_forms() {
-        for (source, expected) in [
+        for (src, expected) in [
             ("2010701", 2_010_701),
             (" 2010701 ", 2_010_701),
             ("2.1.8", 2_010_800),
@@ -99,10 +99,10 @@ mod tests {
             ("V2.1.8", 2_010_800),
             ("2.0.54", 2_005_400),
         ] {
-            assert_eq!(resolve(source).unwrap(), expected, "{source}");
+            assert_eq!(resolve(src).unwrap(), expected, "{src}");
         }
 
-        for source in [
+        for src in [
             "",
             "abc",
             "2.1",
@@ -114,8 +114,8 @@ mod tests {
             "あい",
             "あbeta53",
         ] {
-            assert!(parse(source).is_none(), "{source}");
-            assert!(resolve(source).is_err(), "{source}");
+            assert!(parse(src).is_none(), "{src}");
+            assert!(resolve(src).is_err(), "{src}");
         }
     }
 }

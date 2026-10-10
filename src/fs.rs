@@ -104,6 +104,7 @@ pub(crate) fn to_key(path: &Path) -> anyhow::Result<PathBuf> {
 
 pub(crate) fn create_managed_dir(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("failed to create directory '{}'", dir.display()))?;
+
     if !dir.join(".gitignore").is_file() {
         write_file(&dir.join(".gitignore"), b"*\n")?;
     }

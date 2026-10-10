@@ -114,11 +114,13 @@ impl Config {
         })?;
 
         config.defaults.expanded(&scope)?;
+
         if let Err(err) = config.defaults.validate() {
             bail!("configuration validation failed:\n{err}");
         }
 
         config.astra.expanded(&scope)?;
+
         if let Err(err) = config.astra.validate() {
             bail!("configuration validation failed:\n{err}");
         }
@@ -138,6 +140,7 @@ impl Config {
         }
 
         config.project.expanded(&scope)?;
+
         if let Err(err) = config.project.validate() {
             bail!("configuration validation failed:\n{err}");
         }
@@ -334,6 +337,7 @@ impl Config {
 
             if let Some(package) = &mut release.package {
                 package.id.get_or_insert_with(|| self.project.name.clone());
+
                 if let Some(package_id) = package.id.as_deref()
                     && RESERVED_ID_PREFIXES.iter().any(|prefix| package_id.starts_with(prefix))
                 {
@@ -690,9 +694,9 @@ impl TaskCall {
             }
             Self::Detailed { task, env, vars } => {
                 *task = vars::expand(task, scope)?;
-                let var_scope = expand_map(vars, scope)?;
+                let scope = expand_map(vars, scope)?;
                 env.values_mut().try_for_each(|val| -> anyhow::Result<()> {
-                    *val = vars::expand(val, &var_scope)?;
+                    *val = vars::expand(val, &scope)?;
                     Ok(())
                 })?;
             }
@@ -850,9 +854,9 @@ impl Build {
                 }
             }
 
-            let artifact_scope = scope.set(Arc::new(vars));
+            let scope = scope.set(Arc::new(vars));
             for pattern in &mut self.artifacts {
-                *pattern = vars::expand(pattern, &artifact_scope)?;
+                *pattern = vars::expand(pattern, &scope)?;
             }
         }
 
@@ -918,6 +922,7 @@ impl Build {
 
         targets.iter().cloned().map(move |mut target| {
             target.expanded(&self.scope)?;
+
             if !self
                 .suffix
                 .as_deref()
@@ -1335,6 +1340,7 @@ impl ReleaseDependency {
                 c.expanded(scope)?;
             }
         }
+
         Ok(())
     }
 }
@@ -1628,8 +1634,8 @@ impl PackageContent {
     pub(crate) fn expanded(&mut self, scope: &Scope) -> anyhow::Result<()> {
         self.dir = convert_path(vars::expand(&self.dir, scope)?);
 
-        for source in &mut self.sources {
-            source.expanded(scope)?;
+        for src in &mut self.sources {
+            src.expanded(scope)?;
         }
 
         Ok(())
@@ -1685,29 +1691,33 @@ impl PackageSource {
                     Self::Path(PackageSourcePath { path: s })
                 };
             }
-            Self::Build(source) => {
-                source.build = vars::expand(&source.build, scope)?;
+            Self::Build(src) => {
+                src.build = vars::expand(&src.build, scope)?;
             }
-            Self::Path(source) => {
-                source.path = vars::expand(&source.path, scope)?;
+            Self::Path(src) => {
+                src.path = vars::expand(&src.path, scope)?;
             }
-            Self::Url(source) => {
-                source.url = vars::expand(&source.url, scope)?;
-                if let Some(pick) = &mut source.pick {
+            Self::Url(src) => {
+                src.url = vars::expand(&src.url, scope)?;
+
+                if let Some(pick) = &mut src.pick {
                     *pick = vars::expand(pick, scope)?;
                 }
             }
-            Self::File(source) => {
-                source.filename = vars::expand(&source.filename, scope)?;
-                source.content = vars::expand(&source.content, scope)?;
-                if let Some(encoding) = &mut source.encoding {
+            Self::File(src) => {
+                src.filename = vars::expand(&src.filename, scope)?;
+                src.content = vars::expand(&src.content, scope)?;
+
+                if let Some(encoding) = &mut src.encoding {
                     *encoding = vars::expand(encoding, scope)?;
                 }
-                if let Some(newline) = &mut source.newline {
+
+                if let Some(newline) = &mut src.newline {
                     *newline = vars::expand(newline, scope)?;
                 }
             }
         }
+
         Ok(())
     }
 }
@@ -2069,6 +2079,7 @@ fn validate_strings(list: &[String]) -> Result<(), ValidationError> {
     if list.iter().any(String::is_empty) {
         return Err(ValidationError::new("length"));
     }
+
     Ok(())
 }
 
@@ -2078,6 +2089,7 @@ fn validate_encoding(encoding: &str) -> Result<(), ValidationError> {
             ValidationError::new("invalid_encoding").with_message(format!("unsupported encoding '{encoding}'").into())
         );
     }
+
     Ok(())
 }
 
@@ -2087,6 +2099,7 @@ fn validate_newline(newline: &str) -> Result<(), ValidationError> {
             ValidationError::new("invalid_newline").with_message("newline must be one of \\r\\n, crlf, \\n, lf".into())
         );
     }
+
     Ok(())
 }
 

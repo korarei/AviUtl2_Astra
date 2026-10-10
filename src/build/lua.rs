@@ -92,6 +92,7 @@ impl<'a> Iterator for Lexer<'a> {
                 TokenKind::Newline
             } else if self.src[st..].starts_with("--") {
                 self.curr += 2;
+
                 if self.bytes.get(self.curr) == Some(&b'[')
                     && let Some((span, closed, raw)) = {
                         self.curr += 1;
@@ -138,10 +139,12 @@ impl<'a> Iterator for Lexer<'a> {
                         valid = false;
                         break;
                     }
+
                     if c == b'\\' {
                         let value = value.get_or_insert_with(|| Vec::with_capacity(self.curr - raw + 8));
                         value.extend_from_slice(&self.bytes[copied..self.curr]);
                         self.curr += 1;
+
                         if self.curr >= self.bytes.len() {
                             valid = false;
                             break;
@@ -149,6 +152,7 @@ impl<'a> Iterator for Lexer<'a> {
 
                         let esc = self.bytes[self.curr];
                         self.curr += 1;
+
                         match esc {
                             b'a' => value.push(b'\x07'),
                             b'b' => value.push(b'\x08'),
@@ -176,6 +180,7 @@ impl<'a> Iterator for Lexer<'a> {
                                     valid = false;
                                     continue;
                                 }
+
                                 self.curr += 1;
                                 let mut val = 0u32;
                                 let mut digits = 0;
@@ -187,17 +192,21 @@ impl<'a> Iterator for Lexer<'a> {
                                     } else {
                                         valid = false;
                                     }
+
                                     digits += 1;
                                     self.curr += 1;
                                 }
+
                                 if self.bytes.get(self.curr) == Some(&b'}') {
                                     self.curr += 1;
                                 } else {
                                     valid = false;
                                 }
+
                                 if digits == 0 {
                                     valid = false;
                                 }
+
                                 if let Some(c) = char::from_u32(val) {
                                     let mut buf = [0; 4];
                                     value.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
@@ -222,6 +231,7 @@ impl<'a> Iterator for Lexer<'a> {
                                         break;
                                     }
                                 }
+
                                 if let Ok(val) = u8::try_from(val) {
                                     value.push(val);
                                 } else {
@@ -235,6 +245,7 @@ impl<'a> Iterator for Lexer<'a> {
                                 }
                             }
                         }
+
                         copied = self.curr;
                     } else {
                         self.curr += 1;
@@ -254,6 +265,7 @@ impl<'a> Iterator for Lexer<'a> {
                 }
             } else if b == b'[' {
                 self.curr += 1;
+
                 if let Some((span, closed, _)) = self.read_long() {
                     if closed {
                         TokenKind::String(Cow::Borrowed(&self.bytes[span.st..span.ed]))
@@ -299,6 +311,7 @@ impl<'a> Iterator for Lexer<'a> {
                         if c != b'_' {
                             prev = c;
                         }
+
                         self.curr += 1;
                     } else {
                         break;
@@ -307,6 +320,7 @@ impl<'a> Iterator for Lexer<'a> {
                 TokenKind::Number(&self.src[st..self.curr])
             } else {
                 self.curr += 1;
+
                 match b {
                     b'=' => {
                         if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' {
@@ -332,6 +346,7 @@ impl<'a> Iterator for Lexer<'a> {
                     b'.' => {
                         if self.curr < self.bytes.len() && self.bytes[self.curr] == b'.' {
                             self.curr += 1;
+
                             if self.curr < self.bytes.len() && self.bytes[self.curr] == b'.' {
                                 self.curr += 1;
                                 TokenKind::Dots
@@ -389,11 +404,13 @@ impl Lexer<'_> {
                 while self.bytes.get(curr) == Some(&b'=') {
                     curr += 1;
                 }
+
                 if curr - ed == raw - st && self.bytes.get(curr) == Some(&b']') {
                     self.curr = curr + 1;
                     return Some((Span { st: inner, ed }, true, raw));
                 }
             }
+
             ed += 1;
         }
 
@@ -417,6 +434,7 @@ pub fn find_require(src: &str, st: usize) -> Option<RequireMatch> {
             member = matches!(&token.kind, TokenKind::Dot | TokenKind::Colon);
             continue;
         }
+
         member = false;
         let mut args = tokens.clone();
         let Some(arg) = args.next() else {

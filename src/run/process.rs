@@ -58,6 +58,7 @@ pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
                 );
 
                 request_close(entry.th32ProcessID)?;
+
                 if unsafe { WaitForSingleObject(process.raw(), timeout) } != WAIT_OBJECT_0 {
                     tracing::warn!(
                         "graceful shutdown timed out for AviUtl ExEdit2; terminating process (PID: {})",
@@ -68,6 +69,7 @@ pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
                         WaitForSingleObject(process.raw(), 3000);
                     }
                 }
+
                 closed += 1;
             }
         }
@@ -85,6 +87,7 @@ struct StatusBar {
 impl StatusBar {
     fn start() -> Option<Self> {
         use std::io::IsTerminal;
+
         if !std::io::stderr().is_terminal() {
             return None;
         }
@@ -152,6 +155,7 @@ pub(super) fn run_process(exe: &Path, is_running: &AtomicBool) -> anyhow::Result
             child.stop()?;
         }
     }
+
     Ok(exit)
 }
 
@@ -223,7 +227,7 @@ impl AviUtl2Process {
     }
 
     fn monitor(&self, is_running: &AtomicBool) -> anyhow::Result<MonitorExit> {
-        let process_handle = self.handle.raw();
+        let handle = self.handle.raw();
         let pid = self.pid;
         let mut event = unsafe { std::mem::zeroed::<DEBUG_EVENT>() };
         let mut line = 0;
@@ -234,18 +238,20 @@ impl AviUtl2Process {
             }
 
             if unsafe { WaitForDebugEventEx(&raw mut event, MONITOR_TIMEOUT) } == 0 {
-                if unsafe { WaitForSingleObject(process_handle, 0) } == WAIT_OBJECT_0 {
+                if unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0 {
                     let mut code = 0;
-                    unsafe { GetExitCodeProcess(process_handle, &raw mut code) };
+                    unsafe { GetExitCodeProcess(handle, &raw mut code) };
                     return Ok(MonitorExit::ProcessExited(code));
                 }
+
                 continue;
             }
 
-            let exit_code = process_event(&event, process_handle)?;
+            let exit_code = process_event(&event, handle)?;
             if has_reload_key(&mut line) {
                 return Ok(MonitorExit::ReloadRequested);
             }
+
             if event.dwProcessId == pid
                 && let Some(code) = exit_code
             {
@@ -258,37 +264,36 @@ impl AviUtl2Process {
 
     fn stop(&self) -> anyhow::Result<()> {
         let pid = self.pid;
-        let process_handle = self.handle.raw();
+        let handle = self.handle.raw();
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         let mut event = unsafe { std::mem::zeroed::<DEBUG_EVENT>() };
 
         request_close(pid)?;
 
         while Instant::now() < deadline {
-            if unsafe { WaitForDebugEventEx(&raw mut event, 100) } != 0
-                && process_event(&event, process_handle)?.is_some()
-            {
+            if unsafe { WaitForDebugEventEx(&raw mut event, 100) } != 0 && process_event(&event, handle)?.is_some() {
                 return Ok(());
             }
         }
 
         tracing::warn!("graceful shutdown timed out for AviUtl ExEdit2; terminating process (PID: {pid})");
         let detached = unsafe { DebugActiveProcessStop(pid) != 0 };
-        if unsafe { TerminateProcess(process_handle, 0) } == 0 {
+        if unsafe { TerminateProcess(handle, 0) } == 0 {
             return Err(std::io::Error::last_os_error().into());
         }
 
         if !detached {
             while unsafe { WaitForDebugEventEx(&raw mut event, 100) } != 0 {
-                if process_event(&event, process_handle)?.is_some() {
+                if process_event(&event, handle)?.is_some() {
                     break;
                 }
             }
         }
 
-        if unsafe { WaitForSingleObject(process_handle, INFINITE) } != WAIT_OBJECT_0 {
+        if unsafe { WaitForSingleObject(handle, INFINITE) } != WAIT_OBJECT_0 {
             return Err(std::io::Error::last_os_error().into());
         }
+
         Ok(())
     }
 }
@@ -298,6 +303,7 @@ fn request_close(pid: u32) -> anyhow::Result<()> {
     unsafe {
         EnumWindows(Some(close_window), pid);
     }
+
     Ok(())
 }
 
@@ -311,6 +317,7 @@ unsafe extern "system" fn close_window(hwnd: HWND, lParam: LPARAM) -> BOOL {
         unsafe {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
         }
+
         return 0;
     }
     1
@@ -392,6 +399,7 @@ fn read_console_reload(input: HANDLE, line: &mut u8) -> Option<bool> {
         }
 
         count = 0;
+
         if unsafe {
             PeekConsoleInputW(
                 input,
@@ -477,6 +485,7 @@ fn process_event(event: &DEBUG_EVENT, process_handle: HANDLE) -> anyhow::Result<
     } else {
         DBG_CONTINUE
     };
+
     if unsafe { ContinueDebugEvent(event.dwProcessId, event.dwThreadId, status) } == 0 {
         return Err(std::io::Error::last_os_error().into());
     }
