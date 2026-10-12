@@ -285,6 +285,8 @@ impl Builder<'_> {
                     if let Some((span, body)) = shader {
                         let body_st = body.start;
                         let body_ed = body.end;
+                        let prefix = preprocess::expand(&src[st..body_st], self.vars.as_ref())
+                            .map_err(|err| anyhow::anyhow!("{}: {err}", locate(st + err.offset)))?;
                         let body = Self::normalize_shader(&map.slice(body))?;
                         let nested = super::shader::Builder::build(
                             &body,
@@ -299,7 +301,7 @@ impl Builder<'_> {
                             self.map.append(&map, lines[i] - 1..lines[i]);
                         }
 
-                        self.map.append(&map, st..body_st);
+                        prefix.append(&mut self.map, &map, st..body_st);
                         self.map.append(&nested, 0..nested.len());
 
                         let line_ed = lines.partition_point(|&st| st <= span.ed).saturating_sub(1);
@@ -308,7 +310,7 @@ impl Builder<'_> {
                         }
 
                         let suffix_ed = lines.get(line_ed + 1).map_or(src.len(), |st| st - 1);
-                        let suffix = Self::expand(&src[body_ed..suffix_ed], self.vars.as_ref())
+                        let suffix = preprocess::expand(&src[body_ed..suffix_ed], self.vars.as_ref())
                             .map_err(|err| anyhow::anyhow!("{}: {err}", locate(body_ed + err.offset)))?;
                         suffix.append(&mut self.map, &map, body_ed..suffix_ed);
 
@@ -321,7 +323,7 @@ impl Builder<'_> {
                         self.map.append(&map, lines[i] - 1..lines[i]);
                     }
 
-                    let expanded = Self::expand(line, self.vars.as_ref())
+                    let expanded = preprocess::expand(line, self.vars.as_ref())
                         .map_err(|err| anyhow::anyhow!("{}: {err}", locate(st + err.offset)))?;
                     expanded.append(&mut self.map, &map, st..ed);
                     has_emitted = true;
@@ -361,7 +363,7 @@ impl Builder<'_> {
                     let vars = self.vars.to_mut();
                     vars.insert(
                         (*key).to_owned(),
-                        Self::expand(val, vars)
+                        preprocess::expand(val, vars)
                             .map_err(|err| {
                                 anyhow::anyhow!(
                                     "{}: {err}",
@@ -959,47 +961,6 @@ impl Builder<'_> {
         let _ = self.include_stack.pop();
 
         result
-    }
-
-    fn expand<'text>(
-        text: &'text str,
-        vars: &impl crate::vars::Vars,
-    ) -> Result<preprocess::Expanded<'text>, preprocess::Error> {
-        let mut expander = preprocess::Expander::new(text);
-
-        if !text.contains('$') {
-            return Ok(expander.finish());
-        }
-
-        let mut lexer = lua::Lexer::new(text).peekable();
-        while let Some(token) = lexer.next() {
-            let token = token.map_err(|err| preprocess::Error {
-                offset: err.offset,
-                message: err.message.into(),
-            })?;
-            match token.kind {
-                TokenKind::Other('$') => {
-                    let at = token.span.st;
-                    if let Some((placeholder, ed)) = preprocess::Expander::parse(text, at)? {
-                        expander.replace(at, ed, placeholder, vars)?;
-                        while let Some(token) =
-                            lexer.next_if(|next| next.as_ref().map_or(true, |next| next.span.st < ed))
-                        {
-                            token.map_err(|err| preprocess::Error {
-                                offset: err.offset,
-                                message: err.message.into(),
-                            })?;
-                        }
-                    }
-                }
-                TokenKind::String(_) | TokenKind::Comment(_) => {
-                    expander.expand(token.span.st, token.span.ed, vars)?;
-                }
-                _ => {}
-            }
-        }
-
-        Ok(expander.finish())
     }
 
     fn normalize_shader(map: &source::Map) -> anyhow::Result<source::Map> {

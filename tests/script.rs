@@ -550,6 +550,51 @@ fn keeps_other_long_comments_and_strings_outside_shader_preprocessing() -> anyho
 }
 
 #[test]
+fn expand_multiline_literals() -> anyhow::Result<()> {
+    let vars = IndexMap::from([("VALUE".to_owned(), "value".to_owned())]);
+
+    for src in [
+        "local text = [[${{ VALUE }}\nnext]]",
+        "local text = [=[${{ VALUE }}\n\"${{ VALUE }}]=]",
+        "--[[${{ VALUE }}\n\"${{ VALUE }}\n]]\nlocal value = 1",
+        "local text = \"${{ VALUE }}\\\nnext\"",
+        "local text = [[first\n\"${{ VALUE }}\nlast]]",
+    ] {
+        let output = build_script(src, Path::new("test.anm2"), &[], &vars, false)?;
+        assert_eq!(output, format!("{}\n", src.replace("${{ VALUE }}", "value")), "{src}");
+    }
+
+    let src = "local text = [[first\n${{ MISSING }}\nlast]]";
+    let err = build_script(src, Path::new("test.anm2"), &[], &vars, false).unwrap_err();
+    assert_eq!(err.to_string(), "test.anm2:2:1: variable 'MISSING' not found");
+    Ok(())
+}
+
+#[test]
+fn expand_shader_names() -> anyhow::Result<()> {
+    let vars = IndexMap::from([("NAME".to_owned(), "main".to_owned())]);
+
+    for (kind, entry) in [
+        ("pixelshader", "float4 main() : SV_Target { return 0; }"),
+        ("computeshader", "[numthreads(1, 1, 1)] void main() {}"),
+    ] {
+        let src = format!("--[[{kind}@${{{{ NAME }}}}:\n--#define NAME changed\n{entry}\n]]");
+        let output = build_script(&src, Path::new("test.anm2"), &[], &vars, false)?;
+        assert!(output.contains(&format!("--[[{kind}@main:")), "{output}");
+        assert!(output.contains(entry), "{output}");
+
+        let src = format!("--[[{kind}@${{{{ MISSING }}}}:\n{entry}\n]]");
+        let err = build_script(&src, Path::new("test.anm2"), &[], &vars, false).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("test.anm2:1:{}: variable 'MISSING' not found", kind.len() + 6)
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn builds_directives_conditions_properties_and_headers() -> anyhow::Result<()> {
     let vars = IndexMap::from([
         ("PLATFORM".to_owned(), "win".to_owned()),
