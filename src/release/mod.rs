@@ -3,7 +3,6 @@ mod stage;
 use crate::build::BuildOutput;
 use crate::config::{Astra, BuildType, Config, Release, ReleaseDependency};
 use anyhow::{Context, bail};
-use fd_lock::RwLock;
 use regex::{Captures, Regex};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -31,25 +30,17 @@ pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
     let astra = config.astra();
 
     let build_dir = Path::new(astra.build_dir());
+    let dist_dir = Path::new(astra.dist_dir());
     crate::fs::create_managed_dir(build_dir)?;
-    crate::fs::create_managed_dir(Path::new(astra.dist_dir()))?;
+    crate::fs::create_managed_dir(dist_dir)?;
+    crate::fs::create_managed_dir(Path::new(".astra"))?;
 
-    let mut lock = RwLock::new(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(build_dir.join(".astra-lock"))
-            .with_context(|| format!("failed to open '{}'", build_dir.join(".astra-lock").display()))?,
-    );
-    let _guard = if let Ok(guard) = lock.try_write() {
-        guard
-    } else {
-        tracing::info!("Blocking waiting for file lock on build directory (press Ctrl+C to cancel)");
-        lock.write()
-            .with_context(|| format!("failed to lock '{}'", build_dir.join(".astra-lock").display()))?
-    };
+    let mut build_lock = crate::fs::Lock::new(build_dir)?;
+    let _build_guard = build_lock.write()?;
+    let mut dist_lock = crate::fs::Lock::new(dist_dir)?;
+    let _dist_guard = dist_lock.write()?;
+    let mut astra_lock = crate::fs::Lock::new(Path::new(".astra"))?;
+    let _astra_guard = astra_lock.write()?;
 
     let mut outputs: BTreeMap<String, BuildOutput> = BTreeMap::new();
 
@@ -82,10 +73,12 @@ fn run(
     for dep in release.depends() {
         match dep {
             ReleaseDependency::Simple(_) => unreachable!("release dependency must be expanded"),
-            ReleaseDependency::Build(b) => {
-                let id = b.id();
+            ReleaseDependency::Build(call) => {
+                let id = call.id();
+
                 if !outputs.contains_key(id) {
-                    let build = config.build(id, BuildType::Release)?;
+                    let build = config.build(call, BuildType::Release)?;
+
                     if build.is_enabled(BuildType::Release) {
                         tracing::info!("Building dependency '{}' for release '{}'", id, release.id());
                         outputs.insert(
@@ -93,7 +86,7 @@ fn run(
                             crate::build::run(&build, config, astra, BuildType::Release)?,
                         );
                     } else {
-                        tracing::warn!("build '{}' is disabled for release build type", id);
+                        tracing::debug!("skipping build '{}': disabled for release build type", id);
                     }
                 }
             }
@@ -141,10 +134,11 @@ fn run(
         tracing::debug!("calling finally task '{}'", call.id());
 
         if let Err(e) = crate::task::run(call, config, false) {
-            err = Some(match err {
-                Some(prev) => prev.context(format!("finally task '{}' failed: {e}", call.id())),
-                None => e,
-            });
+            if err.is_some() {
+                tracing::error!("finally task '{}' failed: {e:#}", call.id());
+            } else {
+                err = Some(e.context(format!("finally task '{}' failed", call.id())));
+            }
         }
     }
 

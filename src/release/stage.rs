@@ -42,6 +42,7 @@ pub(super) fn stage<'a>(
 
 fn copy(dst: &Path, src: &Path) -> anyhow::Result<()> {
     let meta = std::fs::symlink_metadata(src)?;
+
     if meta.is_symlink() {
         bail!("release package cannot contain a symbolic link: '{}'", src.display());
     }

@@ -44,6 +44,7 @@ pub fn run(args: &Cli) -> anyhow::Result<()> {
     }
 
     let mut defines = IndexMap::with_capacity(args.define.len().div_ceil(2));
+
     for chunk in args.define.chunks(2) {
         let key = chunk[0].trim();
 

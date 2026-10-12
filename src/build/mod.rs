@@ -4,11 +4,12 @@ pub mod lua;
 mod preprocess;
 pub mod script;
 pub mod shader;
+mod source;
 mod target;
+mod validate;
 
-use crate::config::{Astra, Build, BuildType, Config};
+use crate::config::{Astra, Build, BuildCall, BuildType, Config};
 use anyhow::{Context, bail};
-use fd_lock::RwLock;
 use std::path::{Path, PathBuf};
 use wax::walk::Entry;
 
@@ -20,25 +21,34 @@ pub(crate) struct BuildOutput {
 
 #[derive(Debug, Clone, clap::Args)]
 pub(crate) struct Args {
-    /// ID of the specific build target to execute.
-    ///
-    /// If omitted, all enabled build targets will be executed.
-    #[arg(value_name = "ID")]
+    #[arg(
+        value_name = "ID",
+        help = "ID of the specific build target to execute",
+        long_help = "ID of the specific build target to execute.\n\nIf omitted, all enabled build targets will be executed."
+    )]
     id: Option<String>,
 
-    /// Build in release mode.
-    #[arg(long, conflicts_with = "debug")]
-    release: bool,
+    #[arg(
+        id = "release",
+        long = "release",
+        conflicts_with = "debug",
+        help = "Build in release mode"
+    )]
+    is_release: bool,
 
-    /// Build in debug mode (default).
-    #[arg(long, conflicts_with = "release")]
-    debug: bool,
+    #[arg(
+        id = "debug",
+        long = "debug",
+        conflicts_with = "release",
+        help = "Build in debug mode (default)"
+    )]
+    is_debug: bool,
 }
 
 impl Args {
     #[must_use]
     fn build_type(&self) -> BuildType {
-        if self.release {
+        if self.is_release {
             BuildType::Release
         } else {
             BuildType::Debug
@@ -47,58 +57,43 @@ impl Args {
 }
 
 pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
-    tracing::info!("Running build ({})", args.build_type());
+    let build_type = args.build_type();
+    tracing::info!("Running build ({build_type})");
 
-    let builds = config.builds(args.build_type());
+    let builds = config.builds(build_type);
 
     if builds.len() == 0 {
         bail!("no build configurations found");
     }
 
     let astra = config.astra();
-
     let build_dir = Path::new(astra.build_dir());
-
     crate::fs::create_managed_dir(build_dir)?;
 
-    let mut lock = RwLock::new(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(build_dir.join(".astra-lock"))
-            .with_context(|| format!("failed to open '{}'", build_dir.join(".astra-lock").display()))?,
-    );
-    let _guard = if let Ok(guard) = lock.try_write() {
-        guard
-    } else {
-        tracing::info!("Blocking waiting for file lock on build directory (press Ctrl+C to cancel)");
-        lock.write()
-            .with_context(|| format!("failed to lock '{}'", build_dir.join(".astra-lock").display()))?
-    };
+    let mut lock = crate::fs::Lock::new(build_dir)?;
+    let _guard = lock.write()?;
 
     if let Some(id) = &args.id {
-        let build = config.build(id, args.build_type())?;
+        let build = config.build(&BuildCall::new(id), build_type)?;
 
-        if !build.is_enabled(args.build_type()) {
+        if !build.is_enabled(build_type) {
             bail!(
                 "build '{}' is disabled for {} build type",
                 id,
-                args.build_type().as_lowercase()
+                build_type.as_lowercase()
             );
         }
 
-        let _ = run(&build, config, astra, args.build_type())?;
+        let _ = run(&build, config, astra, build_type)?;
     } else {
         for build in builds {
             let build = build?;
 
-            if !build.is_enabled(args.build_type()) {
+            if !build.is_enabled(build_type) {
                 continue;
             }
 
-            let _ = run(&build, config, astra, args.build_type())?;
+            let _ = run(&build, config, astra, build_type)?;
         }
     }
 
@@ -108,8 +103,7 @@ pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
 pub(crate) fn run(build: &Build, config: &Config, astra: &Astra, build_type: BuildType) -> anyhow::Result<BuildOutput> {
     tracing::info!("Building '{}'", build.id());
 
-    let root = Path::new(astra.build_dir());
-    let build_dir = root.join(build.id());
+    let build_dir = Path::new(astra.build_dir()).join(build.id());
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed to create directory '{}'", build_dir.display()))?;
 
@@ -119,25 +113,21 @@ pub(crate) fn run(build: &Build, config: &Config, astra: &Astra, build_type: Bui
         crate::task::run(call, config, false)?;
     }
 
-    let (mut artifacts, mut err) = match target::build(&build_dir, build, build_type) {
-        Ok(targets) => (targets, None),
-        Err(e) => (Vec::new(), Some(e)),
-    };
+    let mut result = target::build(&build_dir, build, build_type);
 
     for call in build.finally() {
         tracing::debug!("calling finally task '{}'", call.id());
 
-        if let Err(e) = crate::task::run(call, config, false) {
-            err = Some(match err {
-                Some(prev) => prev.context(format!("finally task '{}' failed: {e}", call.id())),
-                None => e,
-            });
+        if let Err(err) = crate::task::run(call, config, false) {
+            if result.is_err() {
+                tracing::error!("finally task '{}' failed: {err:#}", call.id());
+            } else {
+                result = Err(err.context(format!("finally task '{}' failed", call.id())));
+            }
         }
     }
 
-    if let Some(e) = err {
-        return Err(e);
-    }
+    let mut artifacts = result?;
 
     for pattern in build.artifacts() {
         let (prefix, glob) = crate::fs::resolve_glob(pattern)?;
@@ -147,29 +137,29 @@ pub(crate) fn run(build: &Build, config: &Config, astra: &Astra, build_type: Bui
     }
 
     artifacts.sort_unstable();
+    artifacts.dedup();
 
     Ok(BuildOutput {
-        hash: {
-            let mut hash = xxhash_rust::xxh3::Xxh3::new();
-            hash.update(build_type.as_lowercase().as_bytes());
-
-            for path in &artifacts {
-                if path.is_file() {
-                    let file = path.to_string_lossy();
-                    hash.update(&(file.len() as u64).to_le_bytes());
-                    hash.update(file.as_bytes());
-                    hash.update(&crate::fs::hash_file(path)?.to_le_bytes());
-                } else if path.is_dir() {
-                    hash_directory(path, &mut hash)?;
-                } else {
-                    bail!("artifact '{}' is not a regular file or directory", path.display());
-                }
-            }
-
-            hash.digest128()
-        },
+        hash: hash_artifacts(&artifacts, build_type)?,
         artifacts,
     })
+}
+
+fn hash_artifacts(artifacts: &[PathBuf], build_type: BuildType) -> anyhow::Result<u128> {
+    let mut hash = xxhash_rust::xxh3::Xxh3::new();
+    hash.update(build_type.as_lowercase().as_bytes());
+
+    for path in artifacts {
+        if path.is_file() {
+            hash_file(path, &mut hash)?;
+        } else if path.is_dir() {
+            hash_directory(path, &mut hash)?;
+        } else {
+            bail!("artifact '{}' is not a regular file or directory", path.display());
+        }
+    }
+
+    Ok(hash.digest128())
 }
 
 fn hash_directory(dir: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Result<()> {
@@ -177,11 +167,13 @@ fn hash_directory(dir: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Res
     hash.update(&(path.len() as u64).to_le_bytes());
     hash.update(path.as_bytes());
 
-    let mut entries = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        entries.push((entry.file_name(), entry.file_type()?));
-    }
+    let mut entries = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read artifact directory '{}'", dir.display()))?
+        .map(|entry| {
+            let entry = entry?;
+            Ok((entry.file_name(), entry.file_type()?))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
 
@@ -191,14 +183,20 @@ fn hash_directory(dir: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Res
         if kind.is_dir() {
             hash_directory(&path, hash)?;
         } else if kind.is_file() {
-            let file = path.to_string_lossy();
-            hash.update(&(file.len() as u64).to_le_bytes());
-            hash.update(file.as_bytes());
-            hash.update(&crate::fs::hash_file(&path)?.to_le_bytes());
+            hash_file(&path, hash)?;
         } else {
             bail!("artifact '{}' contains a non-regular file", path.display());
         }
     }
+
+    Ok(())
+}
+
+fn hash_file(path: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Result<()> {
+    let path_str = path.to_string_lossy();
+    hash.update(&(path_str.len() as u64).to_le_bytes());
+    hash.update(path_str.as_bytes());
+    hash.update(&crate::fs::hash_file(path)?.to_le_bytes());
 
     Ok(())
 }

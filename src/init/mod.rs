@@ -28,6 +28,7 @@ pub(super) fn command(args: &Args) -> anyhow::Result<()> {
     }
 
     let file = path.join("astra.toml");
+
     if file.exists() {
         bail!("astra.toml already exists in '{}'", path.display());
     }

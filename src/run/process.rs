@@ -1,174 +1,90 @@
 #![allow(non_camel_case_types, non_snake_case, clippy::upper_case_acronyms)]
 
+use anyhow::Context;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+type BOOL = i32;
+type BYTE = u8;
+type DWORD = u32;
+type HANDLE = *mut core::ffi::c_void;
+type HWND = HANDLE;
+type LPARAM = isize;
+type LPBYTE = *mut BYTE;
+type LPCCH = *const i8;
+type LPCVOID = *const core::ffi::c_void;
+type LPCWSTR = *const u16;
+type LPDWORD = *mut DWORD;
+type LPOVERLAPPED = *mut core::ffi::c_void;
+type LPSECURITY_ATTRIBUTES = *mut core::ffi::c_void;
+type LPSTR = *mut i8;
+type LPTHREAD_START_ROUTINE = Option<unsafe extern "system" fn(LPVOID) -> DWORD>;
+type LPVOID = *mut core::ffi::c_void;
+type LPWSTR = *mut u16;
+type PDWORD = *mut DWORD;
+type SHORT = i16;
+type SIZE_T = usize;
+type UINT = u32;
+type WNDENUMPROC = Option<unsafe extern "system" fn(HWND, LPARAM) -> BOOL>;
+type WORD = u16;
+type WPARAM = usize;
+type LPDEBUG_EVENT = *mut DEBUG_EVENT;
+type LPPROCESS_INFORMATION = *mut PROCESS_INFORMATION;
+type LPPROCESSENTRY32W = *mut PROCESSENTRY32W;
+type LPSTARTUPINFOW = *mut STARTUPINFOW;
+type PINPUT_RECORD = *mut INPUT_RECORD;
+type PCONSOLE_SCREEN_BUFFER_INFO = *mut CONSOLE_SCREEN_BUFFER_INFO;
+
+const INVALID_HANDLE_VALUE: HANDLE = (-1isize) as HANDLE;
+const MAX_PATH: usize = 260;
+const EXCEPTION_MAXIMUM_PARAMETERS: usize = 15;
+const TH32CS_SNAPPROCESS: DWORD = 0x0000_0002;
+const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
+const PROCESS_TERMINATE: DWORD = 0x0001;
+const PROCESS_SYNCHRONIZE: DWORD = 0x0010_0000;
+const WAIT_OBJECT_0: DWORD = 0;
+const WAIT_TIMEOUT: DWORD = 258;
+const WAIT_FAILED: DWORD = u32::MAX;
+const DEBUG_ONLY_THIS_PROCESS: DWORD = 0x0000_0002;
+const EXCEPTION_DEBUG_EVENT: DWORD = 1;
+const CREATE_PROCESS_DEBUG_EVENT: DWORD = 3;
+const EXIT_PROCESS_DEBUG_EVENT: DWORD = 5;
+const LOAD_DLL_DEBUG_EVENT: DWORD = 6;
+const OUTPUT_DEBUG_STRING_EVENT: DWORD = 8;
+const STATUS_BREAKPOINT: DWORD = 0x8000_0003;
+const DBG_CONTINUE: DWORD = 0x0001_0002;
+const DBG_EXCEPTION_NOT_HANDLED: DWORD = 0x8001_0001;
+const WM_CLOSE: UINT = 0x0010;
+const GW_OWNER: UINT = 4;
+const SW_SHOWNOACTIVATE: WORD = 4;
+const STARTF_USESHOWWINDOW: DWORD = 0x0000_0001;
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const CP_ACP: UINT = 0;
+const ERROR_INSUFFICIENT_BUFFER: DWORD = 122;
+const ERROR_SEM_TIMEOUT: i32 = 121;
+const ERROR_NO_MORE_FILES: DWORD = 18;
+const STD_INPUT_HANDLE: DWORD = (-10_i32).cast_unsigned();
+const STD_ERROR_HANDLE: DWORD = (-12_i32).cast_unsigned();
+const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
+const KEY_EVENT: WORD = 0x0001;
+const MONITOR_TIMEOUT: DWORD = 50;
+const INPUT_RECORDS: usize = 64;
+const INPUT_BYTES: usize = 256;
+const VK_R: WORD = 0x0052;
+const VK_RETURN: WORD = 0x000D;
+const VK_SHIFT: WORD = 0x0010;
+const VK_CONTROL: WORD = 0x0011;
+const VK_MENU: WORD = 0x0012;
+const LEFT_CTRL_PRESSED: DWORD = 0x0008;
+const RIGHT_CTRL_PRESSED: DWORD = 0x0004;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MonitorExit {
-    ProcessExited(u32),
+    ProcessExited(Option<u32>),
     ReloadRequested,
     Interrupted,
-}
-
-pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
-    let Ok(exe) = std::fs::canonicalize(exe) else {
-        return Ok(0);
-    };
-
-    let timeout = u32::try_from(SHUTDOWN_TIMEOUT.as_millis())?;
-    let snapshot = UniqueHandle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) });
-    if !snapshot.is_valid() {
-        return Ok(0);
-    }
-
-    let mut entry = unsafe { std::mem::zeroed::<PROCESSENTRY32W>() };
-    entry.dwSize = DWORD::try_from(std::mem::size_of::<PROCESSENTRY32W>())?;
-
-    let mut result = unsafe { Process32FirstW(snapshot.raw(), &raw mut entry) };
-    let mut closed = 0;
-
-    while result != 0 {
-        let exe_name = String::from_utf16_lossy(
-            &entry.szExeFile[..entry
-                .szExeFile
-                .iter()
-                .position(|&c| c == 0)
-                .unwrap_or(entry.szExeFile.len())],
-        );
-
-        if exe_name.eq_ignore_ascii_case("aviutl2.exe") {
-            let process = UniqueHandle(unsafe {
-                OpenProcess(
-                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
-                    0,
-                    entry.th32ProcessID,
-                )
-            });
-
-            if process.is_valid()
-                && let Some(proc_path) = query_process_path(process.raw())
-                && std::fs::canonicalize(&proc_path).is_ok_and(|p| p == exe)
-            {
-                tracing::info!(
-                    "Requesting AviUtl ExEdit2 to shut down (PID: {}, '{}')",
-                    entry.th32ProcessID,
-                    proc_path.display()
-                );
-
-                request_close(entry.th32ProcessID)?;
-
-                if unsafe { WaitForSingleObject(process.raw(), timeout) } != WAIT_OBJECT_0 {
-                    tracing::warn!(
-                        "graceful shutdown timed out for AviUtl ExEdit2; terminating process (PID: {})",
-                        entry.th32ProcessID
-                    );
-                    unsafe {
-                        TerminateProcess(process.raw(), 0);
-                        WaitForSingleObject(process.raw(), 3000);
-                    }
-                }
-
-                closed += 1;
-            }
-        }
-
-        result = unsafe { Process32NextW(snapshot.raw(), &raw mut entry) };
-    }
-
-    Ok(closed)
-}
-
-struct StatusBar {
-    height: SHORT,
-}
-
-impl StatusBar {
-    fn start() -> Option<Self> {
-        use std::io::IsTerminal;
-
-        if !std::io::stderr().is_terminal() {
-            return None;
-        }
-
-        let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-            return None;
-        }
-
-        let mut mode = 0;
-        if unsafe { GetConsoleMode(handle, &raw mut mode) } == 0 {
-            return None;
-        }
-
-        if mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0
-            && unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) } == 0
-        {
-            return None;
-        }
-
-        let mut csbi = unsafe { std::mem::zeroed::<CONSOLE_SCREEN_BUFFER_INFO>() };
-        if unsafe { GetConsoleScreenBufferInfo(handle, &raw mut csbi) } == 0 {
-            return None;
-        }
-
-        let height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-        if height < 4 {
-            return None;
-        }
-
-        eprint!("\x1b[1;{}r", height - 1);
-        eprint!("\x1b[{height};1H Ctrl+C: Stop | Ctrl+R / r+Enter: Reload\x1b[K");
-        eprint!("\x1b[{};1H", height - 1);
-        let _ = std::io::stderr().flush();
-
-        Some(Self { height })
-    }
-}
-
-impl Drop for StatusBar {
-    fn drop(&mut self) {
-        eprint!("\x1b[r\x1b[{};1H\x1b[2K", self.height);
-        let _ = std::io::stderr().flush();
-    }
-}
-
-pub(super) fn run_process(exe: &Path, is_running: &AtomicBool) -> anyhow::Result<MonitorExit> {
-    let _status_bar = if let Some(bar) = StatusBar::start() {
-        Some(bar)
-    } else {
-        tracing::info!("Press 'Ctrl+C' to stop, 'Ctrl+R' or 'r + Enter' to reload");
-        None
-    };
-
-    let child = AviUtl2Process::spawn(exe)?;
-    let exit = child.monitor(is_running)?;
-    match exit {
-        MonitorExit::ProcessExited(_) => {}
-        MonitorExit::Interrupted => {
-            tracing::info!("Stopping AviUtl ExEdit2");
-            child.stop()?;
-        }
-        MonitorExit::ReloadRequested => {
-            tracing::info!("Reloading AviUtl ExEdit2");
-            child.stop()?;
-        }
-    }
-
-    Ok(exit)
-}
-
-pub(super) fn wait_for_reload(is_running: &AtomicBool) -> MonitorExit {
-    let mut line = 0;
-    while is_running.load(Ordering::SeqCst) {
-        if has_reload_key(&mut line) {
-            return MonitorExit::ReloadRequested;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    MonitorExit::Interrupted
 }
 
 struct AviUtl2Process {
@@ -238,16 +154,32 @@ impl AviUtl2Process {
             }
 
             if unsafe { WaitForDebugEventEx(&raw mut event, MONITOR_TIMEOUT) } == 0 {
-                if unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0 {
-                    let mut code = 0;
-                    unsafe { GetExitCodeProcess(handle, &raw mut code) };
-                    return Ok(MonitorExit::ProcessExited(code));
+                let err = std::io::Error::last_os_error();
+
+                match unsafe { WaitForSingleObject(handle, 0) } {
+                    WAIT_OBJECT_0 => {
+                        let mut code = 0;
+
+                        if unsafe { GetExitCodeProcess(handle, &raw mut code) } == 0 {
+                            tracing::debug!("failed to read AviUtl2 exit code: {}", std::io::Error::last_os_error());
+                            return Ok(MonitorExit::ProcessExited(None));
+                        }
+
+                        return Ok(MonitorExit::ProcessExited(Some(code)));
+                    }
+                    WAIT_FAILED => return Err(std::io::Error::last_os_error().into()),
+                    _ => {}
+                }
+
+                if !matches!(err.raw_os_error(), Some(ERROR_SEM_TIMEOUT | 258)) {
+                    return Err(err.into());
                 }
 
                 continue;
             }
 
             let exit_code = process_event(&event, handle)?;
+
             if has_reload_key(&mut line) {
                 return Ok(MonitorExit::ReloadRequested);
             }
@@ -255,7 +187,7 @@ impl AviUtl2Process {
             if event.dwProcessId == pid
                 && let Some(code) = exit_code
             {
-                return Ok(MonitorExit::ProcessExited(code));
+                return Ok(MonitorExit::ProcessExited(Some(code)));
             }
         }
 
@@ -268,357 +200,153 @@ impl AviUtl2Process {
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         let mut event = unsafe { std::mem::zeroed::<DEBUG_EVENT>() };
 
-        request_close(pid)?;
+        match unsafe { WaitForSingleObject(handle, 0) } {
+            WAIT_OBJECT_0 => return Ok(()),
+            WAIT_FAILED => return Err(std::io::Error::last_os_error().into()),
+            _ => {}
+        }
 
-        while Instant::now() < deadline {
-            if unsafe { WaitForDebugEventEx(&raw mut event, 100) } != 0 && process_event(&event, handle)?.is_some() {
+        if let Err(err) = request_close(pid) {
+            if unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0 {
                 return Ok(());
             }
+
+            return Err(err);
         }
 
-        tracing::warn!("graceful shutdown timed out for AviUtl ExEdit2; terminating process (PID: {pid})");
-        let detached = unsafe { DebugActiveProcessStop(pid) != 0 };
-        if unsafe { TerminateProcess(handle, 0) } == 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-
-        if !detached {
-            while unsafe { WaitForDebugEventEx(&raw mut event, 100) } != 0 {
+        while Instant::now() < deadline {
+            if unsafe { WaitForDebugEventEx(&raw mut event, 100) } != 0 {
                 if process_event(&event, handle)?.is_some() {
-                    break;
+                    return Ok(());
+                }
+            } else {
+                let err = std::io::Error::last_os_error();
+
+                match unsafe { WaitForSingleObject(handle, 0) } {
+                    WAIT_OBJECT_0 => return Ok(()),
+                    WAIT_FAILED => return Err(std::io::Error::last_os_error().into()),
+                    _ => {}
+                }
+
+                if !matches!(err.raw_os_error(), Some(ERROR_SEM_TIMEOUT | 258)) {
+                    return Err(err.into());
                 }
             }
         }
 
-        if unsafe { WaitForSingleObject(handle, INFINITE) } != WAIT_OBJECT_0 {
-            return Err(std::io::Error::last_os_error().into());
+        tracing::warn!("graceful shutdown timed out for AviUtl ExEdit2; terminating process (PID: {pid})");
+        let is_detached = unsafe { DebugActiveProcessStop(pid) != 0 };
+
+        if unsafe { TerminateProcess(handle, 0) } == 0 {
+            let err = std::io::Error::last_os_error();
+
+            if unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0 {
+                return Ok(());
+            }
+
+            return Err(err.into());
+        }
+
+        if !is_detached {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                if unsafe { WaitForDebugEventEx(&raw mut event, 100) } != 0 {
+                    if process_event(&event, handle)?.is_some() {
+                        break;
+                    }
+                } else {
+                    let err = std::io::Error::last_os_error();
+
+                    match unsafe { WaitForSingleObject(handle, 0) } {
+                        WAIT_OBJECT_0 => return Ok(()),
+                        WAIT_FAILED => return Err(std::io::Error::last_os_error().into()),
+                        _ => {}
+                    }
+
+                    if !matches!(err.raw_os_error(), Some(ERROR_SEM_TIMEOUT | 258)) {
+                        return Err(err.into());
+                    }
+                }
+            }
+        }
+
+        match unsafe { WaitForSingleObject(handle, 3000) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_TIMEOUT => anyhow::bail!("AviUtl2 did not exit after termination (PID: {pid})"),
+            _ => return Err(std::io::Error::last_os_error().into()),
         }
 
         Ok(())
     }
 }
 
-fn request_close(pid: u32) -> anyhow::Result<()> {
-    let pid = LPARAM::try_from(pid)?;
-    unsafe {
-        EnumWindows(Some(close_window), pid);
-    }
-
-    Ok(())
+struct StatusBar {
+    height: SHORT,
 }
 
-unsafe extern "system" fn close_window(hwnd: HWND, lParam: LPARAM) -> BOOL {
-    let mut pid = 0;
-    if unsafe { GetWindowThreadProcessId(hwnd, &raw mut pid) } != 0
-        && LPARAM::try_from(pid).ok() == Some(lParam)
-        && unsafe { IsWindowVisible(hwnd) } != 0
-        && unsafe { GetWindow(hwnd, GW_OWNER).is_null() }
-    {
-        unsafe {
-            PostMessageW(hwnd, WM_CLOSE, 0, 0);
-        }
+impl StatusBar {
+    fn start() -> Option<Self> {
+        use std::io::IsTerminal;
 
-        return 0;
-    }
-    1
-}
-
-fn has_reload_key(line: &mut u8) -> bool {
-    let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-    if input.is_null() || input == INVALID_HANDLE_VALUE {
-        return false;
-    }
-
-    read_console_reload(input, line).unwrap_or_else(|| read_pipe_reload(input, line))
-}
-
-fn read_console_reload(input: HANDLE, line: &mut u8) -> Option<bool> {
-    let mut records = [unsafe { std::mem::zeroed::<INPUT_RECORD>() }; INPUT_RECORDS];
-    let mut count = 0;
-    if unsafe {
-        PeekConsoleInputW(
-            input,
-            records.as_mut_ptr(),
-            u32::try_from(records.len()).unwrap_or(u32::MAX),
-            &raw mut count,
-        )
-    } == 0
-    {
-        return None;
-    }
-
-    loop {
-        if count == 0 {
-            return Some(false);
-        }
-
-        let mut read = 0;
-        if unsafe {
-            ReadConsoleInputW(
-                input,
-                records.as_mut_ptr(),
-                u32::try_from(records.len()).unwrap_or(u32::MAX),
-                &raw mut read,
-            )
-        } == 0
-        {
-            return Some(false);
-        }
-
-        let read = usize::try_from(read).unwrap_or_default().min(records.len());
-        for record in &records[..read] {
-            if record.EventType != KEY_EVENT {
-                continue;
-            }
-
-            let key = unsafe { record.Event.KeyEvent };
-            if key.bKeyDown == 0 {
-                continue;
-            }
-
-            if key.wVirtualKeyCode == VK_R && key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0 {
-                return Some(true);
-            }
-
-            match key.wVirtualKeyCode {
-                VK_R if *line == 0 => *line = 1,
-                VK_RETURN => {
-                    if *line == 1 {
-                        *line = 0;
-                        return Some(true);
-                    }
-                    *line = 0;
-                }
-                VK_SHIFT | VK_CONTROL | VK_MENU => {}
-                _ => *line = 2,
-            }
-        }
-
-        if read < records.len() {
-            return Some(false);
-        }
-
-        count = 0;
-
-        if unsafe {
-            PeekConsoleInputW(
-                input,
-                records.as_mut_ptr(),
-                u32::try_from(records.len()).unwrap_or(u32::MAX),
-                &raw mut count,
-            )
-        } == 0
-        {
-            return Some(false);
-        }
-    }
-}
-
-fn read_pipe_reload(input: HANDLE, line: &mut u8) -> bool {
-    let mut bytes = [0_u8; INPUT_BYTES];
-    let mut count = 0;
-    if unsafe {
-        PeekNamedPipe(
-            input,
-            bytes.as_mut_ptr().cast(),
-            u32::try_from(bytes.len()).unwrap_or(u32::MAX),
-            &raw mut count,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    } == 0
-        || count == 0
-    {
-        return false;
-    }
-
-    let mut read = 0;
-    if unsafe {
-        ReadFile(
-            input,
-            bytes.as_mut_ptr().cast(),
-            count,
-            &raw mut read,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return false;
-    }
-
-    let read = usize::try_from(read).unwrap_or_default().min(bytes.len());
-    for byte in &bytes[..read] {
-        match byte {
-            0x12 => return true,
-            b'\r' | b'\n' => {
-                if *line == 1 {
-                    *line = 0;
-                    return true;
-                }
-                *line = 0;
-            }
-            b'r' if *line == 0 => *line = 1,
-            _ => *line = 2,
-        }
-    }
-
-    false
-}
-
-fn process_event(event: &DEBUG_EVENT, process_handle: HANDLE) -> anyhow::Result<Option<u32>> {
-    if event.dwDebugEventCode == OUTPUT_DEBUG_STRING_EVENT {
-        log_output(event, process_handle);
-    }
-
-    close_event_file(event);
-
-    let exit_code = if event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
-        Some(unsafe { event.u.ExitProcess.dwExitCode })
-    } else {
-        None
-    };
-
-    let status = if event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT
-        && unsafe { event.u.Exception.ExceptionRecord.ExceptionCode } != STATUS_BREAKPOINT
-    {
-        DBG_EXCEPTION_NOT_HANDLED
-    } else {
-        DBG_CONTINUE
-    };
-
-    if unsafe { ContinueDebugEvent(event.dwProcessId, event.dwThreadId, status) } == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    Ok(exit_code)
-}
-
-fn close_event_file(event: &DEBUG_EVENT) {
-    let file = unsafe {
-        match event.dwDebugEventCode {
-            CREATE_PROCESS_DEBUG_EVENT => event.u.CreateProcessInfo.hFile,
-            LOAD_DLL_DEBUG_EVENT => event.u.LoadDll.hFile,
-            _ => std::ptr::null_mut(),
-        }
-    };
-
-    if !file.is_null() && file != INVALID_HANDLE_VALUE {
-        unsafe {
-            CloseHandle(file);
-        }
-    }
-}
-
-fn log_output(event: &DEBUG_EVENT, process_handle: HANDLE) {
-    let output = unsafe { event.u.DebugString };
-    if output.lpDebugStringData.is_null() || output.nDebugStringLength == 0 {
-        return;
-    }
-
-    let mut bytes = vec![0; usize::from(output.nDebugStringLength)];
-    let mut read = 0;
-    if unsafe {
-        ReadProcessMemory(
-            process_handle,
-            output.lpDebugStringData.cast(),
-            bytes.as_mut_ptr().cast(),
-            bytes.len(),
-            &raw mut read,
-        )
-    } == 0
-    {
-        return;
-    }
-
-    bytes.truncate(read);
-
-    let text = if output.fUnicode != 0 {
-        if !bytes.as_chunks::<2>().1.is_empty() {
-            tracing::warn!("invalid Unicode debug output: odd byte count");
-        }
-        String::from_utf16_lossy(
-            &bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|chunk| u16::from_le_bytes(*chunk))
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        let Ok(text) = decode_ansi(&bytes) else {
-            tracing::warn!("failed to decode non-Unicode debug output");
-            return;
-        };
-        text
-    };
-
-    for line in text.trim_end_matches('\0').lines() {
-        eprintln!("{}", colorize_debug_line(line));
-    }
-}
-
-fn colorize_debug_line(line: &str) -> String {
-    use std::io::IsTerminal;
-    use std::sync::LazyLock;
-
-    static USE_COLOR: LazyLock<bool> =
-        LazyLock::new(|| std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none());
-
-    if !*USE_COLOR {
-        return line.to_string();
-    }
-
-    if line.contains("[ERROR]") {
-        format!("\x1b[31m{line}\x1b[0m")
-    } else if line.contains("[WARN]") {
-        format!("\x1b[38;5;208m{line}\x1b[0m")
-    } else if line.contains("[VERBOSE]") {
-        format!("\x1b[2m{line}\x1b[0m")
-    } else if line.contains("[SCRIPT]") || line.contains("[PLUGIN]") {
-        format!("\x1b[32m{line}\x1b[0m")
-    } else {
-        line.to_string()
-    }
-}
-
-fn decode_ansi(bytes: &[u8]) -> anyhow::Result<String> {
-    let len = i32::try_from(bytes.len())?;
-    let size = unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr().cast(), len, std::ptr::null_mut(), 0) };
-    if size == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    let mut wide = vec![0; usize::try_from(size)?];
-    let size = unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr().cast(), len, wide.as_mut_ptr(), size) };
-    if size == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    wide.truncate(usize::try_from(size)?);
-    Ok(String::from_utf16_lossy(&wide))
-}
-
-fn query_process_path(process: HANDLE) -> Option<std::path::PathBuf> {
-    use std::ffi::OsString;
-    use std::os::windows::ffi::OsStringExt;
-
-    let mut capacity = 260_u32;
-    let mut path_buf = vec![0_u16; capacity as usize];
-
-    loop {
-        let mut size = capacity;
-        if unsafe { QueryFullProcessImageNameW(process, 0, path_buf.as_mut_ptr(), &raw mut size) } != 0 {
-            return Some(std::path::PathBuf::from(OsString::from_wide(
-                &path_buf[..size as usize],
-            )));
-        }
-
-        if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || capacity >= 32768 {
+        if !std::io::stderr().is_terminal() {
             return None;
         }
 
-        capacity = capacity.saturating_mul(2).min(32768);
-        path_buf.resize(capacity as usize, 0);
+        let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+
+        let mut mode = 0;
+
+        if unsafe { GetConsoleMode(handle, &raw mut mode) } == 0 {
+            return None;
+        }
+
+        if mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0
+            && unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) } == 0
+        {
+            return None;
+        }
+
+        let mut csbi = unsafe { std::mem::zeroed::<CONSOLE_SCREEN_BUFFER_INFO>() };
+
+        if unsafe { GetConsoleScreenBufferInfo(handle, &raw mut csbi) } == 0 {
+            return None;
+        }
+
+        let height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+
+        if height < 4 {
+            return None;
+        }
+
+        let mut stderr = std::io::stderr().lock();
+
+        if write!(
+            stderr,
+            "\x1b[1;{}r\x1b[{height};1H Ctrl+C: Stop | Ctrl+R / r+Enter: Reload\x1b[K\x1b[{};1H",
+            height - 1,
+            height - 1,
+        )
+        .and_then(|()| stderr.flush())
+        .is_err()
+        {
+            let _ = write!(stderr, "\x1b[r");
+            let _ = stderr.flush();
+            return None;
+        }
+
+        Some(Self { height })
+    }
+}
+
+impl Drop for StatusBar {
+    fn drop(&mut self) {
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(stderr, "\x1b[r\x1b[{};1H\x1b[2K", self.height);
+        let _ = stderr.flush();
     }
 }
 
@@ -643,71 +371,6 @@ impl Drop for UniqueHandle {
         }
     }
 }
-
-type BOOL = i32;
-type BYTE = u8;
-type DWORD = u32;
-type HANDLE = *mut core::ffi::c_void;
-type HWND = HANDLE;
-type LPARAM = isize;
-type LPBYTE = *mut BYTE;
-type LPCCH = *const i8;
-type LPCVOID = *const core::ffi::c_void;
-type LPCWSTR = *const u16;
-type LPDWORD = *mut DWORD;
-type LPOVERLAPPED = *mut core::ffi::c_void;
-type LPSECURITY_ATTRIBUTES = *mut core::ffi::c_void;
-type LPSTR = *mut i8;
-type LPTHREAD_START_ROUTINE = Option<unsafe extern "system" fn(LPVOID) -> DWORD>;
-type LPVOID = *mut core::ffi::c_void;
-type LPWSTR = *mut u16;
-type PDWORD = *mut DWORD;
-type SHORT = i16;
-type SIZE_T = usize;
-type UINT = u32;
-type WNDENUMPROC = Option<unsafe extern "system" fn(HWND, LPARAM) -> BOOL>;
-type WORD = u16;
-type WPARAM = usize;
-
-const INVALID_HANDLE_VALUE: HANDLE = (-1isize) as HANDLE;
-const MAX_PATH: usize = 260;
-const EXCEPTION_MAXIMUM_PARAMETERS: usize = 15;
-const TH32CS_SNAPPROCESS: DWORD = 0x0000_0002;
-const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
-const PROCESS_TERMINATE: DWORD = 0x0001;
-const PROCESS_SYNCHRONIZE: DWORD = 0x0010_0000;
-const WAIT_OBJECT_0: DWORD = 0;
-const DEBUG_ONLY_THIS_PROCESS: DWORD = 0x0000_0002;
-const EXCEPTION_DEBUG_EVENT: DWORD = 1;
-const CREATE_PROCESS_DEBUG_EVENT: DWORD = 3;
-const EXIT_PROCESS_DEBUG_EVENT: DWORD = 5;
-const LOAD_DLL_DEBUG_EVENT: DWORD = 6;
-const OUTPUT_DEBUG_STRING_EVENT: DWORD = 8;
-const STATUS_BREAKPOINT: DWORD = 0x8000_0003;
-const DBG_CONTINUE: DWORD = 0x0001_0002;
-const DBG_EXCEPTION_NOT_HANDLED: DWORD = 0x8001_0001;
-const WM_CLOSE: UINT = 0x0010;
-const GW_OWNER: UINT = 4;
-const SW_SHOWNOACTIVATE: WORD = 4;
-const STARTF_USESHOWWINDOW: DWORD = 0x0000_0001;
-const INFINITE: DWORD = u32::MAX;
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
-const CP_ACP: UINT = 0;
-const ERROR_INSUFFICIENT_BUFFER: DWORD = 122;
-const STD_INPUT_HANDLE: DWORD = (-10_i32).cast_unsigned();
-const STD_ERROR_HANDLE: DWORD = (-12_i32).cast_unsigned();
-const ENABLE_VIRTUAL_TERMINAL_PROCESSING: DWORD = 0x0004;
-const KEY_EVENT: WORD = 0x0001;
-const MONITOR_TIMEOUT: DWORD = 50;
-const INPUT_RECORDS: usize = 64;
-const INPUT_BYTES: usize = 256;
-const VK_R: WORD = 0x0052;
-const VK_RETURN: WORD = 0x000D;
-const VK_SHIFT: WORD = 0x0010;
-const VK_CONTROL: WORD = 0x0011;
-const VK_MENU: WORD = 0x0012;
-const LEFT_CTRL_PRESSED: DWORD = 0x0008;
-const RIGHT_CTRL_PRESSED: DWORD = 0x0004;
 
 #[repr(C)]
 struct PROCESSENTRY32W {
@@ -885,12 +548,6 @@ struct INPUT_RECORD {
     Event: INPUT_RECORD_EVENT,
 }
 
-type LPDEBUG_EVENT = *mut DEBUG_EVENT;
-type LPPROCESS_INFORMATION = *mut PROCESS_INFORMATION;
-type LPPROCESSENTRY32W = *mut PROCESSENTRY32W;
-type LPSTARTUPINFOW = *mut STARTUPINFOW;
-type PINPUT_RECORD = *mut INPUT_RECORD;
-
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct COORD {
@@ -915,7 +572,539 @@ struct CONSOLE_SCREEN_BUFFER_INFO {
     srWindow: SMALL_RECT,
     dwMaximumWindowSize: COORD,
 }
-type PCONSOLE_SCREEN_BUFFER_INFO = *mut CONSOLE_SCREEN_BUFFER_INFO;
+
+pub(super) fn run_process(exe: &Path, is_running: &AtomicBool) -> anyhow::Result<MonitorExit> {
+    let _status_bar = if let Some(bar) = StatusBar::start() {
+        Some(bar)
+    } else {
+        tracing::info!("Press 'Ctrl+C' to stop, 'Ctrl+R' or 'r + Enter' to reload");
+        None
+    };
+
+    let child = AviUtl2Process::spawn(exe).with_context(|| format!("failed to launch AviUtl2 '{}'", exe.display()))?;
+    let exit = child.monitor(is_running).context("failed to monitor AviUtl2")?;
+
+    match exit {
+        MonitorExit::ProcessExited(_) => {}
+        MonitorExit::Interrupted => {
+            tracing::info!("Stopping AviUtl ExEdit2");
+            child.stop().context("failed to stop AviUtl2")?;
+        }
+        MonitorExit::ReloadRequested => {
+            tracing::info!("Reloading AviUtl ExEdit2");
+            child.stop().context("failed to stop AviUtl2")?;
+        }
+    }
+
+    Ok(exit)
+}
+
+pub(super) fn wait_for_reload(is_running: &AtomicBool) -> MonitorExit {
+    let mut line = 0;
+    while is_running.load(Ordering::SeqCst) {
+        if has_reload_key(&mut line) {
+            return MonitorExit::ReloadRequested;
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    MonitorExit::Interrupted
+}
+
+pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
+    let exe = match std::fs::canonicalize(exe) {
+        Ok(exe) => exe,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to inspect AviUtl2 executable '{}'", exe.display()));
+        }
+    };
+    let exe = crate::fs::to_key(&exe)?;
+
+    let snapshot = UniqueHandle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) });
+
+    if !snapshot.is_valid() {
+        return Err(std::io::Error::last_os_error()).context("failed to enumerate processes");
+    }
+
+    let mut entry = unsafe { std::mem::zeroed::<PROCESSENTRY32W>() };
+    entry.dwSize = DWORD::try_from(std::mem::size_of::<PROCESSENTRY32W>())?;
+
+    let mut result = unsafe { Process32FirstW(snapshot.raw(), &raw mut entry) };
+    let mut closed = 0;
+
+    while result != 0 {
+        let exe_name = String::from_utf16_lossy(
+            &entry.szExeFile[..entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len())],
+        );
+
+        if exe_name.eq_ignore_ascii_case("aviutl2.exe") {
+            let process = UniqueHandle(unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                    0,
+                    entry.th32ProcessID,
+                )
+            });
+
+            if !process.is_valid() {
+                tracing::debug!(
+                    "cannot inspect process {}: {}",
+                    entry.th32ProcessID,
+                    std::io::Error::last_os_error(),
+                );
+            }
+
+            if process.is_valid()
+                && let Some(proc_path) = query_process_path(process.raw())
+                && crate::fs::to_key(&proc_path)? == exe
+            {
+                tracing::info!(
+                    "Requesting AviUtl ExEdit2 to shut down (PID: {}, '{}')",
+                    entry.th32ProcessID,
+                    proc_path.display()
+                );
+
+                shutdown_process(&process, entry.th32ProcessID).with_context(|| {
+                    format!(
+                        "failed to stop AviUtl2 '{}' (PID: {})",
+                        proc_path.display(),
+                        entry.th32ProcessID
+                    )
+                })?;
+
+                closed += 1;
+            }
+        }
+
+        result = unsafe { Process32NextW(snapshot.raw(), &raw mut entry) };
+    }
+
+    if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
+        return Err(std::io::Error::last_os_error()).context("failed to enumerate processes");
+    }
+
+    Ok(closed)
+}
+
+fn shutdown_process(process: &UniqueHandle, pid: u32) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+
+    request_close(pid).or_else(|err| {
+        if unsafe { WaitForSingleObject(process.raw(), 0) } == WAIT_OBJECT_0 {
+            Ok(())
+        } else {
+            Err(err)
+        }
+    })?;
+
+    let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+    let is_terminal = std::io::stderr().is_terminal();
+    let mut last_remaining = None;
+    let mut is_exited = false;
+
+    while Instant::now() < deadline {
+        match unsafe { WaitForSingleObject(process.raw(), 100) } {
+            WAIT_OBJECT_0 => {
+                is_exited = true;
+                break;
+            }
+            WAIT_TIMEOUT => {}
+            _ => {
+                if is_terminal && last_remaining.is_some() {
+                    let _ = write!(std::io::stderr(), "\r{:60}\r", "");
+                    let _ = std::io::stderr().flush();
+                }
+
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now()).as_secs() + 1;
+        if is_terminal && last_remaining != Some(remaining) {
+            last_remaining = Some(remaining);
+            let _ = write!(
+                std::io::stderr(),
+                "\rWaiting for AviUtl ExEdit2 to exit... {remaining}s"
+            );
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+    if is_terminal && last_remaining.is_some() {
+        let _ = write!(std::io::stderr(), "\r{:60}\r", "");
+        let _ = std::io::stderr().flush();
+    }
+
+    if !is_exited {
+        tracing::warn!("graceful shutdown timed out for AviUtl ExEdit2; terminating process (PID: {pid})");
+        let handle = UniqueHandle(unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) });
+
+        if !handle.is_valid() {
+            let err = std::io::Error::last_os_error();
+            if unsafe { WaitForSingleObject(process.raw(), 0) } == WAIT_OBJECT_0 {
+                return Ok(());
+            }
+
+            return Err(err.into());
+        }
+
+        if unsafe { TerminateProcess(handle.raw(), 0) } == 0 {
+            let err = std::io::Error::last_os_error();
+            if unsafe { WaitForSingleObject(handle.raw(), 0) } != WAIT_OBJECT_0 {
+                return Err(err.into());
+            }
+        }
+
+        match unsafe { WaitForSingleObject(handle.raw(), 3000) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_TIMEOUT => anyhow::bail!("AviUtl2 did not exit after termination (PID: {pid})"),
+            _ => return Err(std::io::Error::last_os_error().into()),
+        }
+    }
+
+    Ok(())
+}
+
+fn request_close(pid: u32) -> anyhow::Result<()> {
+    let pid = LPARAM::try_from(pid)?;
+    if unsafe { EnumWindows(Some(close_window), pid) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    Ok(())
+}
+
+unsafe extern "system" fn close_window(hwnd: HWND, lParam: LPARAM) -> BOOL {
+    let mut pid = 0;
+    if unsafe { GetWindowThreadProcessId(hwnd, &raw mut pid) } != 0
+        && LPARAM::try_from(pid).ok() == Some(lParam)
+        && unsafe { IsWindowVisible(hwnd) } != 0
+        && unsafe { GetWindow(hwnd, GW_OWNER).is_null() }
+    {
+        return unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+    }
+    1
+}
+
+fn has_reload_key(line: &mut u8) -> bool {
+    let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+
+    if input.is_null() || input == INVALID_HANDLE_VALUE {
+        return false;
+    }
+
+    has_console_reload(input, line).unwrap_or_else(|| has_pipe_reload(input, line))
+}
+
+fn has_console_reload(input: HANDLE, line: &mut u8) -> Option<bool> {
+    let mut records = [unsafe { std::mem::zeroed::<INPUT_RECORD>() }; INPUT_RECORDS];
+    let mut count = 0;
+
+    if unsafe {
+        PeekConsoleInputW(
+            input,
+            records.as_mut_ptr(),
+            u32::try_from(records.len()).unwrap_or(u32::MAX),
+            &raw mut count,
+        )
+    } == 0
+    {
+        return None;
+    }
+
+    loop {
+        if count == 0 {
+            return Some(false);
+        }
+
+        let mut read = 0;
+
+        if unsafe {
+            ReadConsoleInputW(
+                input,
+                records.as_mut_ptr(),
+                u32::try_from(records.len()).unwrap_or(u32::MAX),
+                &raw mut read,
+            )
+        } == 0
+        {
+            return Some(false);
+        }
+
+        let read = usize::try_from(read).unwrap_or_default().min(records.len());
+
+        for record in &records[..read] {
+            if record.EventType != KEY_EVENT {
+                continue;
+            }
+
+            let key = unsafe { record.Event.KeyEvent };
+
+            if key.bKeyDown == 0 {
+                continue;
+            }
+
+            if key.wVirtualKeyCode == VK_R && key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED) != 0 {
+                return Some(true);
+            }
+
+            match key.wVirtualKeyCode {
+                VK_R if *line == 0 => *line = 1,
+                VK_RETURN => {
+                    if *line == 1 {
+                        *line = 0;
+                        return Some(true);
+                    }
+
+                    *line = 0;
+                }
+                VK_SHIFT | VK_CONTROL | VK_MENU => {}
+                _ => *line = 2,
+            }
+        }
+
+        if read < records.len() {
+            return Some(false);
+        }
+
+        count = 0;
+
+        if unsafe {
+            PeekConsoleInputW(
+                input,
+                records.as_mut_ptr(),
+                u32::try_from(records.len()).unwrap_or(u32::MAX),
+                &raw mut count,
+            )
+        } == 0
+        {
+            return Some(false);
+        }
+    }
+}
+
+fn has_pipe_reload(input: HANDLE, line: &mut u8) -> bool {
+    let mut bytes = [0_u8; INPUT_BYTES];
+    let mut count = 0;
+
+    if unsafe {
+        PeekNamedPipe(
+            input,
+            bytes.as_mut_ptr().cast(),
+            u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+            &raw mut count,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+        || count == 0
+    {
+        return false;
+    }
+
+    let mut read = 0;
+
+    if unsafe {
+        ReadFile(
+            input,
+            bytes.as_mut_ptr().cast(),
+            count,
+            &raw mut read,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return false;
+    }
+
+    let read = usize::try_from(read).unwrap_or_default().min(bytes.len());
+    for byte in &bytes[..read] {
+        match byte {
+            0x12 => return true,
+            b'\r' | b'\n' => {
+                if *line == 1 {
+                    *line = 0;
+                    return true;
+                }
+                *line = 0;
+            }
+            b'r' if *line == 0 => *line = 1,
+            _ => *line = 2,
+        }
+    }
+
+    false
+}
+
+fn process_event(event: &DEBUG_EVENT, process_handle: HANDLE) -> anyhow::Result<Option<u32>> {
+    if event.dwDebugEventCode == OUTPUT_DEBUG_STRING_EVENT {
+        log_output(event, process_handle);
+    }
+
+    close_event_file(event);
+
+    let exit_code = if event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
+        Some(unsafe { event.u.ExitProcess.dwExitCode })
+    } else {
+        None
+    };
+
+    let status = if event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT
+        && unsafe { event.u.Exception.ExceptionRecord.ExceptionCode } != STATUS_BREAKPOINT
+    {
+        DBG_EXCEPTION_NOT_HANDLED
+    } else {
+        DBG_CONTINUE
+    };
+
+    if unsafe { ContinueDebugEvent(event.dwProcessId, event.dwThreadId, status) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    Ok(exit_code)
+}
+
+fn close_event_file(event: &DEBUG_EVENT) {
+    let file = unsafe {
+        match event.dwDebugEventCode {
+            CREATE_PROCESS_DEBUG_EVENT => event.u.CreateProcessInfo.hFile,
+            LOAD_DLL_DEBUG_EVENT => event.u.LoadDll.hFile,
+            _ => std::ptr::null_mut(),
+        }
+    };
+
+    if !file.is_null() && file != INVALID_HANDLE_VALUE {
+        unsafe {
+            CloseHandle(file);
+        }
+    }
+}
+
+fn log_output(event: &DEBUG_EVENT, process_handle: HANDLE) {
+    let output = unsafe { event.u.DebugString };
+
+    if output.lpDebugStringData.is_null() || output.nDebugStringLength == 0 {
+        return;
+    }
+
+    let mut bytes = vec![0; usize::from(output.nDebugStringLength)];
+    let mut read = 0;
+
+    if unsafe {
+        ReadProcessMemory(
+            process_handle,
+            output.lpDebugStringData.cast(),
+            bytes.as_mut_ptr().cast(),
+            bytes.len(),
+            &raw mut read,
+        )
+    } == 0
+    {
+        return;
+    }
+
+    bytes.truncate(read);
+
+    let text = if output.fUnicode != 0 {
+        if !bytes.as_chunks::<2>().1.is_empty() {
+            tracing::warn!("invalid Unicode debug output: odd byte count");
+        }
+
+        String::from_utf16_lossy(
+            &bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|chunk| u16::from_le_bytes(*chunk))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        let Ok(text) = decode_ansi(&bytes) else {
+            tracing::warn!("failed to decode non-Unicode debug output");
+            return;
+        };
+
+        text
+    };
+
+    for line in text.trim_end_matches('\0').lines() {
+        if writeln!(std::io::stderr().lock(), "{}", colorize_debug_line(line)).is_err() {
+            break;
+        }
+    }
+}
+
+fn colorize_debug_line(line: &str) -> String {
+    use std::io::IsTerminal;
+    use std::sync::LazyLock;
+
+    static USE_COLOR: LazyLock<bool> =
+        LazyLock::new(|| std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none());
+
+    if !*USE_COLOR {
+        return line.to_string();
+    }
+
+    if line.contains("[ERROR]") {
+        format!("\x1b[31m{line}\x1b[0m")
+    } else if line.contains("[WARN]") {
+        format!("\x1b[38;5;208m{line}\x1b[0m")
+    } else if line.contains("[VERBOSE]") {
+        format!("\x1b[2m{line}\x1b[0m")
+    } else if line.contains("[SCRIPT]") || line.contains("[PLUGIN]") {
+        format!("\x1b[32m{line}\x1b[0m")
+    } else {
+        line.to_string()
+    }
+}
+
+fn decode_ansi(bytes: &[u8]) -> anyhow::Result<String> {
+    let len = i32::try_from(bytes.len())?;
+    let size = unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr().cast(), len, std::ptr::null_mut(), 0) };
+    if size == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let mut wide = vec![0; usize::try_from(size)?];
+    let size = unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr().cast(), len, wide.as_mut_ptr(), size) };
+    if size == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    wide.truncate(usize::try_from(size)?);
+    Ok(String::from_utf16_lossy(&wide))
+}
+
+fn query_process_path(process: HANDLE) -> Option<std::path::PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut capacity = 260_u32;
+    let mut path_buf = vec![0_u16; capacity as usize];
+
+    loop {
+        let mut size = capacity;
+        if unsafe { QueryFullProcessImageNameW(process, 0, path_buf.as_mut_ptr(), &raw mut size) } != 0 {
+            return Some(std::path::PathBuf::from(OsString::from_wide(
+                &path_buf[..size as usize],
+            )));
+        }
+
+        if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || capacity >= 32768 {
+            tracing::debug!("cannot inspect process path: {}", std::io::Error::last_os_error());
+            return None;
+        }
+
+        capacity = capacity.saturating_mul(2).min(32768);
+        path_buf.resize(capacity as usize, 0);
+    }
+}
 
 unsafe extern "system" {
     fn CreateProcessW(

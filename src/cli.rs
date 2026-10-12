@@ -9,11 +9,11 @@ use clap::{Parser, Subcommand};
 #[command(name = "astra", version)]
 pub struct Cli {
     /// Enable verbose debug logging.
-    #[arg(long, global = true)]
-    pub verbose: bool,
+    #[arg(short = 'v', long = "verbose", global = true)]
+    pub is_verbose: bool,
 
     /// Override the project version defined in astra.toml.
-    #[arg(short = 'v', long = "project-version", global = true, value_name = "VERSION")]
+    #[arg(long = "project-version", global = true, value_name = "VERSION")]
     pub(crate) project_version: Option<String>,
 
     /// Override or define a configuration variable in KEY VALUE pairs.

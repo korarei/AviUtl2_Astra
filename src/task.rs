@@ -4,163 +4,6 @@ use indexmap::IndexMap;
 use std::io::Write;
 use std::process::Command;
 
-pub(crate) fn run(target: &TaskCall, config: &Config, is_root: bool) -> anyhow::Result<()> {
-    let mut active_tasks = Vec::new();
-    dispatch(target, config, is_root, &mut active_tasks)
-}
-
-fn dispatch(call: &TaskCall, config: &Config, is_root: bool, active_tasks: &mut Vec<String>) -> anyhow::Result<()> {
-    let task = config.task(call)?;
-    let id = task.id().to_owned();
-
-    if is_root && task.hide() {
-        bail!("cannot run hidden task '{id}'");
-    }
-
-    if let Some(st) = active_tasks.iter().position(|name| name == &id) {
-        let mut cycle = active_tasks[st..].to_vec();
-        cycle.push(id);
-        bail!("circular task dependency: {}", cycle.join(" -> "));
-    }
-
-    tracing::info!("Running task '{id}'");
-    active_tasks.push(id);
-
-    let result = (|| {
-        for dep in task.depends() {
-            tracing::debug!("calling dependency '{}'", dep.id());
-
-            dispatch(dep, config, false, active_tasks)?;
-        }
-
-        let mut err = None;
-
-        if !task.run().is_empty() {
-            for cmd in task.run() {
-                let result = if let Some(shell) = task.shell() {
-                    exec_script(cmd, shell, task.env())
-                } else {
-                    exec_default(cmd, task.env())
-                };
-
-                if let Err(e) = result {
-                    err = Some(e);
-                    break;
-                }
-            }
-        }
-
-        for dep in task.finally() {
-            tracing::debug!("calling finally task '{}'", dep.id());
-
-            if let Err(e) = dispatch(dep, config, false, active_tasks) {
-                err = Some(match err {
-                    Some(prev) => prev.context(format!("finally task '{}' failed: {e}", dep.id())),
-                    None => e,
-                });
-            }
-        }
-
-        err.map_or(Ok(()), Err)
-    })();
-
-    let _ = active_tasks.pop();
-
-    result
-}
-
-fn exec_default(cmd: &str, env: &IndexMap<String, String>) -> anyhow::Result<()> {
-    tracing::info!("$ {cmd}");
-
-    let mut process = if cfg!(windows) {
-        let mut process = Command::new("cmd");
-        process.args(["/d", "/s", "/c"]).arg(cmd);
-        process
-    } else {
-        let mut process = Command::new("sh");
-        process.args(["-e", "-c"]).arg(cmd);
-        process
-    };
-
-    process.envs(env);
-
-    let status = process
-        .status()
-        .with_context(|| format!("failed to execute command '{cmd}'"))?;
-
-    if !status.success() {
-        bail!("command '{cmd}' failed with status: {status}");
-    }
-
-    tracing::debug!("command '{cmd}' finished with status: {status}");
-
-    Ok(())
-}
-
-fn exec_script(cmd: &str, shell: &str, env: &IndexMap<String, String>) -> anyhow::Result<()> {
-    let shell_exe = env
-        .iter()
-        .find(|(k, _)| {
-            if cfg!(windows) {
-                k.eq_ignore_ascii_case("path")
-            } else {
-                *k == "PATH"
-            }
-        })
-        .and_then(|(_, path)| which::which_in(shell, Some(path), ".").ok())
-        .or_else(|| which::which(shell).ok())
-        .with_context(|| format!("failed to find shell '{shell}'"))?;
-
-    let name = shell_exe
-        .file_stem()
-        .ok_or_else(|| anyhow::anyhow!("failed to determine shell name from '{}'", shell_exe.display()))?
-        .to_string_lossy()
-        .to_lowercase();
-    let runner = Runner::from_name(&name).ok_or_else(|| anyhow::anyhow!("shell '{shell}' is not supported"))?;
-
-    let script = runner.render(cmd);
-
-    let mut file = tempfile::Builder::new()
-        .prefix("astra_task_")
-        .suffix(runner.suffix())
-        .tempfile()
-        .with_context(|| {
-            format!(
-                "failed to create temporary script in '{}'",
-                std::env::temp_dir().display()
-            )
-        })?;
-
-    tracing::debug!("generated temporary script '{}'", file.path().display());
-
-    runner
-        .write(&mut file, &script)
-        .with_context(|| format!("failed to write '{}'", file.path().display()))?;
-
-    let path = file.into_temp_path();
-
-    tracing::info!("$ {shell} {} {}", runner.args().join(" "), path.display());
-    tracing::debug!("script content:\n{script}");
-
-    let mut process = Command::new(&shell_exe);
-    process.args(runner.args());
-    process.arg(&path);
-
-    process.envs(env);
-
-    let status = process
-        .status()
-        .with_context(|| format!("failed to execute script with '{shell}'"))?;
-
-    if !status.success() {
-        bail!("command '{cmd}' failed with status: {status}");
-    }
-
-    tracing::debug!("script '{shell}' finished with status: {status}");
-
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
 enum Runner {
     #[cfg(windows)]
@@ -244,10 +87,12 @@ impl Runner {
             #[cfg(windows)]
             Self::Cmd => {
                 let mut buf = String::from("@echo off\r\n");
+
                 for line in lines {
                     buf.push_str(line);
                     buf.push_str("\r\n");
                 }
+
                 buf
             }
             #[cfg(windows)]
@@ -284,10 +129,12 @@ impl Runner {
             }
             Self::Bash | Self::Zsh | Self::Sh | Self::Fish | Self::Csh | Self::Nu => {
                 let mut buf = String::new();
+
                 for line in lines {
                     buf.push_str(line);
                     buf.push('\n');
                 }
+
                 buf
             }
         }
@@ -312,6 +159,169 @@ impl Runner {
 
         writer.flush()
     }
+}
+
+pub(crate) fn run(target: &TaskCall, config: &Config, is_root: bool) -> anyhow::Result<()> {
+    let mut active_tasks = Vec::new();
+    dispatch(target, config, is_root, &mut active_tasks)
+}
+
+fn dispatch(call: &TaskCall, config: &Config, is_root: bool, active_tasks: &mut Vec<String>) -> anyhow::Result<()> {
+    let task = config.task(call)?;
+    let id = task.id().to_owned();
+
+    if is_root && task.is_hidden() {
+        bail!("cannot run hidden task '{id}'");
+    }
+
+    if let Some(st) = active_tasks.iter().position(|name| name == &id) {
+        let mut cycle = active_tasks[st..].to_vec();
+        cycle.push(id);
+        bail!("circular task dependency: {}", cycle.join(" -> "));
+    }
+
+    tracing::info!("Running task '{id}'");
+    active_tasks.push(id);
+
+    let result = (|| {
+        for dep in task.depends() {
+            tracing::debug!("calling dependency '{}'", dep.id());
+
+            dispatch(dep, config, false, active_tasks)?;
+        }
+
+        let mut err = None;
+
+        if !task.run().is_empty() {
+            for cmd in task.run() {
+                let result = if let Some(shell) = task.shell() {
+                    exec_script(cmd, shell, task.env())
+                } else {
+                    exec_default(cmd, task.env())
+                };
+
+                if let Err(e) = result {
+                    err = Some(e);
+                    break;
+                }
+            }
+        }
+
+        for dep in task.finally() {
+            tracing::debug!("calling finally task '{}'", dep.id());
+
+            if let Err(e) = dispatch(dep, config, false, active_tasks) {
+                if err.is_some() {
+                    tracing::error!("finally task '{}' failed: {e:#}", dep.id());
+                } else {
+                    err = Some(e.context(format!("finally task '{}' failed", dep.id())));
+                }
+            }
+        }
+
+        err.map_or(Ok(()), Err)
+    })();
+
+    let _ = active_tasks.pop();
+
+    result
+}
+
+fn exec_default(cmd: &str, env: &IndexMap<String, String>) -> anyhow::Result<()> {
+    tracing::info!("$ {cmd}");
+
+    let mut process = if cfg!(windows) {
+        let mut process = Command::new("cmd");
+        process.args(["/d", "/s", "/c"]).arg(cmd);
+        process
+    } else {
+        let mut process = Command::new("sh");
+        process.args(["-e", "-c"]).arg(cmd);
+        process
+    };
+
+    process.envs(env);
+
+    let status = process
+        .status()
+        .with_context(|| format!("failed to execute command '{cmd}'"))?;
+
+    if !status.success() {
+        bail!("command '{cmd}' failed with status: {status}");
+    }
+
+    tracing::debug!("command '{cmd}' finished with status: {status}");
+
+    Ok(())
+}
+
+fn exec_script(cmd: &str, shell: &str, env: &IndexMap<String, String>) -> anyhow::Result<()> {
+    let shell_exe = env
+        .iter()
+        .find(|(k, _)| {
+            if cfg!(windows) {
+                k.eq_ignore_ascii_case("path")
+            } else {
+                *k == "PATH"
+            }
+        })
+        .and_then(|(_, path)| which::which_in(shell, Some(path), ".").ok())
+        .or_else(|| which::which(shell).ok())
+        .with_context(|| format!("failed to find shell '{shell}'"))?;
+
+    let name = shell_exe
+        .file_stem()
+        .ok_or_else(|| anyhow::anyhow!("failed to determine shell name from '{}'", shell_exe.display()))?
+        .to_string_lossy()
+        .to_lowercase();
+    let runner = Runner::from_name(&name).ok_or_else(|| anyhow::anyhow!("shell '{shell}' is not supported"))?;
+
+    let script = runner.render(cmd);
+
+    let mut file = tempfile::Builder::new()
+        .prefix("astra_task_")
+        .suffix(runner.suffix())
+        .tempfile()
+        .with_context(|| {
+            format!(
+                "failed to create temporary script in '{}'",
+                std::env::temp_dir().display()
+            )
+        })?;
+
+    tracing::debug!("generated temporary script '{}'", file.path().display());
+
+    runner
+        .write(&mut file, &script)
+        .with_context(|| format!("failed to write '{}'", file.path().display()))?;
+
+    let path = file.into_temp_path();
+
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        tracing::info!("$ {shell} {} {}", runner.args().join(" "), path.display());
+    } else {
+        tracing::info!("$ {shell} {} <script-path>", runner.args().join(" "));
+    }
+
+    tracing::debug!("script content:\n{script}");
+
+    let mut process = Command::new(&shell_exe);
+    process.args(runner.args());
+    process.arg(&path);
+
+    process.envs(env);
+
+    let status = process
+        .status()
+        .with_context(|| format!("failed to execute script with '{shell}'"))?;
+
+    if !status.success() {
+        bail!("command '{cmd}' failed with status: {status}");
+    }
+
+    tracing::debug!("script '{shell}' finished with status: {status}");
+
+    Ok(())
 }
 
 #[cfg(windows)]

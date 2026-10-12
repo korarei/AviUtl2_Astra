@@ -7,30 +7,6 @@ use tracing_subscriber::registry::LookupSpan;
 #[derive(Debug, Clone, Default)]
 pub struct Formatter;
 
-#[derive(Default)]
-struct MessageVisitor {
-    message: String,
-    fields: Vec<(String, String)>,
-}
-
-impl tracing::field::Visit for MessageVisitor {
-    fn record_debug(&mut self, field: &tracing::field::Field, val: &dyn fmt::Debug) {
-        if field.name() == "message" {
-            let _ = write!(self.message, "{val:?}");
-        } else {
-            self.fields.push((field.name().to_string(), format!("{val:?}")));
-        }
-    }
-
-    fn record_str(&mut self, field: &tracing::field::Field, val: &str) {
-        if field.name() == "message" {
-            self.message.push_str(val);
-        } else {
-            self.fields.push((field.name().to_string(), val.to_string()));
-        }
-    }
-}
-
 impl<C, N> FormatEvent<C, N> for Formatter
 where
     C: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -48,13 +24,14 @@ where
             Level::INFO => parse_info_message(&visitor.message),
         };
 
-        if writer.has_ansi_escapes() {
+        if writer.has_ansi_escapes() && !status.is_empty() {
             write!(writer, "\x1b[{color}m{status:>12}\x1b[0m ")?;
         } else {
             write!(writer, "{status:>12} ")?;
         }
 
         let mut lines = text.lines();
+
         if let Some(first) = lines.next() {
             write!(writer, "{first}")?;
 
@@ -78,6 +55,30 @@ where
         }
 
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct MessageVisitor {
+    message: String,
+    fields: Vec<(String, String)>,
+}
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, val: &dyn fmt::Debug) {
+        if field.name() == "message" {
+            let _ = write!(self.message, "{val:?}");
+        } else {
+            self.fields.push((field.name().to_string(), format!("{val:?}")));
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, val: &str) {
+        if field.name() == "message" {
+            self.message.push_str(val);
+        } else {
+            self.fields.push((field.name().to_string(), val.to_string()));
+        }
     }
 }
 
@@ -123,7 +124,7 @@ fn parse_info_message(msg: &str) -> (&str, &str, &str) {
         return (status, color, rest);
     }
 
-    ("Info", "1;32", msg)
+    ("", "", msg)
 }
 
 #[cfg(test)]
@@ -136,7 +137,7 @@ mod tests {
             ("$ cargo build", ("Running", "1;32", "$ cargo build")),
             ("Building 'main'", ("Building", "1;36", "'main'")),
             ("Downloading package", ("Downloading", "1;32", "package")),
-            ("message", ("Info", "1;32", "message")),
+            ("message", ("", "", "message")),
         ] {
             assert_eq!(parse_info_message(message), expected);
         }

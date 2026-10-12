@@ -187,15 +187,15 @@ impl Config {
         &self.project
     }
 
-    pub fn build(&self, id: &str, build_type: BuildType) -> anyhow::Result<Build> {
+    pub fn build(&self, call: &BuildCall, build_type: BuildType) -> anyhow::Result<Build> {
         let mut build = self
             .builds
-            .get(id)
+            .get(call.id())
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("build ID '{id}' not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("build ID '{}' not found", call.id()))?;
 
         let dir = Path::new(self.astra.build_dir())
-            .join(id)
+            .join(call.id())
             .to_string_lossy()
             .into_owned();
 
@@ -215,7 +215,12 @@ impl Config {
             ("BUILD_DIRECTORY".to_owned(), dir),
         ]);
 
-        build.expanded(&self.scope.set(Arc::new(vars.clone())))?;
+        let scope = self
+            .scope
+            .set(Arc::new(call.vars().clone()))
+            .set(Arc::new(vars.clone()));
+
+        build.expanded(&scope)?;
 
         if let Err(err) = build.validate() {
             bail!("configuration validation failed:\n{err}");
@@ -229,7 +234,9 @@ impl Config {
     }
 
     pub fn builds(&self, build_type: BuildType) -> impl ExactSizeIterator<Item = anyhow::Result<Build>> {
-        self.builds.keys().map(move |id| self.build(id, build_type))
+        self.builds
+            .keys()
+            .map(move |id| self.build(&BuildCall::new(id), build_type))
     }
 
     pub fn build_dirs(&self) -> impl ExactSizeIterator<Item = PathBuf> + '_ {
@@ -383,13 +390,6 @@ struct Defaults {
     run: Run,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct Run {
-    #[validate(length(min = 1))]
-    shell: Option<String>,
-}
-
 impl Defaults {
     pub(crate) fn expanded(&mut self, scope: &Scope) -> anyhow::Result<()> {
         if let Some(shell) = &mut self.run.shell {
@@ -398,6 +398,13 @@ impl Defaults {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Run {
+    #[validate(length(min = 1))]
+    shell: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Validate, JsonSchema)]
@@ -469,21 +476,28 @@ impl Astra {
                 .unwrap_or(Path::new(".")),
         )?;
 
-        let check_dir = |dir: &str, kind: &str| -> anyhow::Result<()> {
+        let astra = crate::fs::to_key(&root.join(".astra"))?;
+
+        let check_dir = |dir: &str, kind: &str| -> anyhow::Result<PathBuf> {
             let target = crate::fs::to_key(&root.join(dir))?;
+
             if root.starts_with(&target) {
                 bail!("{kind} directory must not resolve to the project root or one of its parents: '{dir}'");
             }
 
-            if target.starts_with(crate::fs::to_key(&root.join(".astra"))?) {
+            if target.starts_with(&astra) {
                 bail!("{kind} directory must not be '.astra' or one of its children: '{dir}'");
             }
 
-            Ok(())
+            Ok(target)
         };
 
-        check_dir(self.build_dir(), "build")?;
-        check_dir(self.dist_dir(), "dist")?;
+        let build = check_dir(self.build_dir(), "build")?;
+        let dist = check_dir(self.dist_dir(), "dist")?;
+
+        if build.starts_with(&dist) || dist.starts_with(&build) {
+            bail!("build and dist directories must not resolve to the same path or contain each other");
+        }
 
         Ok(())
     }
@@ -638,7 +652,7 @@ impl Task {
     }
 
     #[must_use]
-    pub fn hide(&self) -> bool {
+    pub fn is_hidden(&self) -> bool {
         self.hide
     }
 
@@ -838,6 +852,7 @@ impl Build {
 
         if !self.artifacts.is_empty() {
             let mut vars = IndexMap::new();
+
             for key in ["BUILD_DIR", "BUILD_DIRECTORY"] {
                 if let Some(val) = scope.get(key) {
                     let val = if cfg!(windows) {
@@ -855,6 +870,7 @@ impl Build {
             }
 
             let scope = scope.set(Arc::new(vars));
+
             for pattern in &mut self.artifacts {
                 *pattern = vars::expand(pattern, &scope)?;
             }
@@ -1205,15 +1221,27 @@ impl BuildTarget {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BuildCall {
     build: String,
+    #[serde(default, alias = "variables")]
+    #[serde_as(as = "MapPreventDuplicates<_, _>")]
+    vars: IndexMap<String, String>,
 }
 
 impl BuildCall {
+    pub fn new(build: impl Into<String>) -> Self {
+        Self {
+            build: build.into(),
+            vars: IndexMap::new(),
+        }
+    }
+
     pub(crate) fn expanded(&mut self, scope: &Scope) -> anyhow::Result<()> {
         self.build = vars::expand(&self.build, scope)?;
+        expand_map(&mut self.vars, scope)?;
         Ok(())
     }
 
@@ -1221,17 +1249,29 @@ impl BuildCall {
     pub fn id(&self) -> &str {
         &self.build
     }
+
+    #[must_use]
+    pub fn vars(&self) -> &IndexMap<String, String> {
+        &self.vars
+    }
 }
 
 impl Validate for BuildCall {
     fn validate(&self) -> Result<(), ValidationErrors> {
+        let mut errors = ValidationErrors::new();
+
         if self.id().is_empty() {
-            let mut errors = ValidationErrors::new();
             errors.add("build", ValidationError::new("length"));
-            return Err(errors);
         }
 
-        Ok(())
+        if let Some(key) = self.vars.keys().find(|key| RESERVED_VARIABLES.contains(&key.as_str())) {
+            errors.add(
+                "vars",
+                ValidationError::new("reserved").with_message(format!("variable '{key}' is reserved").into()),
+            );
+        }
+
+        if errors.is_empty() { Ok(()) } else { Err(errors) }
     }
 }
 
@@ -1324,9 +1364,7 @@ impl ReleaseDependency {
             Self::Simple(s) => {
                 let val = vars::expand(s, scope)?;
                 *self = if let Some(build) = val.strip_prefix("build:") {
-                    Self::Build(BuildCall {
-                        build: build.to_string(),
-                    })
+                    Self::Build(BuildCall::new(build))
                 } else if let Some(task) = val.strip_prefix("task:") {
                     Self::Task(TaskCall::Simple(task.to_string()))
                 } else {
@@ -1677,7 +1715,7 @@ impl PackageSource {
                     Self::Url(PackageSourceUrl {
                         url: url.to_string(),
                         extract: None,
-                        pick: None,
+                        picks: Vec::new(),
                     })
                 } else if s.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://"))
                     || s.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://"))
@@ -1685,7 +1723,7 @@ impl PackageSource {
                     Self::Url(PackageSourceUrl {
                         url: s,
                         extract: None,
-                        pick: None,
+                        picks: Vec::new(),
                     })
                 } else {
                     Self::Path(PackageSourcePath { path: s })
@@ -1700,7 +1738,7 @@ impl PackageSource {
             Self::Url(src) => {
                 src.url = vars::expand(&src.url, scope)?;
 
-                if let Some(pick) = &mut src.pick {
+                for pick in &mut src.picks {
                     *pick = vars::expand(pick, scope)?;
                 }
             }
@@ -1770,14 +1808,16 @@ impl PackageSourcePath {
     }
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PackageSourceUrl {
     url: String,
     #[serde(default)]
     extract: Option<bool>,
-    #[serde(alias = "picker")]
-    pick: Option<String>,
+    #[serde_as(as = "ManyOrOne<_>")]
+    #[serde(default, alias = "pick", alias = "picker", alias = "pickers")]
+    picks: Vec<String>,
 }
 
 impl PackageSourceUrl {
@@ -1787,13 +1827,13 @@ impl PackageSourceUrl {
     }
 
     #[must_use]
-    pub fn extract(&self) -> Option<bool> {
+    pub fn should_extract(&self) -> Option<bool> {
         self.extract
     }
 
     #[must_use]
-    pub fn pick(&self) -> Option<&str> {
-        self.pick.as_deref()
+    pub fn picks(&self) -> &[String] {
+        &self.picks
     }
 }
 
@@ -1820,17 +1860,18 @@ impl Validate for PackageSourceUrl {
             _ => {}
         }
 
-        if self.pick.is_some() && self.extract != Some(true) {
+        if !self.picks.is_empty() && self.extract != Some(true) {
             errors.add(
-                "pick",
-                ValidationError::new("requires_extract").with_message("pick requires extract = true".into()),
+                "picks",
+                ValidationError::new("requires_extract").with_message("picks requires extract = true".into()),
             );
         }
 
-        if let Some(pick) = &self.pick
-            && let Err(e) = validate_picker(pick)
-        {
-            errors.add("pick", e);
+        for pick in &self.picks {
+            if let Err(e) = validate_picker(pick) {
+                errors.add("picks", e);
+                break;
+            }
         }
 
         if errors.is_empty() { Ok(()) } else { Err(errors) }

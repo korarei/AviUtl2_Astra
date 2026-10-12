@@ -11,6 +11,7 @@ pub(crate) struct Args {
 
 pub(super) fn command(file: &Path, args: &Args) -> anyhow::Result<()> {
     let ver = args.version.trim();
+
     if ver.is_empty() {
         bail!("project version cannot be empty");
     }
@@ -31,6 +32,7 @@ pub(super) fn command(file: &Path, args: &Args) -> anyhow::Result<()> {
         .map(|value| value.decor().clone());
 
     let mut val = value(ver);
+
     if let Some(decor) = decor
         && let Some(val) = val.as_value_mut()
     {

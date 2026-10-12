@@ -6,13 +6,59 @@ use std::path::{Component, Path, PathBuf};
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod deploy;
+
 #[cfg_attr(not(windows), allow(dead_code))]
 mod runtime;
 
-pub(crate) const RUNTIME_DIR: &str = ".astra/runtime";
-
 #[cfg(windows)]
 mod process;
+
+pub(crate) const RUNTIME_DIR: &str = ".astra/runtime";
+
+#[derive(Debug, Clone, clap::Args)]
+pub(crate) struct Args {
+    /// Name of the task to execute.
+    ///
+    /// If specified, runs the designated task from astra.toml instead of launching `AviUtl ExEdit2`.
+    #[arg(value_name = "TASK")]
+    task: Option<String>,
+
+    /// Launch `AviUtl ExEdit2` with the specified version.
+    ///
+    /// Can be specified without a value to use the latest version.
+    #[arg(
+        long,
+        value_name = "VERSION",
+        num_args = 0..=1,
+        default_missing_value = "latest",
+        conflicts_with = "task"
+    )]
+    aviutl2: Option<String>,
+
+    /// Use release build artifacts when running `AviUtl ExEdit2`.
+    #[arg(id = "release", long = "release", conflicts_with = "debug", conflicts_with = "task")]
+    is_release: bool,
+
+    /// Use debug build artifacts when running `AviUtl ExEdit2` (default).
+    #[arg(id = "debug", long = "debug", conflicts_with = "release", conflicts_with = "task")]
+    is_debug: bool,
+
+    /// パッケージのURLキャッシュを再ダウンロードする。
+    #[arg(long = "refresh", conflicts_with = "task")]
+    is_refresh: bool,
+}
+
+impl Args {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    #[must_use]
+    fn build_type(&self) -> BuildType {
+        if self.is_release {
+            BuildType::Release
+        } else {
+            BuildType::Debug
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RuntimeManifest {
@@ -24,16 +70,6 @@ pub(crate) struct RuntimeManifest {
     build: Option<u128>,
     #[serde(default)]
     pub(crate) aviutl2: AviUtl2Manifest,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct AviUtl2Manifest {
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    package: Option<u128>,
-    #[serde(default)]
-    pub(crate) links: BTreeMap<String, String>,
 }
 
 impl RuntimeManifest {
@@ -59,19 +95,19 @@ impl RuntimeManifest {
             Err(err) => return Err(err.into()),
         };
 
-        let mut invalid = false;
+        let mut has_invalid_links = false;
 
         manifest.aviutl2.links.retain(|dst, _| {
-            if !validate_link(dst) {
+            if !is_valid_link(dst) {
                 tracing::warn!("invalid link path '{dst}' in runtime manifest; it will be redeployed");
-                invalid = true;
+                has_invalid_links = true;
                 return false;
             }
 
             true
         });
 
-        if invalid {
+        if has_invalid_links {
             manifest.config = None;
             manifest.build = None;
             manifest.aviutl2.package = None;
@@ -95,63 +131,14 @@ impl RuntimeManifest {
     }
 }
 
-fn validate_link(path: &str) -> bool {
-    let mut normal = false;
-    (cfg!(windows) || !path.contains('\\'))
-        && Path::new(path).components().all(|component| match component {
-            Component::Normal(_) => {
-                normal = true;
-                true
-            }
-            Component::CurDir => true,
-            _ => false,
-        })
-        && normal
-}
-
-#[derive(Debug, Clone, clap::Args)]
-pub(crate) struct Args {
-    /// Name of the task to execute.
-    ///
-    /// If specified, runs the designated task from astra.toml instead of launching `AviUtl ExEdit2`.
-    #[arg(value_name = "TASK")]
-    task: Option<String>,
-
-    /// Launch `AviUtl ExEdit2` with the specified version.
-    ///
-    /// Can be specified without a value to use the latest version.
-    #[arg(
-        long,
-        value_name = "VERSION",
-        num_args = 0..=1,
-        default_missing_value = "latest",
-        conflicts_with = "task"
-    )]
-    aviutl2: Option<String>,
-
-    /// Use release build artifacts when running `AviUtl ExEdit2`.
-    #[arg(long, conflicts_with = "debug", conflicts_with = "task")]
-    release: bool,
-
-    /// Use debug build artifacts when running `AviUtl ExEdit2` (default).
-    #[arg(long, conflicts_with = "release", conflicts_with = "task")]
-    debug: bool,
-
-    /// パッケージのURLキャッシュを再ダウンロードする。
-    #[arg(long = "refresh", conflicts_with = "task")]
-    is_refresh: bool,
-}
-
-impl Args {
-    #[cfg_attr(not(windows), allow(dead_code))]
-    #[must_use]
-    fn build_type(&self) -> BuildType {
-        if self.release {
-            BuildType::Release
-        } else {
-            BuildType::Debug
-        }
-    }
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AviUtl2Manifest {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    package: Option<u128>,
+    #[serde(default)]
+    pub(crate) links: BTreeMap<String, String>,
 }
 
 pub(super) fn run(config: &Config, args: &Args) -> anyhow::Result<()> {
@@ -175,7 +162,6 @@ use crate::config::{Package, Release, ReleaseDependency};
 #[cfg(windows)]
 #[allow(clippy::too_many_lines)]
 fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
-    use fd_lock::RwLock;
     use process::MonitorExit;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -239,33 +225,25 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
 
     let astra = config.astra();
     let build_dir = Path::new(astra.build_dir());
+    let dist_dir = Path::new(astra.dist_dir());
     let runtime_dir = Path::new(RUNTIME_DIR);
     let aviutl2_dir = runtime_dir.join("aviutl2");
     let aviutl2_exe = aviutl2_dir.join("aviutl2.exe");
     let data_dir = aviutl2_dir.join("data");
 
     crate::fs::create_managed_dir(build_dir)?;
-    crate::fs::create_managed_dir(Path::new(astra.dist_dir()))?;
+    crate::fs::create_managed_dir(dist_dir)?;
     crate::fs::create_managed_dir(Path::new(".astra"))?;
+
+    let mut build_lock = crate::fs::Lock::new(build_dir)?;
+    let _build_guard = build_lock.write()?;
+    let mut dist_lock = crate::fs::Lock::new(dist_dir)?;
+    let _dist_guard = dist_lock.write()?;
+    let mut astra_lock = crate::fs::Lock::new(Path::new(".astra"))?;
+    let _astra_guard = astra_lock.write()?;
+
     std::fs::create_dir_all(runtime_dir)
         .with_context(|| format!("failed to create directory '{}'", runtime_dir.display()))?;
-
-    let mut lock = RwLock::new(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(build_dir.join(".astra-lock"))
-            .with_context(|| format!("failed to open '{}'", build_dir.join(".astra-lock").display()))?,
-    );
-    let _guard = if let Ok(guard) = lock.try_write() {
-        guard
-    } else {
-        tracing::info!("Blocking waiting for file lock on build directory (press Ctrl+C to cancel)");
-        lock.write()
-            .with_context(|| format!("failed to lock '{}'", build_dir.join(".astra-lock").display()))?
-    };
 
     let release = select_release(config)?;
 
@@ -274,8 +252,10 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
     process::shutdown_aviutl2(&aviutl2_exe)?;
 
     let is_setup = aviutl2_exe.is_file() && manifest.aviutl2.version != 0;
+
     if let Some(ver) = args.aviutl2.as_deref() {
         let ver_num = crate::aviutl2_version::resolve(ver)?;
+
         if !is_setup || manifest.aviutl2.version != ver_num {
             tracing::info!("Installing AviUtl ExEdit2 ({ver})");
 
@@ -305,8 +285,10 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
 
         match process::run_process(&aviutl2_exe, &IS_RUNNING)? {
             MonitorExit::ProcessExited(code) => {
-                if code != 0 {
+                if let Some(code) = code.filter(|&code| code != 0) {
                     tracing::warn!("aviutl exedit2 exited with code: {code:#010x}");
+                } else if code.is_none() {
+                    tracing::warn!("AviUtl ExEdit2 exited; exit code is unknown");
                 }
 
                 tracing::info!("AviUtl ExEdit2 exited");
@@ -379,6 +361,7 @@ fn select_release(config: &Config) -> anyhow::Result<Release> {
         .release_id()
         .ok_or_else(|| anyhow::anyhow!("astra.run.release is not configured"))?;
     let release = config.release(id)?;
+
     if !release.package().is_some_and(Package::is_au2pkg) {
         bail!("release '{id}' does not use an au2pkg package: 'astra run' requires an au2pkg package");
     }
@@ -393,7 +376,7 @@ fn sync_package(
     release: &Release,
     dst_dir: &Path,
     manifest: &mut RuntimeManifest,
-    refresh: bool,
+    is_refresh: bool,
 ) -> anyhow::Result<()> {
     let package = release
         .package()
@@ -407,16 +390,22 @@ fn sync_package(
             ReleaseDependency::Simple(_) => unreachable!("release dependency must be expanded"),
             ReleaseDependency::Build(call) => {
                 let id = call.id();
+
                 if outputs.contains_key(id) {
                     continue;
                 }
 
-                let build = config.build(id, kind)?;
+                let build = config.build(call, kind)?;
+
                 if build.is_enabled(kind) {
                     tracing::info!("Building dependency '{}' for release '{}'", id, release.id());
                     outputs.insert(id.to_owned(), crate::build::run(&build, config, config.astra(), kind)?);
                 } else {
-                    tracing::warn!("build '{}' is disabled for {} build type", id, kind.as_lowercase());
+                    tracing::debug!(
+                        "skipping build '{}': disabled for {} build type",
+                        id,
+                        kind.as_lowercase()
+                    );
                 }
             }
             ReleaseDependency::Task(call) => {
@@ -439,23 +428,27 @@ fn sync_package(
     };
 
     let mut package_hash = None;
-    let mut dirty = false;
+    let mut is_dirty = false;
 
     let mut err = (|| -> anyhow::Result<()> {
-        let mut cache = crate::package::PackageCache::new(refresh)?;
-        package_hash = if refresh { None } else { cache.hash(package.contents())? };
+        let mut cache = crate::package::PackageCache::new(is_refresh)?;
+        package_hash = if is_refresh {
+            None
+        } else {
+            cache.hash(package.contents())?
+        };
 
-        dirty = refresh
+        is_dirty = is_refresh
             || manifest.config != Some(config_hash)
             || manifest.build != build_hash
             || package_hash.is_none()
             || manifest.aviutl2.package != package_hash;
 
-        if !dirty {
-            dirty = !check_links(&manifest.aviutl2.links, cache.root(), dst_dir)?;
+        if !is_dirty {
+            is_dirty = !is_linked(&manifest.aviutl2.links, cache.root(), dst_dir)?;
         }
 
-        if dirty {
+        if is_dirty {
             package_hash = deploy::deploy(dst_dir, package, &outputs, manifest, &mut cache)
                 .context("package deployment failed; rerun 'astra run' to deploy again")?;
         }
@@ -468,10 +461,11 @@ fn sync_package(
         tracing::debug!("calling finally task '{}'", call.id());
 
         if let Err(e) = crate::task::run(call, config, false) {
-            err = Some(match err {
-                Some(prev) => prev.context(format!("finally task '{}' failed: {e}", call.id())),
-                None => e,
-            });
+            if err.is_some() {
+                tracing::error!("finally task '{}' failed: {e:#}", call.id());
+            } else {
+                err = Some(e.context(format!("finally task '{}' failed", call.id())));
+            }
         }
     }
 
@@ -479,7 +473,7 @@ fn sync_package(
         return Err(e);
     }
 
-    if dirty {
+    if is_dirty {
         manifest.config = Some(config_hash);
         manifest.build = build_hash;
         manifest.aviutl2.package = package_hash;
@@ -494,7 +488,7 @@ fn sync_package(
 }
 
 #[cfg(windows)]
-fn check_links(links: &BTreeMap<String, String>, src_dir: &Path, dst_dir: &Path) -> anyhow::Result<bool> {
+fn is_linked(links: &BTreeMap<String, String>, src_dir: &Path, dst_dir: &Path) -> anyhow::Result<bool> {
     for (dst, src) in links {
         let dst = dst_dir.join(dst);
         if !dst.exists() || !deploy::is_same_link(&dst, &src_dir.join(src))? {
@@ -503,6 +497,20 @@ fn check_links(links: &BTreeMap<String, String>, src_dir: &Path, dst_dir: &Path)
     }
 
     Ok(true)
+}
+
+fn is_valid_link(path: &str) -> bool {
+    let mut has_normal_component = false;
+    (cfg!(windows) || !path.contains('\\'))
+        && Path::new(path).components().all(|component| match component {
+            Component::Normal(_) => {
+                has_normal_component = true;
+                true
+            }
+            Component::CurDir => true,
+            _ => false,
+        })
+        && has_normal_component
 }
 
 #[cfg(test)]

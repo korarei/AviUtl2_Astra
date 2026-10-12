@@ -18,12 +18,11 @@
 
 ## Naming
 
-- Prefer concise, preferably one-word names.
-- Omit redundant prefixes and suffixes when the context makes the meaning clear.
-- Use qualifiers when needed to distinguish meanings or avoid ambiguity.
-- Prefer verb-based function names. Use prefixes such as `to_` and `has_` when appropriate.
-- Omit redundant function-name modifiers when the module, type, or context already makes the purpose clear.
-- Add qualifiers when they clarify the operation, such as `resolve_latest`.
+- Prefer concise names, ideally one word.
+- Omit redundant prefixes, suffixes, and qualifiers when the context makes the meaning clear. Add them when needed to distinguish meanings or clarify an operation.
+- Prefer verb-based function names. Use prefixes such as `to_` when appropriate.
+- Boolean variables and functions must start with `is_`, `has_`, `can_`, or `should_`, whichever best expresses their meaning.
+- Use specific qualifiers when they clarify the operation, such as `resolve_latest`.
 
 ### Abbreviations
 

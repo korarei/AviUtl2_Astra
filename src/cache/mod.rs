@@ -1,6 +1,4 @@
 use crate::config::Config;
-use anyhow::Context;
-use fd_lock::RwLock;
 use std::path::Path;
 
 #[derive(Debug, clap::Args)]
@@ -27,29 +25,13 @@ pub(crate) enum Command {
     Refresh,
 }
 
-pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
-    let astra = config.astra();
-    let build_dir = Path::new(astra.build_dir());
+pub(super) fn command(_config: &Config, args: &Args) -> anyhow::Result<()> {
+    crate::fs::create_managed_dir(Path::new(".astra"))?;
+
+    let mut lock = crate::fs::Lock::new(Path::new(".astra"))?;
+    let _guard = lock.write()?;
+
     let mut cache = crate::package::PackageCache::new(false)?;
-
-    crate::fs::create_managed_dir(build_dir)?;
-
-    let mut lock = RwLock::new(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(build_dir.join(".astra-lock"))
-            .with_context(|| format!("failed to open '{}'", build_dir.join(".astra-lock").display()))?,
-    );
-    let _guard = if let Ok(guard) = lock.try_write() {
-        guard
-    } else {
-        tracing::info!("Blocking waiting for file lock on build directory (press Ctrl+C to cancel)");
-        lock.write()
-            .with_context(|| format!("failed to lock '{}'", build_dir.join(".astra-lock").display()))?
-    };
 
     match &args.command {
         Command::Clean => {
