@@ -939,10 +939,10 @@ impl Builder<'_> {
     }
 
     fn include(&mut self, file: &Path, pos: &Position) -> anyhow::Result<()> {
-        let file = std::fs::canonicalize(file)
+        let key = std::fs::canonicalize(file)
             .with_context(|| format!("{pos}: failed to canonicalize include file '{}'", file.display()))?;
 
-        if self.include_stack.contains(&file) {
+        if self.include_stack.contains(&key) {
             bail!("{pos}: circular include detected: '{}'", file.display());
         }
 
@@ -950,11 +950,11 @@ impl Builder<'_> {
             bail!("{pos}: include nesting exceeds 64 files");
         }
 
-        self.include_stack.push(file.clone());
+        self.include_stack.push(key);
 
-        let result = crate::fs::read_file(&file, self.target.encoding())
+        let result = crate::fs::read_file(file, self.target.encoding())
             .with_context(|| format!("{pos}: failed to read include file '{}'", file.display()))
-            .and_then(|src| self.process(&src, &file));
+            .and_then(|src| self.process(&src, file));
 
         let _ = self.include_stack.pop();
 

@@ -507,16 +507,24 @@ impl<'a> Parser<'a> {
             }
         });
 
+        let normalize = |mut message: String| {
+            if let Some(first) = message.get_mut(..1) {
+                first.make_ascii_lowercase();
+            }
+
+            message
+        };
+
         let val = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Program::compile(&checked)
                 .map_err(|err| Error {
                     offset: 0,
-                    message: err.to_string().into(),
+                    message: normalize(err.to_string()).into(),
                 })?
                 .execute(&context)
                 .map_err(|err| Error {
                     offset: 0,
-                    message: format!("evaluation error: {err}").into(),
+                    message: format!("evaluation error: {}", normalize(err.to_string())).into(),
                 })
         }))
         .map_err(|_| Error {
