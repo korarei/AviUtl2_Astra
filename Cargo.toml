@@ -45,7 +45,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 validator = { version = "0.21", features = ["derive"] }
 which = "8.0"
 xxhash-rust = { version = "0.8", features = ["const_xxh3", "xxh3"] }
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3

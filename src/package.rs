@@ -496,13 +496,20 @@ impl PackageCache {
 
                 for i in 0..archive.len() {
                     let file = archive
-                        .by_index(i)
+                        .by_index_data(i)
                         .with_context(|| format!("failed to read entry {i} in zip archive '{}'", src.path.display()))?;
+                    let name = file.name().with_context(|| {
+                        format!(
+                            "failed to decode name of entry {i} in zip archive '{}'",
+                            src.path.display()
+                        )
+                    })?;
+
                     let entry = file.enclosed_name().ok_or_else(|| {
                         anyhow::anyhow!(
                             "zip archive '{}' contains an unsafe path: '{}'",
                             src.path.display(),
-                            file.name()
+                            name
                         )
                     })?;
 
@@ -519,7 +526,7 @@ impl PackageCache {
                             bail!(
                                 "zip archive '{}' contains a conflicting entry: '{}'",
                                 src.path.display(),
-                                file.name()
+                                name
                             );
                         }
                     }

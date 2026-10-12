@@ -2299,7 +2299,6 @@ fn reports_include_cycle_positions() -> anyhow::Result<()> {
     ] {
         let file = dir.path().join(name);
         std::fs::write(&file, format!("\n{directive}\n"))?;
-        let file = std::fs::canonicalize(file)?;
         let root = dir
             .path()
             .join(format!("main.{ext}", ext = name.rsplit('.').next().unwrap()));

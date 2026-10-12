@@ -8,7 +8,7 @@ Used by:
 - [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
 - [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
-- [zeroize 1.9.0](https://github.com/RustCrypto/utils)
+- [zeroize 1.9.1](https://github.com/RustCrypto/utils)
 
 ### License text
 
@@ -680,7 +680,7 @@ Used by:
 
 Used by:
 
-- [zopfli 0.8.3](https://github.com/zopfli-rs/zopfli)
+- [zopfli 0.8.4](https://github.com/zopfli-rs/zopfli)
 
 ### License text
 
@@ -1110,6 +1110,12 @@ Used by:
 - [clap_builder 4.6.7](https://github.com/clap-rs/clap)
 - [clap_derive 4.6.7](https://github.com/clap-rs/clap)
 - [clap_lex 1.1.1](https://github.com/clap-rs/clap)
+- [serde_spanned 1.1.2](https://github.com/toml-rs/toml)
+- [toml 1.1.8+spec-1.1.0](https://github.com/toml-rs/toml)
+- [toml_datetime 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml)
+- [toml_edit 0.25.17+spec-1.1.0](https://github.com/toml-rs/toml)
+- [toml_parser 1.1.5+spec-1.1.0](https://github.com/toml-rs/toml)
+- [toml_writer 1.1.3+spec-1.1.0](https://github.com/toml-rs/toml)
 
 ### License text
 
@@ -1338,12 +1344,6 @@ Used by:
 - [once_cell_polyfill 1.70.2](https://github.com/polyfill-rs/once_cell_polyfill)
 - [openssl-macros 0.1.1](https://crates.io/crates/openssl-macros/0.1.1)
 - [openssl 0.10.81](https://github.com/rust-openssl/rust-openssl)
-- [serde_spanned 1.1.1](https://github.com/toml-rs/toml)
-- [toml 1.1.6+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_edit 0.25.15+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_parser 1.1.3+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_writer 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml)
 
 ### License text
 
@@ -3260,12 +3260,12 @@ Used by:
 - [base64 0.23.1](https://github.com/marshallpierce/rust-base64)
 - [bitflags 2.13.2](https://github.com/bitflags/bitflags)
 - [bumpalo 3.20.3](https://github.com/fitzgen/bumpalo)
-- [cc 1.6.0](https://github.com/rust-lang/cc-rs)
+- [cc 1.8.0](https://github.com/rust-lang/cc-rs)
 - [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if)
 - [core-foundation-sys 0.8.7](https://github.com/servo/core-foundation-rs)
 - [core-foundation 0.10.1](https://github.com/servo/core-foundation-rs)
 - [displaydoc 0.2.7](https://github.com/yaahc/displaydoc)
-- [either 1.18.0](https://github.com/rayon-rs/either)
+- [either 1.19.0](https://github.com/rayon-rs/either)
 - [equivalent 1.0.2](https://github.com/indexmap-rs/equivalent)
 - [errno 0.3.14](https://github.com/lambda-fairy/rust-errno)
 - [fastrand 2.5.0](https://github.com/smol-rs/fastrand)
@@ -3301,7 +3301,7 @@ Used by:
 - [security-framework 3.7.0](https://github.com/kornelski/rust-security-framework)
 - [serde_with 3.24.0](https://github.com/jonasbb/serde_with/)
 - [serde_with_macros 3.24.0](https://github.com/jonasbb/serde_with/)
-- [smallvec 1.16.2](https://github.com/servo/rust-smallvec)
+- [smallvec 1.16.3](https://github.com/servo/rust-smallvec)
 - [socket2 0.6.5](https://github.com/rust-lang/socket2)
 - [stable_deref_trait 1.2.1](https://github.com/storyyeller/stable_deref_trait)
 - [tempfile 3.27.0](https://github.com/Stebalien/tempfile)
@@ -3309,7 +3309,7 @@ Used by:
 - [unicode-width 0.2.2](https://github.com/unicode-rs/unicode-width)
 - [unicode-xid 0.2.6](https://github.com/unicode-rs/unicode-xid)
 - [url 2.5.8](https://github.com/servo/rust-url)
-- [uuid 1.27.0](https://github.com/uuid-rs/uuid)
+- [uuid 1.28.0](https://github.com/uuid-rs/uuid)
 - [wasi 0.11.1+wasi-snapshot-preview1](https://github.com/bytecodealliance/wasi)
 - [wasm-bindgen-futures 0.4.79](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures)
 - [wasm-bindgen-macro-support 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support)
@@ -4404,18 +4404,18 @@ Used by:
 - [serde_core 1.0.229](https://github.com/serde-rs/serde)
 - [serde_derive 1.0.229](https://github.com/serde-rs/serde)
 - [serde_derive_internals 0.30.0](https://github.com/serde-rs/serde)
-- [serde_json 1.0.151](https://github.com/serde-rs/json)
+- [serde_json 1.0.154](https://github.com/serde-rs/json)
 - [shlex 2.0.1](https://github.com/comex/rust-shlex)
 - [simdutf8 0.1.5](https://github.com/rusticstuff/simdutf8)
 - [syn 2.0.119](https://github.com/dtolnay/syn)
-- [syn 3.0.6](https://github.com/dtolnay/syn)
+- [syn 3.0.9](https://github.com/dtolnay/syn)
 - [sync_wrapper 1.0.2](https://github.com/Actyx/sync_wrapper)
 - [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror)
 - [thiserror-impl 2.0.21](https://github.com/dtolnay/thiserror)
 - [thiserror 1.0.69](https://github.com/dtolnay/thiserror)
 - [thiserror 2.0.21](https://github.com/dtolnay/thiserror)
 - [typed-path 0.12.3](https://github.com/chipsenkbeil/typed-path)
-- [unicode-ident 1.0.26](https://github.com/dtolnay/unicode-ident)
+- [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
 - [utf8parse 0.2.2](https://github.com/alacritty/vte)
 
 ### License text
@@ -4915,6 +4915,44 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
+- [cfg_aliases 0.2.2](https://github.com/katharostech/cfg_aliases)
+
+### License text
+
+```text
+# 3rd Party Notices
+
+The `cfg_aliases!` macro uses a lot of the code from [`tectonic_cfg_support::target_cfg!`] macro which is under the following license:
+
+[`tectonic_cfg_support::target_cfg!`]: https://github.com/tectonic-typesetting/tectonic/blob/f2439b936470ad27bdf92882064bc4702ee01899/cfg_support/src/lib.rs#L166
+
+    tectonic_cfg_support is licensed under the MIT License.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the “Software”), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+---
+
+```
+
+## MIT License
+
+Used by:
+
 - [dotenvy 0.15.7](https://github.com/allan2/dotenvy)
 
 ### License text
@@ -5050,7 +5088,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [mio 1.2.3](https://github.com/tokio-rs/mio)
+- [mio 1.2.4](https://github.com/tokio-rs/mio)
 
 ### License text
 
@@ -5113,7 +5151,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [hyper 1.11.1](https://github.com/hyperium/hyper)
+- [hyper 1.12.0](https://github.com/hyperium/hyper)
 
 ### License text
 
@@ -5265,7 +5303,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [want 0.3.1](https://github.com/seanmonstar/want)
+- [want 0.3.2](https://github.com/seanmonstar/want)
 
 ### License text
 
@@ -5806,6 +5844,27 @@ SOFTWARE.
 
 Used by:
 
+- [cfg_aliases 0.2.2](https://github.com/katharostech/cfg_aliases)
+
+### License text
+
+```text
+MIT License
+
+Copyright (c) 2020 Katharos Technology
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+
 - [cel-interpreter 0.10.0](https://github.com/cel-rust/cel-rust)
 - [cel-parser 0.10.1](https://github.com/cel-rust/cel-rust)
 
@@ -5837,7 +5896,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [tokio 1.53.1](https://github.com/tokio-rs/tokio)
+- [tokio 1.53.2](https://github.com/tokio-rs/tokio)
 
 ### License text
 
@@ -5969,7 +6028,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
-- [zip 8.6.0](https://github.com/zip-rs/zip2)
+- [zip 9.0.2](https://github.com/zip-rs/zip2)
 
 ### License text
 
@@ -6013,6 +6072,39 @@ Used by:
 The MIT License (MIT)
 
 Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+```
+
+## MIT License
+
+Used by:
+
+- [nix 0.31.3](https://github.com/nix-rust/nix)
+
+### License text
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2015 Carl Lerche + nix-rust Authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -6208,7 +6300,7 @@ SOFTWARE.
 
 Used by:
 
-- [unicode-ident 1.0.26](https://github.com/dtolnay/unicode-ident)
+- [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
 
 ### License text
 
