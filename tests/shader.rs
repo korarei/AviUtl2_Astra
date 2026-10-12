@@ -1,188 +1,141 @@
-use astra::build::hlsl::{self, Lexer, State, TokenKind};
 use astra::config::BuildTarget;
 use indexmap::IndexMap;
 use std::path::Path;
 
 #[test]
-fn distinguishes_hlsl_directives_from_comments_and_literals() {
-    let src = "//#define VALUE 1\n/* #if FLAG */\n\"#pragma pack_matrix(row_major)\"\n\
-               float x; #endif\n #pragma pack_matrix(column_major)\n";
-    let tokens = Lexer::new(src).collect::<Vec<_>>();
-    assert_eq!(
-        tokens
-            .iter()
-            .filter(|token| token.kind == TokenKind::Directive)
-            .map(|token| token.text)
-            .collect::<Vec<_>>(),
-        ["#pragma pack_matrix(column_major)"]
-    );
-    assert!(tokens.iter().any(|token| {
-        matches!(token.kind, TokenKind::Comment { is_block: false }) && token.text == "//#define VALUE 1"
-    }));
-    assert!(
-        tokens
-            .iter()
-            .any(|token| { token.kind == TokenKind::String && token.text == "\"#pragma pack_matrix(row_major)\"" })
-    );
-    assert!(tokens.iter().any(|token| token.kind == TokenKind::Other('#')));
+fn reject_comments() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    let err = astra::build::shader::build(
+        "float value;\n  /* unfinished",
+        Path::new("test.hlsl"),
+        &target,
+        &[],
+        &IndexMap::new(),
+    )
+    .unwrap_err();
+    assert_eq!(err.to_string(), "test.hlsl:2:3: unfinished HLSL comment");
+    Ok(())
 }
 
 #[test]
-fn preserves_comments_and_directive_continuations_across_chunks() {
-    let mut state = State::default();
-    let mut tokens = Vec::new();
-    for src in [
-        "#define MACRO \\",
-        "cbuffer Hidden { int x; }; \\",
-        "// continued",
-        "/*",
-        "#pragma pack_matrix(row_major)",
-        "*/ cbuffer Visible { float4 x; };",
+fn omit_statements() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    for statement in [
+        "float removed;",
+        "float removed() { return 0; }",
+        "if (flag) removed(); else removed();",
+        "for (int i = 0; i < 2; ++i) { removed(); }",
+        "do removed(); while (flag);",
     ] {
-        let mut lexer = Lexer::new(src);
-        lexer.state = state;
-        tokens.extend(lexer.by_ref());
-        state = lexer.state;
+        let src = format!("float before;\n//#omit\n// annotation\n{statement} float retained;\n");
+        let output = astra::build::shader::build(&src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
+        assert!(output.text.contains("float before;"), "{}", output.text);
+        assert!(output.text.contains("float retained;"), "{}", output.text);
+        assert!(!output.text.contains(statement), "{}", output.text);
+        assert!(
+            !output.text.contains("annotation") && !output.text.contains("#omit"),
+            "{}",
+            output.text
+        );
     }
+
+    Ok(())
+}
+
+#[test]
+fn resolve_once() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("input.hlsl");
+    std::fs::write(
+        dir.path().join("values.hlsl"),
+        "//#pragma once\n//#define VALUE 2\nfloat value;\n",
+    )?;
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
+    let src = "//#include \"values.hlsl\"\n//#include \"values.hlsl\"\nfloat tail = ${VALUE};";
     assert_eq!(
-        tokens.iter().filter(|token| token.kind == TokenKind::Directive).count(),
-        1
+        astra::build::shader::build(src, &file, &target, &[], &IndexMap::new())?.text,
+        "float value;\nfloat tail = 2;\n"
     );
-    assert_eq!(
-        tokens
-            .iter()
-            .filter(|token| token.kind == TokenKind::Continuation)
-            .count(),
-        2
-    );
-    assert_eq!(
-        tokens
-            .iter()
-            .filter(|token| token.kind == TokenKind::Ident && token.text == "cbuffer")
-            .count(),
-        1
-    );
+    Ok(())
+}
+
+#[test]
+fn locate_include_errors() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("input.hlsl");
+    std::fs::write(dir.path().join("values.hlsl"), "float a;\nfloat b = ${MISSING};")?;
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
+    let err =
+        astra::build::shader::build("//#include \"values.hlsl\"\n", &file, &target, &[], &IndexMap::new()).unwrap_err();
     assert!(
-        tokens
-            .iter()
-            .any(|token| token.kind == TokenKind::Ident && token.text == "Visible")
+        err.to_string()
+            .contains("values.hlsl:2:11: variable 'MISSING' not found"),
+        "{err}"
     );
-    assert!(!state.is_comment);
-    assert!(!state.is_directive);
+    assert!(astra::build::shader::build("//#include \"missing.hlsl\"", &file, &target, &[], &IndexMap::new()).is_err());
+    Ok(())
 }
 
 #[test]
-fn ends_directive_continuation_on_an_empty_chunk() {
-    let mut state = State::default();
-    let mut tokens = Vec::new();
-    for src in ["#define MACRO \\", "", "cbuffer Visible { float4 x; };"] {
-        let mut lexer = Lexer::new(src);
-        lexer.state = state;
-        tokens.extend(lexer.by_ref());
-        state = lexer.state;
-    }
-    assert!(!tokens.iter().any(|token| token.kind == TokenKind::Continuation));
+fn reject_include_cycles() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("input.hlsl");
+    std::fs::write(&file, "//#include \"values.hlsl\"\n")?;
+    std::fs::write(dir.path().join("values.hlsl"), "//#include \"input.hlsl\"\n")?;
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
+    let err =
+        astra::build::shader::build("//#include \"values.hlsl\"\n", &file, &target, &[], &IndexMap::new()).unwrap_err();
+    assert!(err.to_string().contains("values.hlsl:1:3: circular include"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn preserve_native_directives() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "input.hlsl" }))?;
+    let src = "#define VALUE 2\n\
+        #if VALUE\n\
+        #include \"external.hlsl\"\n\
+        #pragma pack_matrix(row_major)\n\
+        float4 value;\n\
+        #endif\n";
+    assert_eq!(
+        astra::build::shader::build(src, Path::new("input.hlsl"), &target, &[], &IndexMap::new())?.text,
+        src
+    );
+    Ok(())
+}
+
+#[test]
+fn preserve_comments() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    let src = "#define VALUE /*\n\
+        //#include <missing.hlsl>\n\
+        */ 2\n\
+        /* comment\n\
+        //#include <missing.hlsl>\n\
+        */\n\
+        // continued \\\n\
+        //#include <missing.hlsl>\n\
+        float value;";
+    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
+    assert_eq!(output.text, format!("{src}\n"));
+    Ok(())
+}
+
+#[test]
+fn reject_strings() -> anyhow::Result<()> {
+    let src = "\"unfinished\n#pragma pack_matrix(row_major)\n";
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    let err = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new()).unwrap_err();
     assert!(
-        tokens
-            .iter()
-            .any(|token| token.kind == TokenKind::Ident && token.text == "cbuffer")
+        err.to_string().contains("test.hlsl:1:1: unfinished HLSL string"),
+        "{err}"
     );
+    Ok(())
 }
 
 #[test]
-fn preserves_source_spans_for_unicode_and_escaped_strings() {
-    let src = "cbuffer 色 { float4 値; }; \"日本語\\\"/* #if */\" // コメント\n0xff 1.5e-2 .5f";
-    let tokens = Lexer::new(src).collect::<Vec<_>>();
-    for token in &tokens {
-        assert!(src.is_char_boundary(token.span.st));
-        assert!(src.is_char_boundary(token.span.ed));
-        assert_eq!(token.text, &src[token.span.st..token.span.ed]);
-    }
-    assert!(
-        tokens
-            .iter()
-            .any(|token| token.kind == TokenKind::Ident && token.text == "値")
-    );
-    assert_eq!(
-        tokens
-            .iter()
-            .filter(|token| token.kind == TokenKind::Number)
-            .map(|token| token.text)
-            .collect::<Vec<_>>(),
-        ["0xff", "1.5e-2", ".5f"]
-    );
-    assert!(!tokens.iter().any(|token| token.kind == TokenKind::Directive));
-}
-
-#[test]
-fn parses_types_and_declarations_with_source_spans() {
-    let src = "row_major matrix<float, 2, 3> m[2], n";
-    let tokens = Lexer::new(src)
-        .filter(|token| {
-            !matches!(
-                token.kind,
-                TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment { .. }
-            )
-        })
-        .collect::<Vec<_>>();
-    let declaration = hlsl::parse_declaration(&tokens).unwrap();
-    assert_eq!(
-        declaration.ty,
-        Some(hlsl::Type {
-            scalar: "float",
-            rows: 2,
-            cols: 3,
-            is_matrix: true
-        })
-    );
-    assert_eq!(declaration.is_row_major, Some(true));
-    assert!(!declaration.has_error);
-    assert_eq!(declaration.members.len(), 2);
-    assert_eq!(declaration.members[0].name, "m");
-    assert_eq!(declaration.members[0].dimensions, [Some(2)]);
-    assert_eq!(
-        &src[declaration.members[0].span.st..declaration.members[0].span.ed],
-        "m"
-    );
-    assert_eq!(declaration.members[1].name, "n");
-    assert!(declaration.members[1].dimensions.is_empty());
-}
-
-#[test]
-fn preserves_user_types_and_unknown_array_lengths() {
-    let tokens = Lexer::new("Custom value[COUNT]")
-        .filter(|token| token.kind != TokenKind::Whitespace)
-        .collect::<Vec<_>>();
-    let declaration = hlsl::parse_declaration(&tokens).unwrap();
-    assert_eq!(declaration.ty.unwrap().scalar, "Custom");
-    assert!(!declaration.has_error);
-    assert_eq!(declaration.members[0].name, "value");
-    assert_eq!(declaration.members[0].dimensions, [None]);
-}
-
-#[test]
-fn preserves_valid_members_before_an_incomplete_declaration() {
-    let tokens = Lexer::new("float good, broken[2")
-        .filter(|token| token.kind != TokenKind::Whitespace)
-        .collect::<Vec<_>>();
-    let declaration = hlsl::parse_declaration(&tokens).unwrap();
-    assert!(declaration.has_error);
-    assert_eq!(declaration.members.len(), 1);
-    assert_eq!(declaration.members[0].name, "good");
-}
-
-#[test]
-fn parses_native_directives_without_astra_directives() {
-    let src = "# pragma pack_matrix(row_major)";
-    let directive = hlsl::parse_directive(Lexer::new(src).next().unwrap()).unwrap();
-    assert_eq!(directive.name, "pragma");
-    assert_eq!(directive.rest, "pack_matrix(row_major)");
-    assert_eq!(&src[directive.span.st..directive.span.ed], src);
-    assert!(hlsl::parse_directive(Lexer::new("//#define VALUE 1").next().unwrap()).is_none());
-}
-
-#[test]
-fn expands_variables_and_preserves_block_comment_directives_in_shaders() -> anyhow::Result<()> {
+fn expand_variables() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
     let vars = IndexMap::from([("VALUE".to_owned(), "4".to_owned())]);
     let src = "/*\n\
@@ -207,7 +160,44 @@ fn expands_variables_and_preserves_block_comment_directives_in_shaders() -> anyh
 }
 
 #[test]
-fn skips_inactive_conditionals_in_shaders() -> anyhow::Result<()> {
+fn expand_definitions() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
+    let src = "/*#define VALUE\n\
+        1 +\n\
+        2\n\
+        */\n\
+        float value = ${VALUE};\n\
+        /*#undef VALUE*/\n\
+        //#ifdef VALUE\n\
+        float leaked;\n\
+        //#endif\n";
+    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
+    assert_eq!(output.text, "float value = 1 +\n2;\n");
+
+    let src = "/*#define VALUE\n${MISSING}\n*/\n";
+    let err = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new()).unwrap_err();
+    assert!(
+        err.to_string().contains("test.hlsl:2:1: variable 'MISSING' not found"),
+        "{err}"
+    );
+
+    let err = astra::build::shader::build(
+        "/*#define VALUE\n1",
+        Path::new("test.hlsl"),
+        &target,
+        &[],
+        &IndexMap::new(),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("test.hlsl:1:1: unfinished HLSL comment"),
+        "{err}"
+    );
+    Ok(())
+}
+
+#[test]
+fn skip_conditions() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
     let vars = IndexMap::from([("VALUE".to_owned(), "4".to_owned())]);
     let src = "//#if false\n/*\n//#endif\n*/\nint discarded;\n//#endif\nfloat value = ${VALUE};\n";
@@ -217,7 +207,7 @@ fn skips_inactive_conditionals_in_shaders() -> anyhow::Result<()> {
 }
 
 #[test]
-fn resolves_includes_in_shaders() -> anyhow::Result<()> {
+fn resolve_includes() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("tail.hlsl"), "float b;")?;
@@ -239,10 +229,10 @@ fn resolves_includes_in_shaders() -> anyhow::Result<()> {
 }
 
 #[test]
-fn rejects_non_hlsl_includes_in_shaders() -> anyhow::Result<()> {
+fn include_extensions() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
     let dir = tempfile::tempdir()?;
-    std::fs::write(dir.path().join("tail.lua"), "return 1")?;
+    std::fs::write(dir.path().join("tail.lua"), "//#define VALUE 3\nfloat b = ${VALUE};")?;
     std::fs::write(dir.path().join("tail.txt"), "float c;")?;
     let build = |src| {
         astra::build::shader::build(
@@ -253,9 +243,7 @@ fn rejects_non_hlsl_includes_in_shaders() -> anyhow::Result<()> {
             &IndexMap::new(),
         )
     };
-    let err = build("//#include <tail.lua>").unwrap_err();
-    assert!(err.to_string().contains("cannot include non-HLSL file"));
-    let err = build("//#include <tail.txt>").unwrap_err();
-    assert!(err.to_string().contains("cannot include non-HLSL file"));
+    let output = build("//#include <tail.lua>\n//#include <tail.txt>\n//#include <tail.lua>")?;
+    assert_eq!(output.text, "float b = 3;\nfloat c;\nfloat b = 3;\n");
     Ok(())
 }

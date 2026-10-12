@@ -93,6 +93,23 @@ pub(super) fn deploy(
     Ok(hash)
 }
 
+pub(super) fn is_same_link(path: &Path, target: &Path) -> anyhow::Result<bool> {
+    let Ok(link) = std::fs::read_link(path) else {
+        return Ok(false);
+    };
+
+    let path = if link.is_absolute() {
+        link
+    } else {
+        let Some(dir) = path.parent() else {
+            return Ok(false);
+        };
+        dir.join(link)
+    };
+
+    Ok(crate::fs::to_key(&path)? == crate::fs::to_key(target)?)
+}
+
 fn link(dst: &Path, src: &Path) -> anyhow::Result<()> {
     let src = std::path::absolute(src)?;
 
@@ -132,21 +149,4 @@ fn link(dst: &Path, src: &Path) -> anyhow::Result<()> {
     })?;
 
     Ok(())
-}
-
-pub(super) fn is_same_link(path: &Path, target: &Path) -> anyhow::Result<bool> {
-    let Ok(link) = std::fs::read_link(path) else {
-        return Ok(false);
-    };
-
-    let path = if link.is_absolute() {
-        link
-    } else {
-        let Some(dir) = path.parent() else {
-            return Ok(false);
-        };
-        dir.join(link)
-    };
-
-    Ok(crate::fs::to_key(&path)? == crate::fs::to_key(target)?)
 }

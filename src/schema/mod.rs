@@ -1,5 +1,6 @@
 use anyhow::{Context, bail};
 use schemars::generate::SchemaSettings;
+use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, clap::Args)]
@@ -23,7 +24,10 @@ pub(super) fn command(args: &Args) -> anyhow::Result<()> {
     );
 
     let Some(path) = &args.output else {
-        print!("{text}");
+        std::io::stdout()
+            .lock()
+            .write_all(text.as_bytes())
+            .context("failed to write schema to standard output")?;
         return Ok(());
     };
 

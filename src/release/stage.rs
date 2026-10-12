@@ -42,6 +42,7 @@ pub(super) fn stage<'a>(
 
 fn copy(dst: &Path, src: &Path) -> anyhow::Result<()> {
     let meta = std::fs::symlink_metadata(src)?;
+
     if meta.is_symlink() {
         bail!("release package cannot contain a symbolic link: '{}'", src.display());
     }
@@ -53,6 +54,7 @@ fn copy(dst: &Path, src: &Path) -> anyhow::Result<()> {
 
     if meta.is_dir() {
         std::fs::create_dir_all(dst).with_context(|| format!("failed to create directory '{}'", dst.display()))?;
+
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
             copy(&dst.join(entry.file_name()), &entry.path())?;

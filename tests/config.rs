@@ -7,20 +7,20 @@ use std::fmt::Write as _;
 use std::path::Path;
 use validator::Validate;
 
-fn load_config_with(source: &str, defines: IndexMap<String, String>, ver: Option<&str>) -> anyhow::Result<Config> {
+fn load_config_with(src: &str, defines: IndexMap<String, String>, ver: Option<&str>) -> anyhow::Result<Config> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("astra.toml");
-    std::fs::write(&file, source)?;
+    std::fs::write(&file, src)?;
     Config::load(file, defines, ver)
 }
 
-fn load_config(source: &str) -> anyhow::Result<Config> {
-    load_config_with(source, IndexMap::new(), None)
+fn load_config(src: &str) -> anyhow::Result<Config> {
+    load_config_with(src, IndexMap::new(), None)
 }
 
 #[test]
 fn loads_project_astra_defaults_and_aliases() -> anyhow::Result<()> {
-    let source = r#"
+    let src = r#"
 version = 2
 
 [variables]
@@ -59,7 +59,7 @@ artifacts = "${{ AVIUTL2_VERSION }}"
 "#;
 
     let config = load_config_with(
-        source,
+        src,
         IndexMap::from([("ROOT".to_owned(), "project".to_owned())]),
         Some(" 2.0.0 "),
     )?;
@@ -74,7 +74,7 @@ artifacts = "${{ AVIUTL2_VERSION }}"
     assert_eq!(config.astra().run().release_id(), Some("main"));
     assert_eq!(config.task(&TaskCall::Simple("main".to_owned()))?.shell(), Some("pwsh"));
 
-    let build = config.build("main", BuildType::Debug)?;
+    let build = config.build(&BuildCall::new("main"), BuildType::Debug)?;
     assert_eq!(build.name(), "project-name-2.0.0");
     assert_eq!(
         build.include_dirs(),
@@ -123,6 +123,7 @@ suffix = ".anm2"
         ))?;
         assert_eq!(config.astra().build_dir(), "custom-build", "{key}");
     }
+
     for key in [
         "dist_dir",
         "dist-dir",
@@ -138,6 +139,7 @@ suffix = ".anm2"
         ))?;
         assert_eq!(config.astra().dist_dir(), "custom-dist", "{key}");
     }
+
     for key in [
         "venv_dir",
         "venv-dir",
@@ -160,10 +162,13 @@ suffix = ".anm2"
     for (value, expected) in [("2010701", 2_010_701), ("2.1.7a", 2_010_701), ("v2.1.8", 2_010_800)] {
         assert_eq!(AviUtl2Version::String(value.to_owned()).resolve()?, expected);
     }
+
     assert_eq!(AviUtl2Version::Number(2_010_701).resolve()?, 2_010_701);
+
     for value in ["", "invalid"] {
         assert!(AviUtl2Version::String(value.to_owned()).resolve().is_err());
     }
+
     Ok(())
 }
 
@@ -181,11 +186,13 @@ fn resolves_build_modes_suffixes_targets_and_calls() -> anyhow::Result<()> {
         ("scn", ".scn", false),
         ("cam", ".cam", false),
     ];
-    let mut source = String::from("version = 2\n\n[project]\nname = \"demo\"\n");
+    let mut src = String::from("version = 2\n\n[project]\nname = \"demo\"\n");
+
     for &(id, suffix, _) in &suffixes {
-        let _ = writeln!(source, "\n[build.{id}]\nsuffix = \"{suffix}\"");
+        let _ = writeln!(src, "\n[build.{id}]\nsuffix = \"{suffix}\"");
     }
-    source.push_str(
+
+    src.push_str(
         r#"
 [build.no_suffix]
 outputs = ["artifact.bin"]
@@ -296,16 +303,16 @@ newline = "\r\n"
 "#,
     );
 
-    let config = load_config(&source)?;
+    let config = load_config(&src)?;
     assert_eq!(BuildType::Debug.as_lowercase(), "debug");
     assert_eq!(BuildType::Release.to_string(), "Release");
 
-    for &(id, suffix, utf8) in &suffixes {
-        let build = config.build(id, BuildType::Debug)?;
+    for &(id, suffix, is_utf8) in &suffixes {
+        let build = config.build(&BuildCall::new(id), BuildType::Debug)?;
         assert_eq!(build.suffix(), Some(suffix));
         assert_eq!(
             build.encoding(),
-            if utf8 {
+            if is_utf8 {
                 encoding_rs::UTF_8
             } else {
                 encoding_rs::SHIFT_JIS
@@ -314,7 +321,7 @@ newline = "\r\n"
         assert_eq!(build.newline(), "\r\n");
     }
 
-    for (id, debug, release) in [
+    for (id, is_debug_enabled, is_release_enabled) in [
         ("boolean_true", true, true),
         ("boolean_false", false, false),
         ("debug", true, false),
@@ -324,12 +331,12 @@ newline = "\r\n"
         ("detailed_default", true, true),
         ("variable_mode", true, false),
     ] {
-        let build = config.build(id, BuildType::Debug)?;
-        assert_eq!(build.is_enabled(BuildType::Debug), debug, "{id}");
-        assert_eq!(build.is_enabled(BuildType::Release), release, "{id}");
+        let build = config.build(&BuildCall::new(id), BuildType::Debug)?;
+        assert_eq!(build.is_enabled(BuildType::Debug), is_debug_enabled, "{id}");
+        assert_eq!(build.is_enabled(BuildType::Release), is_release_enabled, "{id}");
     }
 
-    let build = config.build("main", BuildType::Debug)?;
+    let build = config.build(&BuildCall::new("main"), BuildType::Debug)?;
     assert_eq!(build.id(), "main");
     assert_eq!(build.name(), "main");
     assert_eq!(build.suffix(), Some(".anm2"));
@@ -338,18 +345,22 @@ newline = "\r\n"
     assert!(build.is_enabled(BuildType::Release));
     assert_eq!(build.include_dirs()[0], "parent-build");
 
-    let no_suffix_build = config.build("no_suffix", BuildType::Debug)?;
+    let no_suffix_build = config.build(&BuildCall::new("no_suffix"), BuildType::Debug)?;
     assert_eq!(no_suffix_build.suffix(), None);
     let dir = Path::new("out").join("main").to_string_lossy().into_owned();
     assert_eq!(build.include_dirs()[1], dir);
     assert_eq!(build.artifacts(), &["out/main".to_owned()]);
 
     assert_eq!(
-        config.build("boolean_true", BuildType::Debug)?.artifacts(),
+        config
+            .build(&BuildCall::new("boolean_true"), BuildType::Debug)?
+            .artifacts(),
         &["artifact-one".to_owned()]
     );
     assert_eq!(
-        config.build("boolean_false", BuildType::Debug)?.artifacts(),
+        config
+            .build(&BuildCall::new("boolean_false"), BuildType::Debug)?
+            .artifacts(),
         &["artifact-two".to_owned()]
     );
 
@@ -369,7 +380,7 @@ newline = "\r\n"
     };
     assert_eq!(vars.get("BUILD_TYPE").map(String::as_str), Some("debug"));
 
-    let release = config.build("main", BuildType::Release)?;
+    let release = config.build(&BuildCall::new("main"), BuildType::Release)?;
     let TaskCall::Detailed { vars, .. } = &release.depends()[1] else {
         panic!("detailed release dependency expected");
     };
@@ -401,17 +412,38 @@ newline = "\r\n"
     );
     assert_eq!(targets[1].encoding(), encoding_rs::UTF_8);
 
-    assert_eq!(config.build("newline_crlf", BuildType::Debug)?.newline(), "\r\n");
-    assert_eq!(config.build("newline_lf", BuildType::Debug)?.newline(), "\n");
-    assert_eq!(config.build("legacy_crlf", BuildType::Debug)?.newline(), "\r\n");
-    assert_eq!(config.build("literal_lf", BuildType::Debug)?.newline(), "\n");
-    assert_eq!(config.build("literal_crlf", BuildType::Debug)?.newline(), "\r\n");
+    assert_eq!(
+        config
+            .build(&BuildCall::new("newline_crlf"), BuildType::Debug)?
+            .newline(),
+        "\r\n"
+    );
+    assert_eq!(
+        config.build(&BuildCall::new("newline_lf"), BuildType::Debug)?.newline(),
+        "\n"
+    );
+    assert_eq!(
+        config
+            .build(&BuildCall::new("legacy_crlf"), BuildType::Debug)?
+            .newline(),
+        "\r\n"
+    );
+    assert_eq!(
+        config.build(&BuildCall::new("literal_lf"), BuildType::Debug)?.newline(),
+        "\n"
+    );
+    assert_eq!(
+        config
+            .build(&BuildCall::new("literal_crlf"), BuildType::Debug)?
+            .newline(),
+        "\r\n"
+    );
 
-    let default = config.build("anm2", BuildType::Debug)?;
+    let default = config.build(&BuildCall::new("anm2"), BuildType::Debug)?;
     assert_eq!(default.name(), "demo");
     assert_eq!(default.targets().count(), 0);
 
-    let single = config.build("single", BuildType::Debug)?;
+    let single = config.build(&BuildCall::new("single"), BuildType::Debug)?;
     assert!(matches!(&single.depends()[0], TaskCall::Detailed { task, .. } if task == "prepare"));
     assert_eq!(single.depends()[0].id(), "prepare");
     assert_eq!(single.finally()[0].id(), "finish");
@@ -481,7 +513,7 @@ run = "echo build"
     };
     let task = config.task(&call)?;
     assert_eq!(task.id(), "hello");
-    assert!(task.hide());
+    assert!(task.is_hidden());
     assert_eq!(task.shell(), Some("default-shell"));
     assert_eq!(
         task.run(),
@@ -544,7 +576,7 @@ dependencies = [
     "task:setup",
     "build:${{ BUILD_ID }}",
     { task = "${{ WORKER }}", environment = { FOO = "${{ LOCAL }}" }, variables = { BAR = "${{ LOCAL }}" } },
-    { build = "${{ BUILD_ID }}" }
+    { build = "${{ BUILD_ID }}", variables = { BAZ = "${{ LOCAL }}" } }
 ]
 finally = ["task:finish"]
 
@@ -590,7 +622,12 @@ source = { url = "${{ URL }}", extract = true, picker = "${{ PICK }}" }
 
 [[release.publish.package.content]]
 directory = "./Default/${{ LOCAL }}"
-src = { filename = "${{ FILE_NAME }}", content = "line1\r\n${{ LOCAL }}\r\n", encoding = "${{ ENCODING }}", newline = "${{ NEWLINE }}" }
+src = {
+    filename = "${{ FILE_NAME }}",
+    content = "line1\r\n${{ LOCAL }}\r\n",
+    encoding = "${{ ENCODING }}",
+    newline = "${{ NEWLINE }}",
+}
 
 [[release.publish.package.content]]
 dir = "Plugin/${{ LOCAL }}/single"
@@ -639,12 +676,17 @@ changelog = "changes"
     assert_eq!(task, "worker");
     assert_eq!(env.get("FOO").map(String::as_str), Some("root"));
     assert_eq!(vars.get("BAR").map(String::as_str), Some("root"));
-    assert!(matches!(&release.depends()[4], ReleaseDependency::Build(build) if build.id() == "core"));
+    let ReleaseDependency::Build(build) = &release.depends()[4] else {
+        panic!("detailed release build expected");
+    };
+    assert_eq!(build.id(), "core");
+    assert_eq!(build.vars().get("BAZ").map(String::as_str), Some("root"));
     assert_eq!(release.finally()[0].id(), "finish");
 
     let package = release.package().unwrap();
     assert_eq!(package.filename(), "demo.AU2PKG.ZIP");
     let meta = serde_json::to_value(package)?;
+
     for (key, value) in [
         ("id", "root-id"),
         ("name", "root-name"),
@@ -657,6 +699,7 @@ changelog = "changes"
     ] {
         assert_eq!(meta[key], value, "{key}");
     }
+
     assert_eq!(meta["uninstall_subdirectory_files"], true);
 
     let contents = package.contents().collect::<anyhow::Result<Vec<_>>>()?;
@@ -676,13 +719,13 @@ changelog = "changes"
     let PackageSource::Url(url) = &contents[6].sources()[0] else {
         panic!("URL source expected");
     };
-    assert_eq!(url.extract(), Some(true));
-    assert_eq!(url.pick(), Some("*.txt"));
+    assert_eq!(url.should_extract(), Some(true));
+    assert_eq!(url.picks(), &["*.txt"]);
     let PackageSource::Url(url) = &contents[1].sources()[0] else {
         panic!("URL source expected");
     };
-    assert_eq!(url.extract(), None);
-    assert_eq!(url.pick(), None);
+    assert_eq!(url.should_extract(), None);
+    assert_eq!(url.picks(), &[] as &[String]);
     let PackageSource::File(file) = &contents[7].sources()[0] else {
         panic!("file source expected");
     };
@@ -774,7 +817,7 @@ content = [{ dir = '${{ ROOT }}/dest', source = [
         Path::new(root).join("dist").to_str().unwrap()
     );
 
-    let build = config.build("main", BuildType::Debug);
+    let build = config.build(&BuildCall::new("main"), BuildType::Debug);
     #[cfg(not(windows))]
     {
         assert!(build.unwrap_err().to_string().contains("backslashes"));
@@ -799,7 +842,7 @@ content = [{ dir = '${{ ROOT }}/dest', source = [
         );
     }
 
-    let build = config.build("paths", BuildType::Debug)?;
+    let build = config.build(&BuildCall::new("paths"), BuildType::Debug)?;
     assert_eq!(
         build.include_dirs(),
         &[Path::new(root).join("include").to_string_lossy().into_owned()]
@@ -823,13 +866,13 @@ content = [{ dir = '${{ ROOT }}/dest', source = [
         panic!("URL source expected");
     };
     assert_eq!(src.url(), "https://example.com/path/archive.zip");
-    assert_eq!(src.pick(), Some(r"assets/**/file\?.lua"));
+    assert_eq!(src.picks(), &[r"assets/**/file\?.lua"]);
     Ok(())
 }
 
 #[test]
 fn validates_artifacts_and_package_globs() -> anyhow::Result<()> {
-    for (pattern, valid) in [
+    for (pattern, is_valid) in [
         ("assets/**/*.lua", true),
         (r"assets/file\?.lua", true),
         ("../assets/*.lua", true),
@@ -843,21 +886,26 @@ fn validates_artifacts_and_package_globs() -> anyhow::Result<()> {
         let config = load_config(&format!(
             "version = 2\n[project]\nname = 'demo'\n[build.main]\nartifacts = ['{pattern}']\n"
         ))?;
-        assert_eq!(config.build("main", BuildType::Debug).is_ok(), valid, "{pattern}");
+        assert_eq!(
+            config.build(&BuildCall::new("main"), BuildType::Debug).is_ok(),
+            is_valid,
+            "{pattern}"
+        );
         assert_eq!(
             toml::from_str::<astra::config::PackageSourcePath>(&format!("path = '{pattern}'"))?
                 .validate()
                 .is_ok(),
-            valid,
+            is_valid,
             "{pattern}"
         );
     }
+
     Ok(())
 }
 
 #[test]
 fn validates_zip_pickers() -> anyhow::Result<()> {
-    for (pattern, valid) in [
+    for (pattern, is_valid) in [
         ("assets/**/*.lua", true),
         ("./assets/*.lua", true),
         ("assets/../scripts/*.lua", true),
@@ -876,10 +924,26 @@ fn validates_zip_pickers() -> anyhow::Result<()> {
             ))?
             .validate()
             .is_ok(),
-            valid,
+            is_valid,
             "{pattern}"
         );
     }
+
+    assert!(
+        toml::from_str::<astra::config::PackageSourceUrl>(
+            "url = 'https://example.com/archive.zip'\nextract = true\npick = ['assets/**/*.lua', 'scripts/*.lua']"
+        )?
+        .validate()
+        .is_ok()
+    );
+    assert!(
+        toml::from_str::<astra::config::PackageSourceUrl>(
+            "url = 'https://example.com/archive.zip'\nextract = true\npick = ['assets/**/*.lua', 'assets/[']"
+        )?
+        .validate()
+        .is_err()
+    );
+
     Ok(())
 }
 
@@ -902,6 +966,7 @@ fn rejects_unsafe_output_directories_without_cleaning_saved_paths() -> anyhow::R
                 "{field}: {path}"
             );
         }
+
         let config = load_config(&format!(
             "version = 2\n[project]\nname = 'demo'\n[astra]\n{field} = 'nested/../output'\n"
         ))?;
@@ -926,7 +991,26 @@ fn rejects_unsafe_output_directories_without_cleaning_saved_paths() -> anyhow::R
             "{field}"
         );
     }
+
     Ok(())
+}
+
+#[test]
+fn rejects_overlapping_build_and_dist_directories() {
+    for (build, dist) in [
+        ("dist", "dist"),
+        ("output", "output"),
+        ("out/build", "out"),
+        ("out", "out/dist"),
+        ("nested/build", "nested/build"),
+    ] {
+        let src =
+            format!("version = 2\n[project]\nname = 'demo'\n[astra]\nbuild-dir = '{build}'\ndist-dir = '{dist}'\n");
+        assert!(load_config(&src).is_err(), "build={build}, dist={dist}");
+    }
+
+    assert!(load_config("version = 2\n[project]\nname = 'demo'\n[astra]\nbuild-dir = 'dist'\n").is_err());
+    assert!(load_config("version = 2\n[project]\nname = 'demo'\n[astra]\ndist-dir = 'build'\n").is_err());
 }
 
 #[cfg(windows)]
@@ -948,12 +1032,13 @@ fn rejects_unicode_case_variants_of_project_ancestors() -> anyhow::Result<()> {
             "{field}"
         );
     }
+
     Ok(())
 }
 
 #[test]
 fn rejects_invalid_configuration_patterns() -> anyhow::Result<()> {
-    for source in [
+    for src in [
         "version = 1\n\n[project]\nname = \"demo\"\n",
         "[project]\nname = \"demo\"\n",
         "version = 2\n\n[project]\nname = \"\"\n",
@@ -969,12 +1054,12 @@ fn rejects_invalid_configuration_patterns() -> anyhow::Result<()> {
         "version = 2\n\n[project]\nname = \"demo\"\n\n[astra]\nrequires-astra = \">=999.0.0\"\n",
         "version = 2\n\n[project]\nname = \"demo\"\n\n[defaults.run]\nshell = \"\"\n",
     ] {
-        assert!(load_config(source).is_err(), "{source}");
+        assert!(load_config(src).is_err(), "{src}");
     }
 
     for field in ["build-dir", "dist-dir"] {
-        let source = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[astra]\n{field} = \"\"\n");
-        assert!(load_config(&source).is_err(), "{field}");
+        let src = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[astra]\n{field} = \"\"\n");
+        assert!(load_config(&src).is_err(), "{field}");
     }
 
     for id in [".astra", ".astra-cache", ".astratest", ".git", ".github", ".gitignore"] {
@@ -983,18 +1068,12 @@ fn rejects_invalid_configuration_patterns() -> anyhow::Result<()> {
             format!("[build.\"{id}\"]\nsuffix = \".anm2\""),
             format!("[release.\"{id}\"]"),
         ] {
-            let source = format!("version = 2\n\n[project]\nname = \"demo\"\n\n{section}\n");
-            assert!(
-                load_config(&source).unwrap_err().to_string().contains("reserved"),
-                "{id}"
-            );
+            let src = format!("version = 2\n\n[project]\nname = \"demo\"\n\n{section}\n");
+            assert!(load_config(&src).unwrap_err().to_string().contains("reserved"), "{id}");
         }
 
-        let source = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.main.package]\nid = \"{id}\"\n");
-        assert!(
-            load_config(&source).unwrap_err().to_string().contains("reserved"),
-            "{id}"
-        );
+        let src = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.main.package]\nid = \"{id}\"\n");
+        assert!(load_config(&src).unwrap_err().to_string().contains("reserved"), "{id}");
     }
 
     assert!(load_config("version = 2\n\n[project]\nname = \"demo\"\n").is_ok());
@@ -1079,6 +1158,7 @@ variables = { BUILD_DIR = "other" }
 variables = { BUILD_DIR = "other" }
 "#,
     )?;
+
     for id in [
         "bad_missing_suffix",
         "bad_suffix",
@@ -1090,21 +1170,24 @@ variables = { BUILD_DIR = "other" }
         "bad_artifact",
         "bad_vars",
     ] {
-        assert!(config.build(id, BuildType::Debug).is_err(), "{id}");
+        assert!(config.build(&BuildCall::new(id), BuildType::Debug).is_err(), "{id}");
     }
-    assert!(config.build("missing", BuildType::Debug).is_err());
+
+    assert!(config.build(&BuildCall::new("missing"), BuildType::Debug).is_err());
     assert!(config.release("missing").is_err());
     assert!(
         config
-            .build("bad_target", BuildType::Debug)?
+            .build(&BuildCall::new("bad_target"), BuildType::Debug)?
             .targets()
             .next()
             .unwrap()
             .is_err()
     );
+
     for id in ["empty_run", "empty_command", "empty_shell", "empty_dependency"] {
         assert!(config.task(&TaskCall::Simple(id.to_owned())).is_err(), "{id}");
     }
+
     assert!(config.task(&TaskCall::Simple("reserved_vars".to_owned())).is_err());
     assert!(config.release("reserved_vars").is_err());
 
@@ -1120,6 +1203,11 @@ variables = { BUILD_DIR = "other" }
         .is_err()
     );
     assert!(toml::from_str::<BuildCall>("build = \"\"")?.validate().is_err());
+    assert!(
+        toml::from_str::<BuildCall>("build = \"build\"\nvars = { BUILD_DIR = \"other\" }")?
+            .validate()
+            .is_err()
+    );
 
     for (field, value) in [
         ("changelog", "\"\""),
@@ -1131,14 +1219,14 @@ variables = { BUILD_DIR = "other" }
         } else {
             format!("changelog = \"changes\"\n{field} = {value}")
         };
-        let source = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.bad.notes]\n{notes}\n");
-        assert!(load_config(&source)?.release("bad").is_err(), "{field}");
+        let src = format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.bad.notes]\n{notes}\n");
+        assert!(load_config(&src)?.release("bad").is_err(), "{field}");
     }
 
     for filename in ["", ".zip", "demo.tar.gz", " demo.zip", "demo.zip ", "../demo.zip"] {
-        let source =
+        let src =
             format!("version = 2\n\n[project]\nname = \"demo\"\n\n[release.bad.package]\nfilename = \"{filename}\"\n");
-        assert!(load_config(&source)?.release("bad").is_err(), "{filename:?}");
+        assert!(load_config(&src)?.release("bad").is_err(), "{filename:?}");
     }
 
     let config = load_config(
@@ -1242,5 +1330,35 @@ source = { filename = "../bad.lua", content = "x", encoding = "unknown", newline
     assert!(results.iter().all(|result| result.is_err()));
     assert!(PackageSource::Simple("file.txt".to_owned()).validate().is_err());
     assert!(ReleaseDependency::Simple("clean".to_owned()).validate().is_err());
+    Ok(())
+}
+
+#[test]
+fn passes_vars_to_build_call() -> anyhow::Result<()> {
+    let src = r#"
+version = 2
+
+[project]
+name = "demo"
+
+[build.main]
+name = "${{ CUSTOM_NAME }}"
+suffix = ".anm2"
+targets = [
+    { path = "scripts/main.lua" }
+]
+"#;
+
+    let config = load_config(src)?;
+    let call = toml::from_str::<BuildCall>("build = \"main\"\nvariables = { CUSTOM_NAME = \"custom\" }")?;
+    let build = config.build(&call, BuildType::Debug)?;
+    assert_eq!(build.name(), "custom");
+    let target = build.targets().next().unwrap()?;
+    assert_eq!(target.vars().get("CUSTOM_NAME").map(String::as_str), Some("custom"));
+
+    let call_with_vars = toml::from_str::<BuildCall>("build = \"main\"\nvars = { CUSTOM_NAME = \"custom_vars\" }")?;
+    let build_with_vars = config.build(&call_with_vars, BuildType::Debug)?;
+    assert_eq!(build_with_vars.name(), "custom_vars");
+
     Ok(())
 }

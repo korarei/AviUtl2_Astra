@@ -13,35 +13,6 @@ use wax::walk::Entry;
 
 pub(crate) const CACHE_DIR: &str = ".astra/cache";
 
-#[derive(Serialize, Deserialize)]
-struct UrlFile {
-    #[serde(default)]
-    url: String,
-    path: PathBuf,
-    name: Option<String>,
-}
-
-impl UrlFile {
-    fn read(file: &Path) -> anyhow::Result<Option<Self>> {
-        match std::fs::read_to_string(file) {
-            Ok(text) => serde_json::from_str(&text)
-                .map(Some)
-                .with_context(|| format!("failed to parse '{}'", file.display())),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(err).with_context(|| format!("failed to read '{}'", file.display())),
-        }
-    }
-
-    fn write(&self, file: &Path) -> anyhow::Result<()> {
-        fs::write_file(file, &serde_json::to_vec(self)?)
-    }
-}
-
-pub(crate) struct PackageFile {
-    pub(crate) dst: PathBuf,
-    pub(crate) src: PathBuf,
-}
-
 pub(crate) struct PackageCache {
     is_refresh: bool,
     root: PathBuf,
@@ -100,6 +71,7 @@ impl PackageCache {
         contents: impl IntoIterator<Item = anyhow::Result<&'a PackageContent>>,
     ) -> anyhow::Result<Option<u128>> {
         let mut hash = xxhash_rust::xxh3::Xxh3::new();
+
         for content in contents {
             for src in content?.sources() {
                 match src {
@@ -111,9 +83,11 @@ impl PackageCache {
                         else {
                             return Ok(None);
                         };
+
                         if file.path.parent() != Some(self.blobs.as_path()) || !file.path.is_file() {
                             return Ok(None);
                         }
+
                         hash.update(&serde_json::to_vec(&file)?);
                     }
                     PackageSource::Path(src) => {
@@ -125,6 +99,7 @@ impl PackageCache {
                                 paths.push(std::path::absolute(entry.path())?);
                             }
                         }
+
                         paths.sort_unstable();
                         hash.update(&serde_json::to_vec(&paths)?);
                     }
@@ -132,6 +107,7 @@ impl PackageCache {
                 }
             }
         }
+
         Ok(Some(hash.digest128()))
     }
 
@@ -174,6 +150,7 @@ impl PackageCache {
                 let Some(file) = UrlFile::read(&path)? else {
                     continue;
                 };
+
                 if file.path.parent() != Some(self.blobs.as_path())
                     || !keep.contains(&file.path)
                     || !file.path.is_file()
@@ -184,6 +161,7 @@ impl PackageCache {
         }
 
         let mut removed = 0;
+
         for dir in [&self.blobs, &self.trees] {
             if !dir.is_dir() {
                 continue;
@@ -215,6 +193,7 @@ impl PackageCache {
         }
 
         let mut urls = BTreeSet::new();
+
         for entry in std::fs::read_dir(&dir).with_context(|| format!("failed to read directory '{}'", dir.display()))? {
             let path = entry?.path();
             if let Some(file) = UrlFile::read(&path)?
@@ -227,6 +206,7 @@ impl PackageCache {
         self.urls.clear();
 
         let mut count = 0;
+
         for url in urls {
             self.download(&url, true)?;
             count += 1;
@@ -315,42 +295,62 @@ impl PackageCache {
     }
 
     fn collect_url(&mut self, dst: &Path, src: &PackageSourceUrl) -> anyhow::Result<Vec<PackageFile>> {
-        let (prefix, glob) = src
-            .pick()
-            .map(wax::Glob::new)
-            .transpose()?
-            .map_or_else(|| (PathBuf::new(), Some(wax::Glob::tree())), wax::Glob::partition);
+        let picks = src
+            .picks()
+            .iter()
+            .map(|pick| wax::Glob::new(pick).map(|glob| (pick, glob.partition())))
+            .collect::<Result<Vec<_>, _>>()?;
 
         self.download(src.url(), self.is_refresh)?;
 
-        if src.extract().unwrap_or_default() {
+        if src.should_extract().unwrap_or_default() {
             let root = self.extract(src.url())?;
-            let path = root.join(&prefix);
-            let base = if glob.is_none() && !prefix.as_os_str().is_empty() {
-                path.parent().unwrap_or(&root)
-            } else {
-                &path
-            };
             let mut files = Vec::new();
 
-            for entry in glob.unwrap_or_else(wax::Glob::tree).walk(&path) {
-                let entry = entry?;
-                let file = entry.path();
-                if entry.file_type().is_dir() {
-                    continue;
+            if picks.is_empty() {
+                for entry in wax::Glob::tree().walk(&root) {
+                    let entry = entry?;
+                    let file = entry.path();
+
+                    if entry.file_type().is_dir() {
+                        continue;
+                    }
+
+                    if !entry.file_type().is_file() {
+                        bail!("extracted path is not a regular file: '{}'", file.display());
+                    }
+
+                    files.push(self.add(dst.join(file.strip_prefix(&root)?), file)?);
                 }
+            } else {
+                for (pick, (prefix, glob)) in picks {
+                    let path = root.join(&prefix);
+                    let base = if glob.is_none() && !prefix.as_os_str().is_empty() {
+                        path.parent().unwrap_or(&root)
+                    } else {
+                        &path
+                    };
 
-                if !entry.file_type().is_file() {
-                    bail!("extracted path is not a regular file: '{}'", file.display());
+                    let len = files.len();
+
+                    for entry in glob.unwrap_or_else(wax::Glob::tree).walk(&path) {
+                        let entry = entry?;
+                        let file = entry.path();
+                        if entry.file_type().is_dir() {
+                            continue;
+                        }
+
+                        if !entry.file_type().is_file() {
+                            bail!("extracted path is not a regular file: '{}'", file.display());
+                        }
+
+                        files.push(self.add(dst.join(file.strip_prefix(base)?), file)?);
+                    }
+
+                    if files.len() == len {
+                        bail!("zip archive '{}' contains no files matching '{}'", src.url(), pick);
+                    }
                 }
-
-                files.push(self.add(dst.join(file.strip_prefix(base)?), file)?);
-            }
-
-            if let Some(pick) = src.pick()
-                && files.is_empty()
-            {
-                bail!("zip archive '{}' contains no files matching '{}'", src.url(), pick);
             }
 
             Ok(files)
@@ -415,6 +415,7 @@ impl PackageCache {
             "{:032x}.json",
             xxhash_rust::const_xxh3::xxh3_128(url.as_bytes())
         ));
+
         if !is_refresh
             && let Some(file) = UrlFile::read(&manifest)?
             && file.path.parent() == Some(self.blobs.as_path())
@@ -492,15 +493,23 @@ impl PackageCache {
 
             {
                 let mut entries = HashMap::new();
+
                 for i in 0..archive.len() {
                     let file = archive
-                        .by_index(i)
+                        .by_index_data(i)
                         .with_context(|| format!("failed to read entry {i} in zip archive '{}'", src.path.display()))?;
+                    let name = file.name().with_context(|| {
+                        format!(
+                            "failed to decode name of entry {i} in zip archive '{}'",
+                            src.path.display()
+                        )
+                    })?;
+
                     let entry = file.enclosed_name().ok_or_else(|| {
                         anyhow::anyhow!(
                             "zip archive '{}' contains an unsafe path: '{}'",
                             src.path.display(),
-                            file.name()
+                            name
                         )
                     })?;
 
@@ -517,7 +526,7 @@ impl PackageCache {
                             bail!(
                                 "zip archive '{}' contains a conflicting entry: '{}'",
                                 src.path.display(),
-                                file.name()
+                                name
                             );
                         }
                     }
@@ -547,6 +556,35 @@ impl PackageCache {
     }
 }
 
+pub(crate) struct PackageFile {
+    pub(crate) dst: PathBuf,
+    pub(crate) src: PathBuf,
+}
+
+#[derive(Serialize, Deserialize)]
+struct UrlFile {
+    #[serde(default)]
+    url: String,
+    path: PathBuf,
+    name: Option<String>,
+}
+
+impl UrlFile {
+    fn read(file: &Path) -> anyhow::Result<Option<Self>> {
+        match std::fs::read_to_string(file) {
+            Ok(text) => serde_json::from_str(&text)
+                .map(Some)
+                .with_context(|| format!("failed to parse '{}'", file.display())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err).with_context(|| format!("failed to read '{}'", file.display())),
+        }
+    }
+
+    fn write(&self, file: &Path) -> anyhow::Result<()> {
+        fs::write_file(file, &serde_json::to_vec(self)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,18 +602,27 @@ mod tests {
         fs::write(dir.path().join("assets/sub/icon.png"), "icon")?;
 
         for (pick, expected) in [
-            (Some("aaa/*"), vec!["Plugin/foo.txt"]),
-            (Some("aaa/foo.txt"), vec!["Plugin/foo.txt"]),
-            (Some("assets"), vec!["Plugin/assets/sub/icon.png"]),
-            (Some("assets/"), vec!["Plugin/assets/sub/icon.png"]),
-            (Some("assets/**"), vec!["Plugin/sub/icon.png"]),
+            (Some(serde_json::json!("aaa/*")), vec!["Plugin/foo.txt"]),
+            (Some(serde_json::json!("aaa/foo.txt")), vec!["Plugin/foo.txt"]),
+            (Some(serde_json::json!("assets")), vec!["Plugin/assets/sub/icon.png"]),
+            (Some(serde_json::json!("assets/")), vec!["Plugin/assets/sub/icon.png"]),
+            (Some(serde_json::json!("assets/**")), vec!["Plugin/sub/icon.png"]),
+            (
+                Some(serde_json::json!(["aaa/*", "assets/**"])),
+                vec!["Plugin/foo.txt", "Plugin/sub/icon.png"],
+            ),
             (None, vec!["Plugin/aaa/foo.txt", "Plugin/assets/sub/icon.png"]),
         ] {
-            let src: PackageSourceUrl = serde_json::from_value(serde_json::json!({
+            let mut value = serde_json::json!({
                 "url": "http://127.0.0.1:0/archive.zip",
                 "extract": true,
-                "pick": pick,
-            }))?;
+            });
+
+            if let Some(pick) = pick {
+                value["pick"] = pick;
+            }
+
+            let src: PackageSourceUrl = serde_json::from_value(value)?;
             let (_dir, mut cache) = PackageCache::create_temp()?;
             let _ = cache.urls.insert(
                 src.url().to_owned(),
@@ -669,13 +716,13 @@ mod tests {
             stream.write_all(&bytes).unwrap();
         });
 
-        let source: PackageSource = serde_json::from_value(serde_json::json!({
+        let src: PackageSource = serde_json::from_value(serde_json::json!({
             "url": url.clone(),
             "extract": true
         }))?;
         let (_dir, mut cache) = PackageCache::create_temp()?;
-        let first = cache.resolve(Path::new("Plugin"), &source, &BTreeMap::new())?;
-        let second = cache.resolve(Path::new("Script"), &source, &BTreeMap::new())?;
+        let first = cache.resolve(Path::new("Plugin"), &src, &BTreeMap::new())?;
+        let second = cache.resolve(Path::new("Script"), &src, &BTreeMap::new())?;
         assert_eq!(first[0].src, second[0].src);
         assert_eq!(
             fs::read(&first[0].src).with_context(|| format!("failed to read '{}'", first[0].src.display()))?,
@@ -689,13 +736,13 @@ mod tests {
             paths: BTreeSet::new(),
             ..cache
         };
-        let third = cache.resolve(Path::new("Plugin"), &source, &BTreeMap::new())?;
+        let third = cache.resolve(Path::new("Plugin"), &src, &BTreeMap::new())?;
         assert_eq!(first[0].src, third[0].src);
         assert_eq!(fs::read_dir(cache.root().join("blobs"))?.count(), 1);
         assert_eq!(fs::read_dir(cache.root().join("trees"))?.count(), 1);
 
-        let source: PackageSource = serde_json::from_value(serde_json::json!({ "url": url }))?;
-        let raw = cache.resolve(Path::new("Raw"), &source, &BTreeMap::new())?;
+        let src: PackageSource = serde_json::from_value(serde_json::json!({ "url": url }))?;
+        let raw = cache.resolve(Path::new("Raw"), &src, &BTreeMap::new())?;
         assert_eq!(raw[0].dst, PathBuf::from("Raw/archive.zip"));
 
         server.join().unwrap();
@@ -721,19 +768,19 @@ mod tests {
             }
         });
 
-        let source: PackageSource = serde_json::from_value(serde_json::json!({ "url": url }))?;
+        let src: PackageSource = serde_json::from_value(serde_json::json!({ "url": url }))?;
         let (_dir, mut cache) = PackageCache::create_temp()?;
 
         assert_eq!(cache.refresh()?, 0);
 
-        let files = cache.resolve(Path::new("Raw"), &source, &BTreeMap::new())?;
+        let files = cache.resolve(Path::new("Raw"), &src, &BTreeMap::new())?;
         assert_eq!(fs::read(&files[0].src)?, b"initial");
 
         let refreshed = cache.refresh()?;
         assert_eq!(refreshed, 1);
 
         cache.paths.clear();
-        let files = cache.resolve(Path::new("Raw"), &source, &BTreeMap::new())?;
+        let files = cache.resolve(Path::new("Raw"), &src, &BTreeMap::new())?;
         assert_eq!(fs::read(&files[0].src)?, b"updated");
 
         server.join().unwrap();

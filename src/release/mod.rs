@@ -3,11 +3,10 @@ mod stage;
 use crate::build::BuildOutput;
 use crate::config::{Astra, BuildType, Config, Release, ReleaseDependency};
 use anyhow::{Context, bail};
-use fd_lock::RwLock;
 use regex::{Captures, Regex};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, clap::Args)]
@@ -31,25 +30,17 @@ pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
     let astra = config.astra();
 
     let build_dir = Path::new(astra.build_dir());
+    let dist_dir = Path::new(astra.dist_dir());
     crate::fs::create_managed_dir(build_dir)?;
-    crate::fs::create_managed_dir(Path::new(astra.dist_dir()))?;
+    crate::fs::create_managed_dir(dist_dir)?;
+    crate::fs::create_managed_dir(Path::new(".astra"))?;
 
-    let mut lock = RwLock::new(
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(build_dir.join(".astra-lock"))
-            .with_context(|| format!("failed to open '{}'", build_dir.join(".astra-lock").display()))?,
-    );
-    let _guard = if let Ok(guard) = lock.try_write() {
-        guard
-    } else {
-        tracing::info!("Blocking waiting for file lock on build directory (press Ctrl+C to cancel)");
-        lock.write()
-            .with_context(|| format!("failed to lock '{}'", build_dir.join(".astra-lock").display()))?
-    };
+    let mut build_lock = crate::fs::Lock::new(build_dir)?;
+    let _build_guard = build_lock.write()?;
+    let mut dist_lock = crate::fs::Lock::new(dist_dir)?;
+    let _dist_guard = dist_lock.write()?;
+    let mut astra_lock = crate::fs::Lock::new(Path::new(".astra"))?;
+    let _astra_guard = astra_lock.write()?;
 
     let mut outputs: BTreeMap<String, BuildOutput> = BTreeMap::new();
 
@@ -82,10 +73,12 @@ fn run(
     for dep in release.depends() {
         match dep {
             ReleaseDependency::Simple(_) => unreachable!("release dependency must be expanded"),
-            ReleaseDependency::Build(b) => {
-                let id = b.id();
+            ReleaseDependency::Build(call) => {
+                let id = call.id();
+
                 if !outputs.contains_key(id) {
-                    let build = config.build(id, BuildType::Release)?;
+                    let build = config.build(call, BuildType::Release)?;
+
                     if build.is_enabled(BuildType::Release) {
                         tracing::info!("Building dependency '{}' for release '{}'", id, release.id());
                         outputs.insert(
@@ -93,7 +86,7 @@ fn run(
                             crate::build::run(&build, config, astra, BuildType::Release)?,
                         );
                     } else {
-                        tracing::warn!("build '{}' is disabled for release build type", id);
+                        tracing::debug!("skipping build '{}': disabled for release build type", id);
                     }
                 }
             }
@@ -141,10 +134,11 @@ fn run(
         tracing::debug!("calling finally task '{}'", call.id());
 
         if let Err(e) = crate::task::run(call, config, false) {
-            err = Some(match err {
-                Some(prev) => prev.context(format!("finally task '{}' failed: {e}", call.id())),
-                None => e,
-            });
+            if err.is_some() {
+                tracing::error!("finally task '{}' failed: {e:#}", call.id());
+            } else {
+                err = Some(e.context(format!("finally task '{}' failed", call.id())));
+            }
         }
     }
 
@@ -268,36 +262,112 @@ fn add_dir_to_zip(
     root_dir: &Path,
     curr_dir: &Path,
 ) -> anyhow::Result<()> {
-    let mut entries: Vec<_> = std::fs::read_dir(root_dir.join(curr_dir))?.collect::<Result<_, _>>()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+    const MAX_PARALLEL_FILE_SIZE: u64 = 16 * 1024 * 1024;
 
-    for entry in entries {
-        let file = curr_dir.join(entry.file_name());
-        let file_type = entry.file_type()?;
+    let mut entries = Vec::new();
+    collect_entries(root_dir, curr_dir, &mut entries)?;
+    let workers = std::thread::available_parallelism()?.get().min(4);
 
-        if file_type.is_dir() {
-            zip.add_directory_from_path(&file, options)
-                .with_context(|| format!("failed to add directory '{}' to zip archive", file.display()))?;
-            add_dir_to_zip(zip, options, root_dir, &file)?;
-        } else if file_type.is_file() {
-            zip.start_file_from_path(&file, options)
-                .with_context(|| format!("failed to start file '{}' in zip archive", file.display()))?;
-            let file = root_dir.join(&file);
-            let mut src = std::fs::File::open(&file).with_context(|| format!("failed to read '{}'", file.display()))?;
-            std::io::copy(&mut src, zip)
-                .with_context(|| format!("failed to copy '{}' into zip archive", file.display()))?;
+    for entries in entries.chunks(workers) {
+        let prepared = std::thread::scope(|scope| {
+            let tasks = entries
+                .iter()
+                .map(|(file, kind)| -> anyhow::Result<_> {
+                    if !kind.is_file() {
+                        return Ok(None);
+                    }
+
+                    let src = root_dir.join(file);
+                    if std::fs::metadata(&src)?.len() > MAX_PARALLEL_FILE_SIZE {
+                        return Ok(None);
+                    }
+
+                    Ok(Some(std::thread::Builder::new().spawn_scoped(scope, move || {
+                        compress_file(&src, file, options, MAX_PARALLEL_FILE_SIZE)
+                    })?))
+                })
+                .collect::<Vec<_>>();
+
+            tasks
+                .into_iter()
+                .map(|task| {
+                    let Some(task) = task? else { return Ok(None) };
+
+                    task.join()
+                        .map_err(|_| anyhow::anyhow!("zip compression worker panicked"))?
+                })
+                .collect::<Vec<_>>()
+        });
+
+        for ((file, kind), prepared) in entries.iter().zip(prepared) {
+            if kind.is_dir() {
+                zip.add_directory_from_path(file, options)
+                    .with_context(|| format!("failed to add directory '{}' to zip archive", file.display()))?;
+            } else if let Some(prepared) = prepared? {
+                zip.add_prepared_file(prepared)
+                    .with_context(|| format!("failed to add file '{}' to zip archive", file.display()))?;
+            } else {
+                zip.start_file_from_path(file, options)
+                    .with_context(|| format!("failed to start file '{}' in zip archive", file.display()))?;
+                let file = root_dir.join(file);
+                let mut src =
+                    std::fs::File::open(&file).with_context(|| format!("failed to read '{}'", file.display()))?;
+                std::io::copy(&mut src, zip)
+                    .with_context(|| format!("failed to copy '{}' into zip archive", file.display()))?;
+            }
         }
     }
 
     Ok(())
 }
+
+fn collect_entries(root: &Path, dir: &Path, result: &mut Vec<(PathBuf, std::fs::FileType)>) -> anyhow::Result<()> {
+    let mut entries = std::fs::read_dir(root.join(dir))?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in entries {
+        let file = dir.join(entry.file_name());
+        let kind = entry.file_type()?;
+
+        if kind.is_dir() {
+            result.push((file.clone(), kind));
+            collect_entries(root, &file, result)?;
+        } else if kind.is_file() {
+            result.push((file, kind));
+        }
+    }
+
+    Ok(())
+}
+
+fn compress_file(
+    src: &Path,
+    file: &Path,
+    options: zip::write::SimpleFileOptions,
+    limit: u64,
+) -> anyhow::Result<Option<zip::write::PreparedZipFile>> {
+    use std::io::Read as _;
+
+    let src = std::fs::File::open(src).with_context(|| format!("failed to read '{}'", src.display()))?;
+    let mut builder = zip::write::ZipFileBuilder::new_from_path(file, options)?;
+    let size = std::io::copy(&mut src.take(limit + 1), &mut builder)
+        .with_context(|| format!("failed to compress '{}'", file.display()))?;
+
+    if size > limit {
+        return Ok(None);
+    }
+
+    Ok(Some(builder.finish()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read as _;
 
     #[test]
     fn extracts_release_notes() {
-        for (source, expected) in [
+        for (src, expected) in [
             (
                 "## Changelog\n### v1.0.0\n- Added\n- Fixed\n\n### v0.9.0\n- Old\n",
                 "## What's Changed\n\n- Added\n- Fixed\n",
@@ -324,8 +394,9 @@ mod tests {
             ),
             ("## Changelog\r### v1.0.0\r- CR\r", "## What's Changed\n\n- CR\n"),
         ] {
-            assert_eq!(extract_release_notes(source).as_deref(), Some(expected), "{source:?}");
+            assert_eq!(extract_release_notes(src).as_deref(), Some(expected), "{src:?}");
         }
+
         assert!(extract_release_notes("## Changelog\n## [2] 2026\n- Same level\n").is_none());
         assert!(extract_release_notes("# Project\n## Installation\nUse it\n").is_none());
     }
@@ -374,9 +445,23 @@ mod tests {
                     .with_context(|| format!("failed to read entry {i} in zip archive '{}'", zip_file.display()))
                     .unwrap()
                     .name()
+                    .unwrap()
                     .replace('\\', "/")
             })
             .collect();
         assert_eq!(names, vec!["aaa/", "aaa/1.txt", "bbb/", "bbb/2.txt", "root.txt"]);
+
+        for (name, expected) in [("aaa/1.txt", "1"), ("bbb/2.txt", "2"), ("root.txt", "root")] {
+            let mut content = String::new();
+            archive.by_name(name).unwrap().read_to_string(&mut content).unwrap();
+            assert_eq!(content, expected);
+        }
+
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        assert!(
+            compress_file(&staging.join("root.txt"), Path::new("root.txt"), options, 3)
+                .unwrap()
+                .is_none()
+        );
     }
 }

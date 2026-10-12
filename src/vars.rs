@@ -1,9 +1,54 @@
+use anyhow::bail;
+use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use anyhow::bail;
-use indexmap::IndexMap;
+pub trait Vars {
+    fn get(&self, key: &str) -> Option<&str>;
+}
+
+impl Vars for &[&BTreeMap<String, String>] {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.iter().find_map(|map| map.get(key))
+    }
+}
+
+impl Vars for BTreeMap<String, String> {
+    fn get(&self, key: &str) -> Option<&str> {
+        BTreeMap::get(self, key).map(String::as_str)
+    }
+}
+
+impl Vars for &BTreeMap<String, String> {
+    fn get(&self, key: &str) -> Option<&str> {
+        BTreeMap::get(*self, key).map(String::as_str)
+    }
+}
+
+impl Vars for IndexMap<String, String> {
+    fn get(&self, key: &str) -> Option<&str> {
+        IndexMap::get(self, key).map(String::as_str)
+    }
+}
+
+impl Vars for &IndexMap<String, String> {
+    fn get(&self, key: &str) -> Option<&str> {
+        IndexMap::get(*self, key).map(String::as_str)
+    }
+}
+
+impl Vars for Cow<'_, BTreeMap<String, String>> {
+    fn get(&self, key: &str) -> Option<&str> {
+        BTreeMap::get(self.as_ref(), key).map(String::as_str)
+    }
+}
+
+impl Vars for &Cow<'_, BTreeMap<String, String>> {
+    fn get(&self, key: &str) -> Option<&str> {
+        BTreeMap::get(self.as_ref(), key).map(String::as_str)
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Scope {
@@ -42,6 +87,7 @@ impl Scope {
     #[must_use]
     pub fn flatten(&self) -> IndexMap<String, String> {
         let mut result = IndexMap::new();
+
         for layer in self.layers.iter() {
             result.extend(layer.iter().map(|(key, val)| (key.clone(), val.clone())));
         }
@@ -68,61 +114,6 @@ impl Vars for &Scope {
     }
 }
 
-pub trait Vars {
-    fn get(&self, key: &str) -> Option<&str>;
-}
-
-impl Vars for BTreeMap<String, String> {
-    fn get(&self, key: &str) -> Option<&str> {
-        BTreeMap::get(self, key).map(String::as_str)
-    }
-}
-
-impl Vars for IndexMap<String, String> {
-    fn get(&self, key: &str) -> Option<&str> {
-        IndexMap::get(self, key).map(String::as_str)
-    }
-}
-
-impl Vars for &IndexMap<String, String> {
-    fn get(&self, key: &str) -> Option<&str> {
-        IndexMap::get(*self, key).map(String::as_str)
-    }
-}
-
-impl Vars for &BTreeMap<String, String> {
-    fn get(&self, key: &str) -> Option<&str> {
-        BTreeMap::get(*self, key).map(String::as_str)
-    }
-}
-
-impl Vars for Cow<'_, BTreeMap<String, String>> {
-    fn get(&self, key: &str) -> Option<&str> {
-        BTreeMap::get(self.as_ref(), key).map(String::as_str)
-    }
-}
-
-impl Vars for &Cow<'_, BTreeMap<String, String>> {
-    fn get(&self, key: &str) -> Option<&str> {
-        BTreeMap::get(self.as_ref(), key).map(String::as_str)
-    }
-}
-
-impl Vars for &[&BTreeMap<String, String>] {
-    fn get(&self, key: &str) -> Option<&str> {
-        self.iter().find_map(|map| map.get(key))
-    }
-}
-
-#[must_use]
-pub fn is_ident(src: &str) -> bool {
-    let mut bytes = src.bytes();
-    bytes
-        .next()
-        .is_some_and(|byte| matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-}
-
 #[allow(clippy::needless_pass_by_value)]
 pub fn expand<V: Vars>(input: &str, vars: V) -> anyhow::Result<String> {
     if !input.contains("${{") {
@@ -133,17 +124,26 @@ pub fn expand<V: Vars>(input: &str, vars: V) -> anyhow::Result<String> {
     let mut rest = input;
 
     while let Some(st) = rest.find("${{") {
-        result.push_str(&rest[..st]);
         let after = &rest[st + 3..];
-
         let Some(ed) = after.find("}}") else {
             bail!("unclosed placeholder in '{input}'");
         };
+
+        if rest[..st].ends_with('$') {
+            result.push_str(&rest[..st - 1]);
+            result.push_str("${{");
+            result.push_str(&after[..ed + 2]);
+            rest = &after[ed + 2..];
+            continue;
+        }
+
+        result.push_str(&rest[..st]);
 
         let key = after[..ed].trim();
         if key.is_empty() {
             bail!("empty variable name in placeholder");
         }
+
         if !is_ident(key) {
             bail!("invalid variable name '{key}' in placeholder");
         }
@@ -152,16 +152,26 @@ pub fn expand<V: Vars>(input: &str, vars: V) -> anyhow::Result<String> {
             .get(key)
             .ok_or_else(|| anyhow::anyhow!("variable '{key}' not found"))?;
 
+        if val.contains("${{") {
+            bail!("unexpanded variable remains in '{val}'");
+        }
+
         result.push_str(val);
         rest = &after[ed + 2..];
     }
 
     result.push_str(rest);
-    if result.contains("${{") {
-        bail!("unexpanded variable remains in '{result}'");
-    }
 
     Ok(result)
+}
+
+#[must_use]
+pub fn is_ident(src: &str) -> bool {
+    let mut bytes = src.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 #[cfg(test)]
@@ -180,6 +190,14 @@ mod tests {
         assert_eq!(scope.flatten(), vars);
         assert_eq!(expand("${{ NAME }}-${{ VERSION }}", &scope)?, "astra-1.0");
         assert_eq!(expand("plain", &scope)?, "plain");
+        assert_eq!(expand("$${{ NAME }}", &scope)?, "${{ NAME }}");
+        assert_eq!(
+            expand("prefix $${{ NAME }} ${{ VERSION }}", &scope)?,
+            "prefix ${{ NAME }} 1.0"
+        );
+        assert_eq!(expand("$$${{ NAME }}", &scope)?, "$${{ NAME }}");
+        assert_eq!(expand("$${{ any text }}", &scope)?, "${{ any text }}");
+        assert_eq!(expand("$${{}}", &scope)?, "${{}}");
         let err = expand("${{ MISSING }}", &scope).unwrap_err();
         assert!(err.to_string().contains("variable 'MISSING' not found"), "{err}");
         let err = expand("${{}}", &scope).unwrap_err();
@@ -191,6 +209,13 @@ mod tests {
         );
         let err = expand("${{ NAME", &scope).unwrap_err();
         assert!(err.to_string().contains("unclosed placeholder"), "{err}");
+        let err = expand("$${{ NAME", &scope).unwrap_err();
+        assert!(err.to_string().contains("unclosed placeholder"), "{err}");
+
+        let recursive = IndexMap::from([("RECURSIVE".to_owned(), "${{ LOOP }}".to_owned())]);
+        let recursive_scope = Scope::new(recursive);
+        let err = expand("${{ RECURSIVE }}", &recursive_scope).unwrap_err();
+        assert!(err.to_string().contains("unexpanded variable remains"), "{err}");
 
         Ok(())
     }

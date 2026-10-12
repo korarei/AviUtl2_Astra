@@ -7,6 +7,57 @@ use tracing_subscriber::registry::LookupSpan;
 #[derive(Debug, Clone, Default)]
 pub struct Formatter;
 
+impl<C, N> FormatEvent<C, N> for Formatter
+where
+    C: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(&self, _ctx: &FmtContext<'_, C, N>, mut writer: Writer<'_>, event: &Event<'_>) -> fmt::Result {
+        let mut visitor = MessageVisitor::default();
+        event.record(&mut visitor);
+
+        let (status, color, text): (&str, &str, &str) = match *event.metadata().level() {
+            Level::ERROR => ("error:", "1;31", visitor.message.as_str()),
+            Level::WARN => ("warning:", "1;33", visitor.message.as_str()),
+            Level::DEBUG => ("debug:", "2", visitor.message.as_str()),
+            Level::TRACE => ("trace:", "2", visitor.message.as_str()),
+            Level::INFO => parse_info_message(&visitor.message),
+        };
+
+        if writer.has_ansi_escapes() && !status.is_empty() {
+            write!(writer, "\x1b[{color}m{status:>12}\x1b[0m ")?;
+        } else {
+            write!(writer, "{status:>12} ")?;
+        }
+
+        let mut lines = text.lines();
+
+        if let Some(first) = lines.next() {
+            write!(writer, "{first}")?;
+
+            if !visitor.fields.is_empty() {
+                for (k, v) in &visitor.fields {
+                    write!(writer, " {k}={v}")?;
+                }
+            }
+
+            writeln!(writer)?;
+        } else {
+            writeln!(writer)?;
+        }
+
+        for line in lines {
+            if writer.has_ansi_escapes() && line == "Next steps:" {
+                writeln!(writer, "{:>12} \x1b[1;36m{line}\x1b[0m", "")?;
+            } else {
+                writeln!(writer, "{:>12} {line}", "")?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct MessageVisitor {
     message: String,
@@ -28,55 +79,6 @@ impl tracing::field::Visit for MessageVisitor {
         } else {
             self.fields.push((field.name().to_string(), val.to_string()));
         }
-    }
-}
-
-impl<C, N> FormatEvent<C, N> for Formatter
-where
-    C: tracing::Subscriber + for<'a> LookupSpan<'a>,
-    N: for<'a> FormatFields<'a> + 'static,
-{
-    fn format_event(&self, _ctx: &FmtContext<'_, C, N>, mut writer: Writer<'_>, event: &Event<'_>) -> fmt::Result {
-        let mut visitor = MessageVisitor::default();
-        event.record(&mut visitor);
-
-        let (status, color, text): (&str, &str, &str) = match *event.metadata().level() {
-            Level::ERROR => ("error:", "1;31", visitor.message.as_str()),
-            Level::WARN => ("warning:", "1;33", visitor.message.as_str()),
-            Level::DEBUG => ("debug:", "2", visitor.message.as_str()),
-            Level::TRACE => ("trace:", "2", visitor.message.as_str()),
-            Level::INFO => parse_info_message(&visitor.message),
-        };
-
-        if writer.has_ansi_escapes() {
-            write!(writer, "\x1b[{color}m{status:>12}\x1b[0m ")?;
-        } else {
-            write!(writer, "{status:>12} ")?;
-        }
-
-        let mut lines = text.lines();
-        if let Some(first) = lines.next() {
-            write!(writer, "{first}")?;
-            if !visitor.fields.is_empty() {
-                for (k, v) in &visitor.fields {
-                    write!(writer, " {k}={v}")?;
-                }
-            }
-
-            writeln!(writer)?;
-        } else {
-            writeln!(writer)?;
-        }
-
-        for line in lines {
-            if writer.has_ansi_escapes() && line == "Next steps:" {
-                writeln!(writer, "{:>12} \x1b[1;36m{line}\x1b[0m", "")?;
-            } else {
-                writeln!(writer, "{:>12} {line}", "")?;
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -122,7 +124,7 @@ fn parse_info_message(msg: &str) -> (&str, &str, &str) {
         return (status, color, rest);
     }
 
-    ("Info", "1;32", msg)
+    ("", "", msg)
 }
 
 #[cfg(test)]
@@ -135,7 +137,7 @@ mod tests {
             ("$ cargo build", ("Running", "1;32", "$ cargo build")),
             ("Building 'main'", ("Building", "1;36", "'main'")),
             ("Downloading package", ("Downloading", "1;32", "package")),
-            ("message", ("Info", "1;32", "message")),
+            ("message", ("", "", "message")),
         ] {
             assert_eq!(parse_info_message(message), expected);
         }
