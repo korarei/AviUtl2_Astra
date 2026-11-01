@@ -5,9 +5,10 @@
 Used by:
 
 - [chardetng 1.0.0](https://github.com/hsivonen/chardetng)
-- [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
+- [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
-- [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
+- [utf8_iter 1.1.0](https://github.com/hsivonen/utf8_iter)
+- [utf_types 1.0.0](https://github.com/hsivonen/utf_types)
 - [zeroize 1.9.1](https://github.com/RustCrypto/utils)
 
 ### License text
@@ -223,7 +224,7 @@ Used by:
 Used by:
 
 - [linux-raw-sys 0.12.1](https://github.com/sunfishcode/linux-raw-sys)
-- [rustix 1.1.5](https://github.com/bytecodealliance/rustix)
+- [rustix 1.1.6](https://github.com/bytecodealliance/rustix)
 - [wasi 0.11.1+wasi-snapshot-preview1](https://github.com/bytecodealliance/wasi)
 
 ### License text
@@ -1335,7 +1336,7 @@ Used by:
 - [anstyle-wincon 3.0.11](https://github.com/rust-cli/anstyle.git)
 - [anstyle 1.0.14](https://github.com/rust-cli/anstyle.git)
 - [colorchoice 1.0.5](https://github.com/rust-cli/anstyle.git)
-- [crc32fast 1.5.2](https://github.com/srijs/rust-crc32fast)
+- [crc32fast 1.5.3](https://github.com/srijs/rust-crc32fast)
 - [foreign-types-shared 0.1.1](https://github.com/sfackler/foreign-types)
 - [foreign-types 0.3.2](https://github.com/sfackler/foreign-types)
 - [is_terminal_polyfill 1.70.2](https://github.com/polyfill-rs/is_terminal_polyfill)
@@ -3260,16 +3261,16 @@ Used by:
 - [base64 0.23.1](https://github.com/marshallpierce/rust-base64)
 - [bitflags 2.13.2](https://github.com/bitflags/bitflags)
 - [bumpalo 3.20.3](https://github.com/fitzgen/bumpalo)
-- [cc 1.8.0](https://github.com/rust-lang/cc-rs)
+- [cc 1.10.0](https://github.com/rust-lang/cc-rs)
 - [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if)
 - [core-foundation-sys 0.8.7](https://github.com/servo/core-foundation-rs)
 - [core-foundation 0.10.1](https://github.com/servo/core-foundation-rs)
 - [displaydoc 0.2.7](https://github.com/yaahc/displaydoc)
 - [either 1.19.0](https://github.com/rayon-rs/either)
-- [equivalent 1.0.2](https://github.com/indexmap-rs/equivalent)
+- [equivalent 1.0.3](https://github.com/indexmap-rs/equivalent)
 - [errno 0.3.14](https://github.com/lambda-fairy/rust-errno)
 - [fastrand 2.5.0](https://github.com/smol-rs/fastrand)
-- [find-msvc-tools 0.1.14](https://github.com/rust-lang/cc-rs)
+- [find-msvc-tools 0.1.15](https://github.com/rust-lang/cc-rs)
 - [flate2 1.1.10](https://github.com/rust-lang/flate2-rs)
 - [form_urlencoded 1.2.2](https://github.com/servo/rust-url)
 - [hashbrown 0.17.1](https://github.com/rust-lang/hashbrown)
@@ -3280,14 +3281,14 @@ Used by:
 - [idna_adapter 1.2.2](https://github.com/hsivonen/idna_adapter)
 - [indexmap 2.14.2](https://github.com/indexmap-rs/indexmap)
 - [itertools 0.14.0](https://github.com/rust-itertools/itertools)
-- [js-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys)
+- [js-sys 0.3.107](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys)
 - [lazy_static 1.5.1](https://github.com/rust-lang-nursery/lazy-static.rs)
 - [linux-raw-sys 0.12.1](https://github.com/sunfishcode/linux-raw-sys)
 - [lock_api 0.4.14](https://github.com/Amanieu/parking_lot)
-- [log 0.4.34](https://github.com/rust-lang/log)
+- [log 0.4.35](https://github.com/rust-lang/log)
 - [num-traits 0.2.19](https://github.com/rust-num/num-traits)
 - [once_cell 1.21.4](https://github.com/matklad/once_cell)
-- [openssl-probe 0.2.1](https://github.com/rustls/openssl-probe)
+- [openssl-probe 0.2.2](https://github.com/rustls/openssl-probe)
 - [parking_lot 0.12.5](https://github.com/Amanieu/parking_lot)
 - [parking_lot_core 0.9.12](https://github.com/Amanieu/parking_lot)
 - [percent-encoding 2.3.2](https://github.com/servo/rust-url/)
@@ -3295,28 +3296,28 @@ Used by:
 - [regex-automata 0.4.18](https://github.com/rust-lang/regex)
 - [regex-syntax 0.8.11](https://github.com/rust-lang/regex)
 - [regex 1.13.1](https://github.com/rust-lang/regex)
-- [rustix 1.1.5](https://github.com/bytecodealliance/rustix)
+- [rustix 1.1.6](https://github.com/bytecodealliance/rustix)
 - [scopeguard 1.2.0](https://github.com/bluss/scopeguard)
 - [security-framework-sys 2.17.0](https://github.com/kornelski/rust-security-framework)
 - [security-framework 3.7.0](https://github.com/kornelski/rust-security-framework)
 - [serde_with 3.24.0](https://github.com/jonasbb/serde_with/)
 - [serde_with_macros 3.24.0](https://github.com/jonasbb/serde_with/)
-- [smallvec 1.16.3](https://github.com/servo/rust-smallvec)
+- [smallvec 1.16.4](https://github.com/servo/rust-smallvec)
 - [socket2 0.6.5](https://github.com/rust-lang/socket2)
 - [stable_deref_trait 1.2.1](https://github.com/storyyeller/stable_deref_trait)
 - [tempfile 3.27.0](https://github.com/Stebalien/tempfile)
 - [thread_local 1.1.10](https://github.com/Amanieu/thread_local-rs)
-- [unicode-width 0.2.2](https://github.com/unicode-rs/unicode-width)
+- [unicode-width 0.2.3](https://github.com/unicode-rs/unicode-width)
 - [unicode-xid 0.2.6](https://github.com/unicode-rs/unicode-xid)
 - [url 2.5.8](https://github.com/servo/rust-url)
-- [uuid 1.28.0](https://github.com/uuid-rs/uuid)
+- [uuid 1.29.0](https://github.com/uuid-rs/uuid)
 - [wasi 0.11.1+wasi-snapshot-preview1](https://github.com/bytecodealliance/wasi)
-- [wasm-bindgen-futures 0.4.79](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures)
-- [wasm-bindgen-macro-support 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support)
-- [wasm-bindgen-macro 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro)
-- [wasm-bindgen-shared 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared)
-- [wasm-bindgen 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen)
-- [web-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
+- [wasm-bindgen-futures 0.4.80](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures)
+- [wasm-bindgen-macro-support 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support)
+- [wasm-bindgen-macro 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro)
+- [wasm-bindgen-shared 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared)
+- [wasm-bindgen 0.2.130](https://github.com/wasm-bindgen/wasm-bindgen)
+- [web-sys 0.3.107](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
 
 ### License text
 
@@ -4390,7 +4391,7 @@ Used by:
 - [dyn-clone 1.0.20](https://github.com/dtolnay/dyn-clone)
 - [ident_case 1.0.1](https://github.com/TedDriggs/ident_case)
 - [itoa 1.0.18](https://github.com/dtolnay/itoa)
-- [libc 0.2.190](https://github.com/rust-lang/libc)
+- [libc 0.2.191](https://github.com/rust-lang/libc)
 - [paste 1.0.15](https://github.com/dtolnay/paste)
 - [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite)
 - [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2)
@@ -4414,7 +4415,7 @@ Used by:
 - [thiserror-impl 2.0.21](https://github.com/dtolnay/thiserror)
 - [thiserror 1.0.69](https://github.com/dtolnay/thiserror)
 - [thiserror 2.0.21](https://github.com/dtolnay/thiserror)
-- [typed-path 0.12.3](https://github.com/chipsenkbeil/typed-path)
+- [typed-path 0.13.0](https://github.com/chipsenkbeil/typed-path)
 - [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
 - [utf8parse 0.2.2](https://github.com/alacritty/vte)
 
@@ -4753,7 +4754,7 @@ limitations under the License.
 
 Used by:
 
-- [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
+- [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 
 ### License text
 
@@ -4842,7 +4843,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 Used by:
 
-- [encoding_rs 0.8.42](https://github.com/hsivonen/encoding_rs)
+- [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 
 ### License text
 
@@ -4985,7 +4986,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [schemars 1.2.2](https://github.com/GREsau/schemars)
+- [schemars 1.2.3](https://github.com/GREsau/schemars)
 
 ### License text
 
@@ -5213,7 +5214,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [schannel 0.1.29](https://github.com/steffengy/schannel-rs)
+- [schannel 0.1.30](https://github.com/steffengy/schannel-rs)
 
 ### License text
 
@@ -5810,8 +5811,8 @@ SOFTWARE.
 
 Used by:
 
-- [schemars 1.2.2](https://github.com/GREsau/schemars)
-- [schemars_derive 1.2.2](https://github.com/GREsau/schemars)
+- [schemars 1.2.3](https://github.com/GREsau/schemars)
+- [schemars_derive 1.2.3](https://github.com/GREsau/schemars)
 
 ### License text
 
@@ -5896,7 +5897,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [tokio 1.53.2](https://github.com/tokio-rs/tokio)
+- [tokio 1.54.1](https://github.com/tokio-rs/tokio)
 
 ### License text
 
@@ -6028,7 +6029,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
-- [zip 9.0.2](https://github.com/zip-rs/zip2)
+- [zip 9.2.0](https://github.com/zip-rs/zip2)
 
 ### License text
 
@@ -6351,28 +6352,28 @@ authorization of the copyright holder.
 
 Used by:
 
-- [icu_collections 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_locale_fallback 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_locale_fallback_data 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_properties 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_provider 2.3.1](https://github.com/unicode-org/icu4x)
-- [icu_segmenter 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_segmenter_data 2.3.0](https://github.com/unicode-org/icu4x)
+- [icu_collections 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_locale_core 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_locale_fallback 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_locale_fallback_data 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_normalizer 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_normalizer_data 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_properties 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_properties_data 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_provider 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_segmenter 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_segmenter_data 2.4.0](https://github.com/unicode-org/icu4x)
 - [litemap 0.8.3](https://github.com/unicode-org/icu4x)
 - [potential_utf 0.1.6](https://github.com/unicode-org/icu4x)
-- [tinystr 0.8.4](https://github.com/unicode-org/icu4x)
+- [tinystr 0.8.5](https://github.com/unicode-org/icu4x)
 - [writeable 0.6.4](https://github.com/unicode-org/icu4x)
 - [yoke-derive 0.8.4](https://github.com/unicode-org/icu4x)
-- [yoke 0.8.3](https://github.com/unicode-org/icu4x)
+- [yoke 0.8.4](https://github.com/unicode-org/icu4x)
 - [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x)
 - [zerofrom 0.1.8](https://github.com/unicode-org/icu4x)
 - [zerotrie 0.2.5](https://github.com/unicode-org/icu4x)
-- [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x)
-- [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
+- [zerovec-derive 0.11.7](https://github.com/unicode-org/icu4x)
+- [zerovec 0.11.9](https://github.com/unicode-org/icu4x)
 
 ### License text
 
@@ -6461,8 +6462,8 @@ freely, subject to the following restrictions:
 
 Used by:
 
-- [const_format 0.2.36](https://github.com/rodrimati1992/const_format_crates/)
-- [const_format_proc_macros 0.2.34](https://github.com/rodrimati1992/const_format_crates/)
+- [const_format 0.2.37](https://github.com/rodrimati1992/const_format_crates/)
+- [const_format_proc_macros 0.2.37](https://github.com/rodrimati1992/const_format_crates/)
 
 ### License text
 
