@@ -451,11 +451,10 @@ fn rejects_omit_without_a_complete_target() -> anyhow::Result<()> {
 #[test]
 fn preserves_cols_after_trimming_leading_whitespace() {
     for (prefix, line, col) in [("  ", 1, 3), ("\n\t  ", 2, 4)] {
-        let src = format!("{prefix}--[[pixelshader@float:float4 main() : SV_Target {{ return 0; }}]]");
+        let src = format!("{prefix}local value = @");
         let err = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).unwrap_err();
         assert!(
-            err.to_string()
-                .contains(&format!("test.anm2:{line}:{col}: name of 'pixelshader' cannot")),
+            err.to_string().contains(&format!("test.anm2:{line}:{}: unexpected '@'", col + 14)),
             "{err}"
         );
     }
@@ -498,28 +497,49 @@ fn treats_only_the_first_trimmed_line_as_a_header() -> anyhow::Result<()> {
     let src = "local value = \"@value\"\n-- @comment\nreturn value";
     assert_eq!(build_script(src, file, &[], &vars, false)?, format!("{src}\n"));
 
-    let src = "\n \t@header\n  --[[pixelshader @float:float4 main() : SV_Target { return 0; }]]";
+    let src = "\n \t@header\n--[[pixelshader @float:float4 main() : SV_Target { return 0; }]]";
     let err = build_script(src, file, &[], &vars, true).unwrap_err();
     assert!(
-        err.to_string().contains("test.anm2:3:3: name of 'pixelshader' cannot"),
+        err.to_string().contains("test.anm2:3:1: name of 'pixelshader' cannot"),
         "{err}"
     );
     Ok(())
 }
 
 #[test]
-fn preprocesses_indented_shader_blocks_with_whitespace_before_at() -> anyhow::Result<()> {
+fn ignores_indented_shader_blocks_with_whitespace_before_at() -> anyhow::Result<()> {
     for kind in ["pixelshader", "computeshader"] {
         for space in ["", " ", "\t "] {
             let entry = entry_point(kind, "main");
-            let src = format!(" \t--[[{kind}{space}@main:\n--#define VALUE 1\nfloat value = ${{VALUE}};\n{entry}\n]]");
+            let src = format!(" \t--[[{kind}{space}@main:\n--#include \"missing.hlsl\"\n{entry}\n]]");
             let output = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false)?;
-            assert_eq!(
-                output,
-                format!("--[[{kind}{space}@main:\nfloat value = 1;\n{entry}\n]]\n")
-            );
+            assert_eq!(output, format!("{src}\n"));
         }
     }
+    Ok(())
+}
+
+#[test]
+fn warns_on_invalid_shader_comments() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+
+    for kind in ["pixelshader", "computeshader"] {
+        for (prefix, open, space, close, message) in [
+            ("", "[=[", "", "]=]", "shader block must use '--[[...]]'"),
+            (" \t", "[[", "", "]]", "whitespace before '--' for shader"),
+            ("", "[[", " ", "]]", "whitespace before shader kind"),
+            ("", "[[", "\u{3000}", "]]", "whitespace before shader kind"),
+        ] {
+            bytes.lock().unwrap().clear();
+            let src = format!("{prefix}--{open}{space}{kind}@main:\n--#include \"missing.hlsl\"\n{close}");
+            let output = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false)?;
+            assert_eq!(output, format!("{src}\n"));
+            let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+            assert!(warnings.contains(message), "{warnings}");
+            assert_eq!(warnings.lines().count(), 1, "{warnings}");
+        }
+    }
+
     Ok(())
 }
 
@@ -528,10 +548,9 @@ fn rejects_shader_blocks_after_code() {
     for kind in ["pixelshader", "computeshader"] {
         for prefix in ["local shader = ", "local value = 1; "] {
             let src = format!("{prefix}--[[{kind} @main:\n--#include \"missing.hlsl\"\n]]");
-            let err = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).unwrap_err();
             assert!(
-                err.to_string().contains("shader block must start on its own line"),
-                "{err}"
+                build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).is_err(),
+                "{src}"
             );
         }
     }
@@ -1057,13 +1076,16 @@ fn validates_shader_definition_names_as_hlsl_identifiers() -> anyhow::Result<()>
             );
         }
 
-        for (name, expected) in [("main\t", "control characters"), ("main@other", "cannot contain '@'")] {
+        for (name, expected) in [("ma\tin", "control characters"), ("main@other", "cannot contain '@'")] {
             let src = format!("--[[{kind}@{name}:\n]]\n");
             let error = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).unwrap_err();
             assert!(error.to_string().contains(expected), "{name:?}: {error}");
         }
 
         let body = entry_point(kind, "main");
+        let src = format!("--[[{kind}@main\t:\n{body}\n]]\n");
+        build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false)?;
+
         let src = format!("--[[{kind}@main:\n{body}\n]]\n--[[{kind}@main:\n{body}\n]]\n");
         let error = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).unwrap_err();
         assert!(
@@ -1644,6 +1666,67 @@ result = "${RELATIVE_VALUE}"
 }
 
 #[test]
+fn reuses_once_modules_for_requires() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let main = dir.path().join("main.lua");
+    std::fs::write(
+        dir.path().join("module.lua"),
+        "--#pragma once\nlocal value = --[[#replace VALUE]]0\nreturn value\n",
+    )?;
+    let vars = IndexMap::from([("VALUE".to_owned(), "42".to_owned())]);
+    let src = concat!(
+        "--#include \"module.lua\"\n",
+        "local first = require('module')\n",
+        "--#define VALUE 99\n",
+        "do\n",
+        "\t--#include \"module.lua\"\n",
+        "\tlocal second = require('module')\n",
+        "end\n",
+        "--#include \"module.lua\"\n",
+        "local retained = true\n",
+    );
+    let output = build_script(src, &main, &[], &vars, false)?;
+    assert_eq!(output.matches("local value = 42").count(), 2, "{output}");
+    assert!(
+        output.contains("\tlocal second = (function()\n\t    local value = 42"),
+        "{output}"
+    );
+    assert!(output.contains("\t    return value\n\tend)()"), "{output}");
+    assert!(!output.contains("require("), "{output}");
+    assert!(!output.contains("99"), "{output}");
+    assert!(output.contains("local retained = true"), "{output}");
+    Ok(())
+}
+
+#[test]
+fn reuses_once_modules_with_nested_requires() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let main = dir.path().join("main.lua");
+    std::fs::write(dir.path().join("leaf.lua"), "--#pragma once\nreturn 7\n")?;
+    std::fs::write(
+        dir.path().join("parent.lua"),
+        "--#pragma once\n  --#include \"leaf.lua\"\n  local leaf = require('leaf')\nreturn leaf\n",
+    )?;
+    let src = concat!(
+        "--#include \"parent.lua\"\n",
+        "local first = require('parent')\n",
+        "do\n",
+        "    --#include \"parent.lua\"\n",
+        "    local second = require('parent')\n",
+        "end\n",
+        "--#include \"parent.lua\"\n",
+        "local retained = true\n",
+    );
+    let output = build_script(src, &main, &[], &IndexMap::new(), false)?;
+    assert_eq!(output.matches("return 7").count(), 2, "{output}");
+    assert_eq!(output.matches("return leaf").count(), 2, "{output}");
+    assert!(!output.contains("require("), "{output}");
+    assert!(output.contains("    local second = (function()\n"), "{output}");
+    assert!(output.contains("        return leaf\n    end)()"), "{output}");
+    Ok(())
+}
+
+#[test]
 fn resolves_nested_requires_after_preprocessing() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let main = dir.path().join("main.lua");
@@ -1743,14 +1826,14 @@ fn preserves_origins_through_empty_includes_and_require_rewrites() -> anyhow::Re
         }
 
         let err = build_script(
-            "--#include \"empty.lua\"\n   --[[pixelshader@float:float4 float() : SV_Target { return 0; }]]\n",
+            "--#include \"empty.lua\"\n--[[pixelshader@float:float4 float() : SV_Target { return 0; }]]\n",
             &main,
             &[],
             &vars,
             is_bundled,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("main.anm2:2:4:"), "{err}");
+        assert!(err.to_string().contains("main.anm2:2:1:"), "{err}");
     }
 
     Ok(())
@@ -2620,5 +2703,157 @@ fn reports_placeholder_positions_for_multiline_lua_values() -> anyhow::Result<()
     );
 
     assert_eq!(warnings.lines().count(), 1, "{warnings}");
+    Ok(())
+}
+
+#[test]
+fn accept_directive_spaces() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("input.lua");
+    std::fs::write(dir.path().join("values.lua"), "included = ${VALUE}\n")?;
+
+    for prefix in ["--#", "-- #", "--# ", "-- # ", "--\t#\t", "--\u{a0}#\u{3000}"] {
+        let src = format!(
+            "{prefix}define VALUE 7\n\
+             {prefix}include \"values.lua\"\n\
+             {prefix}replace VALUE\nlocal value = 0\n\
+             local inline_value = --[[ # replace VALUE ]] 0\n\
+             {prefix}omit\nremoved = 1\n\
+             {prefix}if true\nkept = 1\n{prefix}endif\n"
+        );
+        let output = build_script(&src, &file, &[], &IndexMap::new(), false)?;
+        for expected in ["included = 7", "local value = 7", "local inline_value =  7", "kept = 1"] {
+            assert!(output.contains(expected), "{prefix}: {output}");
+        }
+        assert!(
+            !output.contains("removed") && !output.contains('#'),
+            "{prefix}: {output}"
+        );
+
+        let shader = build_shader(
+            &format!("{prefix}define VALUE 7\n{prefix}replace VALUE\nfloat value = 0;\n"),
+            &[],
+        )?;
+        assert!(shader.contains("float value = 7;"), "{prefix}: {shader}");
+        assert!(!shader.contains('#'), "{prefix}: {shader}");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn warns_on_spaces_before_properties() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.lua" }))?;
+
+    for (suffix, property) in [
+        (".anm2", "track@value:Value,0,100,0,1"),
+        (".anm2", "check@flag:Flag,true"),
+        (".anm", "track0:Value,0,100,0,1"),
+        (".tra", "param:0"),
+        (".tra2", "param:Value,0"),
+    ] {
+        let baseline = script::build("--ordinary comment\n", &target, &[], &IndexMap::new(), false, suffix)?;
+        for ws in [" ", "  ", "\t", "\x0b", "\x0c", "\u{a0}", "\u{2003}", "\u{3000}"] {
+            for prefix in ["", "local value = 0 "] {
+                bytes.lock().unwrap().clear();
+                let src = format!("{prefix}--{ws}{property}\n");
+                let output = script::build(&src, &target, &[], &IndexMap::new(), false, suffix)?;
+                assert_eq!(output.script, src);
+                assert_eq!(output.l10n, baseline.l10n);
+
+                let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+                assert!(
+                    warnings.contains(&format!(
+                        "test.lua:1:{}: whitespace between '--' and property",
+                        prefix.len() + 1
+                    )),
+                    "{warnings}"
+                );
+                assert_eq!(warnings.lines().count(), 1, "{warnings}");
+            }
+        }
+    }
+
+    bytes.lock().unwrap().clear();
+    let src = "-- note: ordinary comment\n--[[ -- track@ignored:Value,0,100,0,1 ]]\n\
+               --#define VALUE 0\n--track@value:Value,0,100,${VALUE},1\n";
+    let output = script::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
+    assert!(output.script.contains("--track@value:Value,0,100,0,1"));
+    assert!(bytes.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[test]
+fn warns_on_indented_properties() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.lua" }))?;
+
+    for suffix in [".anm2", ".anm", ".tra", ".tra2"] {
+        let baseline = script::build("--ordinary comment\n", &target, &[], &IndexMap::new(), false, suffix)?;
+        for indent in [" ", "\t", "\x0b", "\x0c"] {
+            for prefix in ["", "\n", "return 0\n"] {
+                for is_bundled in [false, true] {
+                    bytes.lock().unwrap().clear();
+                    let src = format!("{prefix}{indent}--track0:Value,0,100,0,1\n");
+                    let output = script::build(&src, &target, &[], &IndexMap::new(), is_bundled, suffix)?;
+                    assert!(output.script.contains(&format!("{indent}--track0:")));
+                    assert_eq!(output.l10n, baseline.l10n);
+
+                    let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+                    assert!(
+                        warnings.contains(&format!(
+                            "test.lua:{}:{}: whitespace before '--' for property 'track0'",
+                            prefix.lines().count() + 1,
+                            indent.chars().count() + 1
+                        )),
+                        "{warnings}"
+                    );
+                    assert_eq!(warnings.lines().count(), 1, "{warnings}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn validates_group_and_separator_ids() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.anm2" }))?;
+    let build = |src: &str| script::build(src, &target, &[], &IndexMap::new(), false, ".anm2");
+
+    for kind in ["group", "separator"] {
+        for rest in ["", ",true", ",false"] {
+            let plain = build(&format!("--{kind}:Label{rest}\n"))?;
+            let named = build(&format!("--{kind}@\u{3000}section\u{a0}:Label{rest}\n"))?;
+            assert_eq!(named.l10n, plain.l10n);
+            assert!(named.l10n.contains("Label=\n"), "{}", named.l10n);
+        }
+
+        for id in ["", "local", "a.b"] {
+            let err = build(&format!("--{kind}@{id}:Label\n")).unwrap_err();
+            assert!(err.to_string().contains("must be a valid Lua identifier"), "{err}");
+        }
+
+        let err = build(&format!("--{kind}@1section:Label\n")).unwrap_err();
+        assert!(err.to_string().contains("malformed number"), "{err}");
+
+        for src in [
+            format!("--value@shared:Value,0\n--{kind}@shared:Label\n"),
+            format!("--{kind}@shared:Label\n--value@shared:Value,0\n"),
+            format!("--{kind}@shared:First\n--{kind}@shared:Second\n"),
+        ] {
+            let err = build(&src).unwrap_err();
+            assert!(err.to_string().contains("duplicate variable name 'shared'"), "{err}");
+        }
+    }
+
+    for id in ["", "@section"] {
+        let err = build(&format!("--group{id}:Label,0\n")).unwrap_err();
+        assert!(err.to_string().contains("must be 'true' or 'false'"), "{err}");
+    }
+
+    let err = build("--group@shared:First\n--separator@shared:Second\n").unwrap_err();
+    assert!(err.to_string().contains("duplicate variable name 'shared'"), "{err}");
     Ok(())
 }

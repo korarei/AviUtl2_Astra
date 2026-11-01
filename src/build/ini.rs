@@ -1,4 +1,4 @@
-use super::preprocess::{self, Action, Parser};
+use super::astra::{self, Action, Parser};
 use super::source::{self, Position};
 use crate::config::{BuildTarget, RESERVED_VARIABLES};
 use anyhow::{Context as _, bail};
@@ -27,7 +27,7 @@ impl Builder<'_> {
                 col: 1,
             },
         );
-        let mut parser = Parser::new(preprocess::Lexer::new(src));
+        let mut parser = Parser::new(astra::Lexer::new(src));
         let mut omit = None;
         let mut repl = None;
 
@@ -39,6 +39,7 @@ impl Builder<'_> {
             let directive = line
                 .trim_start()
                 .strip_prefix(';')
+                .map(str::trim_start)
                 .filter(|content| content.starts_with('#'));
             let is_section = line
                 .trim_start()
@@ -57,7 +58,9 @@ impl Builder<'_> {
             let st = line.as_ptr() as usize - src.as_ptr() as usize;
             let locate = |at| map.locate(st + at);
 
-            let pos = locate(line.len() - line.trim_start().len() + usize::from(directive.is_some()));
+            let pos = locate(directive.map_or(line.len() - line.trim_start().len(), |content| {
+                content.as_ptr() as usize - line.as_ptr() as usize
+            }));
 
             if let Some(pos) = &omit {
                 if directive.is_some() {
@@ -97,7 +100,7 @@ impl Builder<'_> {
 
                         let val_st = key.len() + 1 + rest.len() - rest.trim_start().len();
                         let val_ed = key.len() + 1 + rest.trim_end().len();
-                        let prefix = preprocess::expand(&line[..val_st], self.vars.as_ref())
+                        let prefix = astra::expand(&line[..val_st], self.vars.as_ref())
                             .map_err(|err| anyhow::anyhow!("{}: {err}", locate(err.offset)))?;
 
                         prefix.append(&mut self.map, &map, st..st + val_st);
@@ -111,7 +114,7 @@ impl Builder<'_> {
                         continue;
                     }
 
-                    let expanded = preprocess::expand(line, self.vars.as_ref())
+                    let expanded = astra::expand(line, self.vars.as_ref())
                         .map_err(|err| anyhow::anyhow!("{}: {err}", locate(err.offset)))?;
                     let ed = st + line.len();
                     expanded.append(&mut self.map, &map, st..ed);
@@ -141,7 +144,7 @@ impl Builder<'_> {
                     let vars = self.vars.to_mut();
                     vars.insert(
                         key.to_owned(),
-                        preprocess::expand(val, vars)
+                        astra::expand(val, vars)
                             .map_err(|err| {
                                 anyhow::anyhow!(
                                     "{}: {err}",

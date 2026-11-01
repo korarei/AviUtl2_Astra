@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.9.0] - 2026-11-01
+
+### Added
+
+- Lua・HLSL・INI の前処理で，コメント記号と `#` の間，および `#` とディレクティブ名の間の空白に対応．
+- スクリプトのプロパティで，行頭のインデントや `--` とプロパティ名の間の空白を検出し，元のソース位置で警告するようにした．該当行は通常のコメントとして保持し，プロパティの検証・翻訳出力の対象から除外する．
+- Lua の `#pragma once` に対応．複数の `require` に対応付けた場合，最初の前処理結果を再利用する．
+- `group` / `separator` の `@` 付き定義に対応．
+
+### Changed
+
+- ZIP ライブラリを `9.2` 系へ，開発用 Rust ツールチェーンを `1.99.1` へ更新．
+- プロパティ定義ミスがあった場合警告を出力するように変更．
+
+### Fixed
+
+- LuaJIT 2.1 の構文解析で，`const`・`continue`・`goto` を文脈に応じて識別子として扱い，`continue;` を受け付けるように修正．安全ナビゲーションの添字・関数・メソッド呼び出しにも対応した．
+- Lua のラベル終端，短縮関数の `->`，メソッド呼び出しの引数，代入先の検証を修正し，不完全・不正な構文を検出するようにした．
+- HLSL の宣言解析と関数属性の検出で空白・コメントを読み飛ばすように修正．
+- `astra run` の起動前に既存の AviUtl2 を検出する際，双方の実行ファイルパスを `canonicalize()` で統一して比較するように修正．
+- `astra run` の終了・再起動時に，VT 対応コンソールのステータスバーへ終了待機の残り秒数を表示するように修正．
+
 ## [0.8.0] - 2026-10-13
 
 ### Added
@@ -324,7 +346,8 @@
 
 - Release
 
-[0.8.0]: https://github.com/korarei/AviUtl2_Astra/compare/v0.7.2...HEAD
+[0.9.0]: https://github.com/korarei/AviUtl2_Astra/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/korarei/AviUtl2_Astra/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/korarei/AviUtl2_Astra/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/korarei/AviUtl2_Astra/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/korarei/AviUtl2_Astra/compare/v0.6.5...v0.7.0

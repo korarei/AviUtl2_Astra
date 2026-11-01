@@ -1,7 +1,7 @@
+mod astra;
 pub mod hlsl;
 pub mod ini;
 pub mod lua;
-mod preprocess;
 pub mod script;
 pub mod shader;
 mod source;
@@ -70,7 +70,7 @@ pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
     let build_dir = Path::new(astra.build_dir());
     crate::fs::create_managed_dir(build_dir)?;
 
-    let mut lock = crate::fs::Lock::new(build_dir)?;
+    let mut lock = crate::fs::Lock::new(build_dir, "build directory")?;
     let _guard = lock.write()?;
 
     if let Some(id) = &args.id {

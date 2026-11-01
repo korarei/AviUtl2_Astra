@@ -1,12 +1,13 @@
-use std::borrow::Cow;
+use super::{Analysis, Assignment, Call, Error, Reference, Span, Token, TokenKind};
+use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 
 const MAX_DEPTH: usize = 200;
 
-pub struct Parser<'a, 'tokens> {
-    tokens: Vec<&'tokens Token<'a>>,
+pub struct Parser<'a, 'tokens, T = Token<'a>> {
+    tokens: &'tokens [T],
     curr: usize,
+    prev: usize,
     depth: usize,
     error: Option<Error>,
     stmt_st: Option<usize>,
@@ -19,20 +20,16 @@ pub struct Parser<'a, 'tokens> {
     output: Analysis<'a>,
 }
 
-impl<'a, 'tokens> Parser<'a, 'tokens> {
+impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
     #[must_use]
-    pub fn new(tokens: impl IntoIterator<Item = &'tokens Token<'a>>) -> Self {
+    pub fn new(tokens: &'tokens [T]) -> Self {
         Self {
-            tokens: tokens
-                .into_iter()
-                .filter(|token| {
-                    !matches!(
-                        token.kind,
-                        TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                    )
-                })
-                .collect(),
-            curr: 0,
+            tokens,
+            curr: tokens
+                .iter()
+                .position(|token| !token.borrow().kind.is_trivia())
+                .unwrap_or(tokens.len()),
+            prev: 0,
             depth: 0,
             error: None,
             stmt_st: None,
@@ -47,13 +44,13 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
     }
 
     pub fn parse(mut self) -> Result<Analysis<'a>, Error> {
-        self.block();
+        self.parse_block();
 
         if let Some(error) = self.error {
             return Err(error);
         }
 
-        if let Some(token) = self.tokens.get(self.curr) {
+        if let Some(token) = self.token(self.curr) {
             return Err(Error {
                 offset: token.span.st,
                 message: "unexpected block delimiter",
@@ -63,8 +60,9 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         Ok(self.output)
     }
 
-    pub(super) fn parse_expr(&mut self, st: usize) -> Result<Span, Error> {
-        self.curr = self.tokens.partition_point(|token| token.span.st < st);
+    pub fn parse_expr(&mut self, st: usize) -> Result<Span, Error> {
+        self.curr = self.tokens.partition_point(|token| token.borrow().span.st < st);
+        self.skip_trivia();
 
         if self.curr < self.context_curr {
             self.context.clear();
@@ -77,7 +75,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
         while self.context_curr < self.curr {
             let (kind, conditionals) = *self.context.last().unwrap();
-            let token = self.tokens[self.context_curr];
+            let token = self.tokens[self.context_curr].borrow();
             match &token.kind {
                 TokenKind::LParen
                 | TokenKind::LBracket
@@ -102,26 +100,27 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             self.context_curr += 1;
         }
 
-        let val = self.expr(0, self.context.last().unwrap().1 != 0);
+        let val = self.read_expr(0, self.context.last().unwrap().1 != 0);
         if let Some(error) = self.error {
             return Err(error);
         }
 
         val.map(|val| val.span).ok_or(Error {
-            offset: self.tokens.get(self.curr).map_or(st, |token| token.span.st),
+            offset: self.token(self.curr).map_or(st, |token| token.span.st),
             message: "missing expression",
         })
     }
 
-    pub(super) fn parse_stmt(&mut self, st: usize) -> Result<Span, Error> {
-        self.curr = self.tokens.partition_point(|token| token.span.st < st);
+    pub fn parse_stmt(&mut self, st: usize) -> Result<Span, Error> {
+        self.curr = self.tokens.partition_point(|token| token.borrow().span.st < st);
+        self.skip_trivia();
         let st = self.curr;
-        let token = self.tokens.get(st).ok_or(Error {
-            offset: self.tokens.last().map_or(0, |token| token.span.ed),
+        let token = self.token(st).ok_or(Error {
+            offset: self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
             message: "missing statement",
         })?;
         let span_st = token.span.st;
-        self.stmt();
+        self.read_stmt();
 
         if let Some(error) = self.error {
             return Err(error);
@@ -134,18 +133,18 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             });
         }
 
-        self.take(&TokenKind::Semicolon);
+        self.eat(&TokenKind::Semicolon);
         Ok(Span {
             st: span_st,
-            ed: self.tokens[self.curr - 1].span.ed,
+            ed: self.tokens[self.prev].borrow().span.ed,
         })
     }
 
-    fn block(&mut self) {
+    fn parse_block(&mut self) {
         if self.depth + 1 >= MAX_DEPTH {
             self.error.get_or_insert(Error {
-                offset: self.tokens.get(self.curr).map_or_else(
-                    || self.tokens.last().map_or(0, |token| token.span.ed),
+                offset: self.token(self.curr).map_or_else(
+                    || self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
                     |token| token.span.st,
                 ),
                 message: "chunk has too many syntax levels",
@@ -163,11 +162,11 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             )
         {
             let st = self.curr;
-            self.stmt();
+            self.read_stmt();
 
             if self.curr == st {
                 self.error.get_or_insert(Error {
-                    offset: self.tokens[st].span.st,
+                    offset: self.tokens[st].borrow().span.st,
                     message: "invalid statement",
                 });
             }
@@ -176,108 +175,99 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         self.depth -= 1;
     }
 
-    fn scoped_block(&mut self) {
+    fn parse_scoped_block(&mut self) {
         self.scopes.push(HashMap::new());
-        self.block();
+        self.parse_block();
         self.scopes.pop().expect("scope must exist");
     }
 
     #[allow(clippy::too_many_lines)]
-    fn stmt(&mut self) {
+    fn read_stmt(&mut self) {
         let st = self.curr;
-        let prev_stmt_st = self.stmt_st.replace(self.tokens[st].span.st);
+        let prev_stmt_st = self.stmt_st.replace(self.tokens[st].borrow().span.st);
 
         match self.kind().cloned() {
-            Some(TokenKind::Local) => {
-                self.curr += 1;
-                if self.take(&TokenKind::Keyword("function")) {
-                    if let Some(name) = self.require_name() {
-                        self.declare(name, None);
-                    }
-
-                    self.function(false);
-                } else {
-                    self.assignment(st, true);
-                }
-            }
-            Some(TokenKind::Keyword("const"))
-                if self.tokens.get(self.curr + 1).is_some_and(|token| {
-                    token.kind.name().is_some() || token.kind == TokenKind::Keyword("function")
-                }) =>
+            Some(TokenKind::Local | TokenKind::Keyword("const"))
+                if self.kind() == Some(&TokenKind::Local)
+                    || self.peek(1).is_some_and(|token| {
+                        token.kind.name().is_some() || token.kind == TokenKind::Keyword("function")
+                    }) =>
             {
-                self.curr += 1;
-                if self.take(&TokenKind::Keyword("function")) {
+                self.bump();
+                if self.eat(&TokenKind::Keyword("function")) {
                     if let Some(name) = self.require_name() {
                         self.declare(name, None);
                     }
 
-                    self.function(false);
+                    self.parse_function(false);
                 } else {
-                    self.assignment(st, true);
+                    self.parse_assignment(st, true);
                 }
             }
             Some(TokenKind::Keyword("function")) => {
-                self.curr += 1;
+                self.bump();
                 let mut is_method = false;
 
                 if let Some(name) = self.require_name() {
                     let index = self.resolve(name);
                     self.assign(index, None);
 
-                    while matches!(self.kind(), Some(TokenKind::Dot | TokenKind::Colon)) {
-                        is_method |= self.kind() == Some(&TokenKind::Colon);
-                        self.curr += 1;
-
+                    while self.eat(&TokenKind::Dot) {
                         if self.require_name().is_none() {
                             break;
                         }
                     }
+
+                    if self.eat(&TokenKind::Colon) {
+                        is_method = true;
+                        self.require_name();
+                    }
                 }
 
-                self.function(is_method);
+                self.parse_function(is_method);
             }
             Some(TokenKind::Keyword("if")) => {
-                self.curr += 1;
+                self.bump();
                 self.require_expr(false);
                 let writes_st = self.writes.len();
-                let vals = self
+                let references = self
                     .bindings
                     .iter()
-                    .map(|binding| binding.val.clone())
+                    .map(|binding| binding.reference.clone())
                     .collect::<Vec<_>>();
 
-                self.require(&TokenKind::Keyword("then"));
-                self.scoped_block();
+                self.expect(&TokenKind::Keyword("then"));
+                self.parse_scoped_block();
 
-                while self.take(&TokenKind::Keyword("elseif")) {
-                    self.restore(&vals);
+                while self.eat(&TokenKind::Keyword("elseif")) {
+                    self.restore(&references);
                     self.require_expr(false);
-                    self.require(&TokenKind::Keyword("then"));
-                    self.scoped_block();
+                    self.expect(&TokenKind::Keyword("then"));
+                    self.parse_scoped_block();
                 }
 
-                if self.take(&TokenKind::Keyword("else")) {
-                    self.restore(&vals);
-                    self.scoped_block();
+                if self.eat(&TokenKind::Keyword("else")) {
+                    self.restore(&references);
+                    self.parse_scoped_block();
                 }
 
-                self.require(&TokenKind::Keyword("end"));
-                self.invalidate(&vals, writes_st);
+                self.expect(&TokenKind::Keyword("end"));
+                self.invalidate(&references, writes_st);
             }
             Some(TokenKind::Keyword("do")) => {
-                self.curr += 1;
-                self.scoped_block();
-                self.require(&TokenKind::Keyword("end"));
+                self.bump();
+                self.parse_scoped_block();
+                self.expect(&TokenKind::Keyword("end"));
             }
             Some(TokenKind::Keyword("while" | "for" | "repeat")) => {
                 let kind = self.kind().cloned().unwrap();
-                self.curr += 1;
+                self.bump();
                 let writes_st = self.writes.len();
                 let calls_st = self.output.calls.len();
-                let vals = self
+                let references = self
                     .bindings
                     .iter()
-                    .map(|binding| binding.val.clone())
+                    .map(|binding| binding.reference.clone())
                     .collect::<Vec<_>>();
                 let mut names = Vec::new();
 
@@ -285,7 +275,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     while let Some(name) = self.require_name() {
                         names.push(name);
 
-                        if !self.take(&TokenKind::Comma) {
+                        if !self.eat(&TokenKind::Comma) {
                             break;
                         }
                     }
@@ -293,29 +283,27 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     if names.is_empty() || self.kind() == Some(&TokenKind::Assign) && names.len() != 1 {
                         self.error.get_or_insert(Error {
                             offset: self
-                                .tokens
-                                .get(self.curr)
-                                .map_or(self.tokens[self.curr - 1].span.ed, |token| token.span.st),
+                                .token(self.curr)
+                                .map_or(self.tokens[self.prev].borrow().span.ed, |token| token.span.st),
                             message: "invalid for variable list",
                         });
                     }
 
-                    if self.take(&TokenKind::Assign) {
+                    if self.eat(&TokenKind::Assign) {
                         self.require_expr(false);
-                        self.require(&TokenKind::Comma);
+                        self.expect(&TokenKind::Comma);
                         self.require_expr(false);
 
-                        if self.take(&TokenKind::Comma) {
+                        if self.eat(&TokenKind::Comma) {
                             self.require_expr(false);
                         }
                     } else {
-                        self.require(&TokenKind::Keyword("in"));
-                        if self.exprs().is_some_and(|vals| vals.is_empty()) {
+                        self.expect(&TokenKind::Keyword("in"));
+                        if self.parse_exprs().is_some_and(|vals| vals.is_empty()) {
                             self.error.get_or_insert(Error {
                                 offset: self
-                                    .tokens
-                                    .get(self.curr)
-                                    .map_or(self.tokens[self.curr - 1].span.ed, |token| token.span.st),
+                                    .token(self.curr)
+                                    .map_or(self.tokens[self.prev].borrow().span.ed, |token| token.span.st),
                                 message: "missing expression after 'in'",
                             });
                         }
@@ -325,7 +313,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 }
 
                 if kind != TokenKind::Keyword("repeat") {
-                    self.require(&TokenKind::Keyword("do"));
+                    self.expect(&TokenKind::Keyword("do"));
                 }
 
                 self.scopes.push(HashMap::new());
@@ -334,20 +322,20 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     self.declare(name, None);
                 }
 
-                self.block();
+                self.parse_block();
 
                 if kind == TokenKind::Keyword("repeat") {
-                    self.require(&TokenKind::Keyword("until"));
+                    self.expect(&TokenKind::Keyword("until"));
                     self.require_expr(false);
                 } else {
-                    self.require(&TokenKind::Keyword("end"));
+                    self.expect(&TokenKind::Keyword("end"));
                 }
 
                 self.scopes.pop().expect("scope must exist");
 
                 let changed = self.writes[writes_st..]
                     .iter()
-                    .filter_map(|&index| vals.get(index).and_then(Option::as_deref))
+                    .filter_map(|&index| references.get(index).and_then(Option::as_deref))
                     .collect::<HashSet<_>>();
 
                 for call in &mut self.output.calls[calls_st..] {
@@ -360,125 +348,125 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     }
                 }
 
-                self.invalidate(&vals, writes_st);
+                self.invalidate(&references, writes_st);
             }
             Some(TokenKind::Keyword("return")) => {
-                self.curr += 1;
-                let _ = self.exprs();
+                self.bump();
+                let _ = self.parse_exprs();
             }
             Some(TokenKind::Keyword("break")) => {
-                self.curr += 1;
+                self.bump();
             }
-            Some(TokenKind::Keyword("goto"))
-                if self
-                    .tokens
-                    .get(self.curr + 1)
-                    .is_some_and(|token| token.kind.name().is_some()) =>
-            {
-                self.curr += 2;
+            Some(TokenKind::Keyword("goto")) if self.peek(1).is_some_and(|token| token.kind.name().is_some()) => {
+                self.bump();
+                self.bump();
             }
             Some(TokenKind::Keyword("continue"))
-                if self.tokens.get(self.curr + 1).is_none_or(|token| {
-                    matches!(token.kind, TokenKind::Keyword("end" | "else" | "elseif" | "until"))
+                if self.peek(1).is_none_or(|token| {
+                    matches!(
+                        token.kind,
+                        TokenKind::Semicolon | TokenKind::Keyword("end" | "else" | "elseif" | "until")
+                    )
                 }) =>
             {
-                self.curr += 1;
+                self.bump();
             }
             Some(TokenKind::Operator("::")) => {
-                self.curr += 1;
+                self.bump();
 
-                if self.kind().and_then(TokenKind::name).is_some() {
-                    self.curr += 1;
-                }
-
-                self.take(&TokenKind::Operator("::"));
+                self.require_name();
+                self.expect(&TokenKind::Operator("::"));
             }
-            Some(TokenKind::Semicolon) => self.curr += 1,
-            _ => self.assignment(st, false),
+            Some(TokenKind::Semicolon) => self.bump(),
+            _ => self.parse_assignment(st, false),
         }
 
         self.stmt_st = prev_stmt_st;
     }
 
     #[allow(clippy::too_many_lines)]
-    fn assignment(&mut self, st: usize, is_local: bool) {
+    fn parse_assignment(&mut self, st: usize, is_local: bool) {
         let mut targets = Vec::new();
         let mut names = Vec::new();
         let mut bindings = Vec::new();
 
         loop {
             let target_st = self.curr;
-            let Some(name) = self.kind().and_then(TokenKind::name) else {
-                if is_local {
-                    self.error.get_or_insert(Error {
-                        offset: self.tokens[self.curr - 1].span.ed,
-                        message: "missing local name",
-                    });
-                } else {
-                    let _ = self.expr(0, false);
-                }
-
-                return;
-            };
+            let name = self.kind().and_then(TokenKind::name);
 
             let expression = if is_local {
-                self.curr += 1;
+                if self.require_name().is_none() {
+                    return;
+                }
                 Expression {
-                    span: self.tokens[target_st].span,
+                    span: self.tokens[target_st].borrow().span,
                     reference: None,
                     binding: None,
                     captures: Vec::new(),
+                    is_target: true,
+                    is_call: false,
                 }
             } else {
-                let Some(expression) = self.expr(15, false) else {
+                let Some(expression) = self.read_expr(15, false) else {
+                    self.fail("missing assignment target");
                     return;
                 };
 
                 expression
             };
 
-            names.push((self.curr == target_st + 1).then_some(name));
+            if !is_local && !expression.is_target {
+                if expression.is_call && targets.is_empty() && self.kind() != Some(&TokenKind::Assign) {
+                    return;
+                }
+
+                self.fail("invalid assignment target");
+                return;
+            }
+
+            names.push(name.filter(|_| self.prev == target_st));
             bindings.push(expression.binding);
             targets.push(expression.span);
 
-            if !self.take(&TokenKind::Comma) {
+            if !self.eat(&TokenKind::Comma) {
                 break;
             }
         }
 
-        let has_vals = self.take(&TokenKind::Assign);
-        let is_compound =
-            if !is_local && !has_vals && targets.len() == 1 {
-                if self.take(&TokenKind::Ne) {
-                    true
-                } else if matches!(
-                    self.kind(),
-                    Some(
-                        TokenKind::Other('+' | '-' | '*' | '/' | '%')
-                            | TokenKind::Operator("&" | "|" | "<<" | ">>" | "~>>")
-                            | TokenKind::Concat
-                    )
-                ) && self.tokens.get(self.curr + 1).is_some_and(|token| {
-                    token.kind == TokenKind::Assign && self.tokens[self.curr].span.ed == token.span.st
-                }) {
-                    self.curr += 2;
-                    true
-                } else {
-                    false
-                }
+        let has_vals = self.eat(&TokenKind::Assign);
+        let is_compound = if !is_local && !has_vals && targets.len() == 1 {
+            if self.eat(&TokenKind::Ne) {
+                true
+            } else if matches!(
+                self.kind(),
+                Some(
+                    TokenKind::Other('+' | '-' | '*' | '/' | '%')
+                        | TokenKind::Operator("&" | "|" | "<<" | ">>" | "~>>")
+                        | TokenKind::Concat
+                )
+            ) && self.peek(1).is_some_and(|token| {
+                token.kind == TokenKind::Assign && self.tokens[self.curr].borrow().span.ed == token.span.st
+            }) {
+                self.bump();
+                self.bump();
+                true
             } else {
                 false
-            };
+            }
+        } else {
+            false
+        };
 
         if !is_local && !has_vals && !is_compound {
+            self.fail("expected assignment or function call");
             return;
         }
 
         let vals = if has_vals || is_compound {
-            let Some(vals) = self.exprs() else { return };
+            let Some(vals) = self.parse_exprs() else { return };
             if vals.is_empty() {
                 self.error.get_or_insert(Error {
-                    offset: self.tokens[self.curr - 1].span.ed,
+                    offset: self.tokens[self.prev].borrow().span.ed,
                     message: "missing assignment value",
                 });
                 return;
@@ -489,7 +477,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             Vec::new()
         };
 
-        let ed = self.tokens[self.curr - 1].span.ed;
+        let ed = self.tokens[self.prev].borrow().span.ed;
 
         for (index, name) in names.iter().enumerate() {
             let val = if is_compound {
@@ -517,7 +505,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
         self.output.assigns.push(Assignment {
             span: Span {
-                st: self.tokens[st].span.st,
+                st: self.tokens[st].borrow().span.st,
                 ed,
             },
             targets,
@@ -525,18 +513,18 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         });
     }
 
-    fn exprs(&mut self) -> Option<Vec<Expression<'a>>> {
+    fn parse_exprs(&mut self) -> Option<Vec<Expression<'a>>> {
         let mut vals = Vec::new();
-        let Some(val) = self.expr(0, false) else {
+        let Some(val) = self.read_expr(0, false) else {
             return Some(vals);
         };
 
         vals.push(val);
 
-        while self.take(&TokenKind::Comma) {
-            let Some(val) = self.expr(0, false) else {
+        while self.eat(&TokenKind::Comma) {
+            let Some(val) = self.read_expr(0, false) else {
                 self.error.get_or_insert(Error {
-                    offset: self.tokens[self.curr - 1].span.ed,
+                    offset: self.tokens[self.prev].borrow().span.ed,
                     message: "missing expression after comma",
                 });
                 return None;
@@ -547,65 +535,65 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         Some(vals)
     }
 
-    fn parameters(&mut self, ed: &TokenKind<'a>) -> Vec<&'a str> {
+    fn parse_parameters(&mut self, ed: &TokenKind<'a>) -> Vec<&'a str> {
         let mut names = Vec::new();
 
-        if self.take(ed) {
+        if self.eat(ed) {
             return names;
         }
 
         loop {
-            if self.take(&TokenKind::Dots) {
+            if self.eat(&TokenKind::Dots) {
                 break;
             }
 
             let Some(name) = self.require_name() else { return names };
             names.push(name);
 
-            if !self.take(&TokenKind::Comma) {
+            if !self.eat(&TokenKind::Comma) {
                 break;
             }
         }
 
-        self.require(ed);
+        self.expect(ed);
         names
     }
 
-    fn function(&mut self, is_method: bool) {
-        if !self.require(&TokenKind::LParen) {
+    fn parse_function(&mut self, is_method: bool) {
+        if !self.expect(&TokenKind::LParen) {
             return;
         }
 
-        let mut names = self.parameters(&TokenKind::RParen);
+        let mut names = self.parse_parameters(&TokenKind::RParen);
         if is_method {
             names.insert(0, "self");
         }
 
-        self.function_body(names, false, false);
+        self.parse_function_body(names, false, false);
     }
 
-    fn short_function(&mut self, name: Option<&'a str>, should_stop_colon: bool) {
+    fn parse_short_function(&mut self, name: Option<&'a str>, should_stop_at_colon: bool) {
         let names = if let Some(name) = name {
             vec![name]
-        } else if self.take(&TokenKind::Operator("||")) {
+        } else if self.eat(&TokenKind::Operator("||")) {
             Vec::new()
-        } else if self.take(&TokenKind::Operator("|")) {
-            self.parameters(&TokenKind::Operator("|"))
+        } else if self.eat(&TokenKind::Operator("|")) {
+            self.parse_parameters(&TokenKind::Operator("|"))
         } else {
             return;
         };
 
-        if self.take(&TokenKind::Operator("->")) {
-            self.function_body(names, true, should_stop_colon);
+        if self.expect(&TokenKind::Operator("->")) {
+            self.parse_function_body(names, true, should_stop_at_colon);
         }
     }
 
-    fn function_body(&mut self, names: Vec<&'a str>, is_short: bool, should_stop_colon: bool) {
+    fn parse_function_body(&mut self, names: Vec<&'a str>, is_short: bool, should_stop_at_colon: bool) {
         let prev_stmt_st = self.stmt_st.take();
-        let vals = self
+        let references = self
             .bindings
             .iter()
-            .map(|binding| binding.val.clone())
+            .map(|binding| binding.reference.clone())
             .collect::<Vec<_>>();
         let writes_st = self.writes.len();
 
@@ -616,29 +604,29 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             self.declare(name, None);
         }
 
-        if is_short && !self.take(&TokenKind::Keyword("do")) {
-            self.require_expr(should_stop_colon);
+        if is_short && !self.eat(&TokenKind::Keyword("do")) {
+            self.require_expr(should_stop_at_colon);
         } else {
-            self.block();
-            self.require(&TokenKind::Keyword("end"));
+            self.parse_block();
+            self.expect(&TokenKind::Keyword("end"));
         }
 
         self.scopes.pop().expect("scope must exist");
         self.functions.pop().expect("function scope must exist");
-        self.invalidate(&vals, writes_st);
+        self.invalidate(&references, writes_st);
         self.stmt_st = prev_stmt_st;
     }
 
     #[allow(clippy::too_many_lines)]
-    fn expr(&mut self, min: u8, should_stop_colon: bool) -> Option<Expression<'a>> {
+    fn read_expr(&mut self, min_precedence: u8, should_stop_at_colon: bool) -> Option<Expression<'a>> {
         if self.error.is_some() {
             return None;
         }
 
         if self.depth + 1 >= MAX_DEPTH {
             self.error = Some(Error {
-                offset: self.tokens.get(self.curr).map_or_else(
-                    || self.tokens.last().map_or(0, |token| token.span.ed),
+                offset: self.token(self.curr).map_or_else(
+                    || self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
                     |token| token.span.st,
                 ),
                 message: "chunk has too many syntax levels",
@@ -650,32 +638,38 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         let curr = self.curr;
 
         let val = (|| {
-            let token = self.tokens.get(self.curr)?;
+            let token = self.token(self.curr)?;
             let st = token.span.st;
             let mut reference = None;
             let mut binding = None;
             let mut captures = Vec::new();
             let mut is_prefix = false;
+            let mut is_target = false;
+            let mut is_call = false;
+            let mut has_safe_navigation = false;
 
             match &token.kind {
-                TokenKind::Ident(name) => {
+                TokenKind::Ident(name) | TokenKind::Keyword(name @ ("goto" | "const" | "continue")) => {
                     let name = *name;
-                    self.curr += 1;
+                    self.bump();
                     if self.kind() == Some(&TokenKind::Operator("->")) {
-                        self.short_function(Some(name), should_stop_colon);
+                        self.parse_short_function(Some(name), should_stop_at_colon);
                         return Some(Expression {
                             span: Span {
                                 st,
-                                ed: self.tokens[self.curr - 1].span.ed,
+                                ed: self.tokens[self.prev].borrow().span.ed,
                             },
                             reference: None,
                             binding: None,
                             captures: Vec::new(),
+                            is_target: false,
+                            is_call: false,
                         });
                     }
                     is_prefix = true;
+                    is_target = true;
                     let index = self.resolve(name);
-                    reference.clone_from(&self.bindings[index].val);
+                    reference.clone_from(&self.bindings[index].reference);
                     binding = Some(index);
                     captures.clone_from(&self.bindings[index].captures);
 
@@ -690,59 +684,57 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 TokenKind::String(_)
                 | TokenKind::Number(_)
                 | TokenKind::Dots
-                | TokenKind::Keyword("nil" | "true" | "false") => self.curr += 1,
+                | TokenKind::Keyword("nil" | "true" | "false") => self.bump(),
                 TokenKind::Other('-' | '#') | TokenKind::Operator("~" | "!") | TokenKind::Keyword("not") => {
-                    self.curr += 1;
-                    self.expr(13, false)?;
+                    self.bump();
+                    self.read_expr(13, false)?;
                 }
                 TokenKind::LParen => {
                     is_prefix = true;
-                    self.curr += 1;
-                    let val = self.expr(0, false)?;
+                    self.bump();
+                    let val = self.read_expr(0, false)?;
                     reference = val.reference;
                     binding = val.binding;
                     captures = val.captures;
-                    if !self.require(&TokenKind::RParen) {
+                    if !self.expect(&TokenKind::RParen) {
                         return None;
                     }
                 }
                 TokenKind::LBrace => {
-                    self.curr += 1;
+                    self.bump();
                     while self.kind().is_some() && self.kind() != Some(&TokenKind::RBrace) {
-                        if self.take(&TokenKind::LBracket) {
-                            self.expr(0, false)?;
-                            if !self.require(&TokenKind::RBracket) || !self.require(&TokenKind::Assign) {
+                        if self.eat(&TokenKind::LBracket) {
+                            self.read_expr(0, false)?;
+                            if !self.expect(&TokenKind::RBracket) || !self.expect(&TokenKind::Assign) {
                                 return None;
                             }
                         } else if self.kind().and_then(TokenKind::name).is_some()
-                            && self
-                                .tokens
-                                .get(self.curr + 1)
-                                .is_some_and(|token| token.kind == TokenKind::Assign)
+                            && self.peek(1).is_some_and(|token| token.kind == TokenKind::Assign)
                         {
-                            self.curr += 2;
+                            self.bump();
+                            self.bump();
                         }
 
-                        self.expr(0, false)?;
+                        self.read_expr(0, false)?;
                         if self.kind() == Some(&TokenKind::RBrace) {
                             break;
                         }
 
-                        if !self.take(&TokenKind::Comma) && !self.take(&TokenKind::Semicolon) {
-                            self.require(&TokenKind::Comma);
+                        if !self.eat(&TokenKind::Comma) && !self.eat(&TokenKind::Semicolon) {
+                            self.expect(&TokenKind::Comma);
                             return None;
                         }
                     }
 
-                    if !self.require(&TokenKind::RBrace) {
+                    if !self.expect(&TokenKind::RBrace) {
                         return None;
                     }
                 }
                 TokenKind::Keyword("function") => {
-                    self.curr += 1;
-                    self.function(false);
+                    self.bump();
+                    self.parse_function(false);
                 }
-                TokenKind::Operator("|" | "||") => self.short_function(None, should_stop_colon),
+                TokenKind::Operator("|" | "||") => self.parse_short_function(None, should_stop_at_colon),
                 _ => return None,
             }
 
@@ -750,20 +742,23 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 loop {
                     match self.kind().cloned() {
                         Some(TokenKind::Dot) => {
-                            self.curr += 1;
-                            let name = self.kind().and_then(TokenKind::name)?;
-                            self.curr += 1;
+                            self.bump();
+                            is_target = !has_safe_navigation;
+                            is_call = false;
+                            let name = self.require_name()?;
                             if let Some(reference) = &mut reference {
                                 reference.push(name);
                             }
                         }
                         Some(TokenKind::LBracket) => {
-                            self.curr += 1;
+                            self.bump();
+                            is_target = !has_safe_navigation;
+                            is_call = false;
                             let key_st = self.curr;
-                            self.expr(0, false)?;
+                            self.read_expr(0, false)?;
 
-                            if self.curr == key_st + 1
-                                && let TokenKind::String(key) = &self.tokens[key_st].kind
+                            if self.prev == key_st
+                                && let TokenKind::String(key) = &self.tokens[key_st].borrow().kind
                                 && let Cow::Borrowed(key) = &key.val
                                 && let Ok(key) = std::str::from_utf8(key)
                             {
@@ -774,37 +769,62 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                                 reference = None;
                             }
 
-                            if !self.require(&TokenKind::RBracket) {
+                            if !self.expect(&TokenKind::RBracket) {
                                 return None;
                             }
                         }
                         Some(TokenKind::Operator("?.")) => {
-                            self.curr += 1;
+                            self.bump();
+                            has_safe_navigation = true;
+                            is_target = false;
+                            is_call = false;
                             if let Some(name) = self.kind().and_then(TokenKind::name) {
-                                self.curr += 1;
+                                self.bump();
                                 if let Some(reference) = &mut reference {
                                     reference.push(name);
                                 }
+                            } else if !matches!(
+                                self.kind(),
+                                Some(
+                                    TokenKind::LBracket
+                                        | TokenKind::Colon
+                                        | TokenKind::LParen
+                                        | TokenKind::LBrace
+                                        | TokenKind::String(_)
+                                )
+                            ) {
+                                self.fail("missing safe navigation suffix");
+                                return None;
                             }
                         }
-                        Some(TokenKind::Colon) if !should_stop_colon => {
-                            self.curr += 1;
-                            if matches!(self.kind(), Some(TokenKind::Ident(_))) {
-                                self.curr += 1;
+                        Some(TokenKind::Colon) if !should_stop_at_colon => {
+                            self.bump();
+                            self.require_name()?;
+                            if self.eat(&TokenKind::Operator("?.")) {
+                                has_safe_navigation = true;
+                            }
+                            if !matches!(
+                                self.kind(),
+                                Some(TokenKind::LParen | TokenKind::LBrace | TokenKind::String(_))
+                            ) {
+                                self.fail("missing method arguments");
+                                return None;
                             }
                             reference = None;
                         }
                         Some(TokenKind::LParen | TokenKind::LBrace | TokenKind::String(_)) => {
-                            let args = if self.take(&TokenKind::LParen) {
-                                let args = self.exprs()?;
+                            is_target = false;
+                            is_call = true;
+                            let args = if self.eat(&TokenKind::LParen) {
+                                let args = self.parse_exprs()?;
 
-                                if !self.require(&TokenKind::RParen) {
+                                if !self.expect(&TokenKind::RParen) {
                                     return None;
                                 }
 
                                 args
                             } else {
-                                vec![self.expr(15, false)?]
+                                vec![self.read_expr(15, false)?]
                             };
 
                             if reference.is_some() {
@@ -817,7 +837,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                                 stmt_st: self.stmt_st,
                                 span: Span {
                                     st,
-                                    ed: self.tokens[self.curr - 1].span.ed,
+                                    ed: self.tokens[self.prev].borrow().span.ed,
                                 },
                                 reference,
                                 args: args.into_iter().map(|arg| arg.span).collect(),
@@ -832,7 +852,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             }
 
             loop {
-                let (priority, is_right) = match self.kind() {
+                let (precedence, is_right_associative) = match self.kind() {
                     Some(TokenKind::Keyword("or") | TokenKind::Operator("||" | "??")) => (1, false),
                     Some(TokenKind::Keyword("and") | TokenKind::Operator("&&")) => (2, false),
                     Some(
@@ -854,25 +874,29 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     _ => break,
                 };
 
-                if priority < min {
+                if precedence < min_precedence {
                     break;
                 }
 
-                self.curr += 1;
-                self.expr(priority + u8::from(!is_right), should_stop_colon)?;
+                self.bump();
+                self.read_expr(precedence + u8::from(!is_right_associative), should_stop_at_colon)?;
+                is_target = false;
+                is_call = false;
                 reference = None;
                 binding = None;
                 captures.clear();
             }
 
-            if min == 0 && self.take(&TokenKind::Operator("?")) {
-                self.expr(0, true)?;
+            if min_precedence == 0 && self.eat(&TokenKind::Operator("?")) {
+                self.read_expr(0, true)?;
 
-                if !self.require(&TokenKind::Colon) {
+                if !self.expect(&TokenKind::Colon) {
                     return None;
                 }
 
-                self.expr(0, false)?;
+                self.read_expr(0, false)?;
+                is_target = false;
+                is_call = false;
                 reference = None;
                 binding = None;
                 captures.clear();
@@ -881,19 +905,21 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             Some(Expression {
                 span: Span {
                     st,
-                    ed: self.tokens[self.curr - 1].span.ed,
+                    ed: self.tokens[self.prev].borrow().span.ed,
                 },
                 reference,
                 binding,
                 captures,
+                is_target,
+                is_call,
             })
         })();
 
         self.depth -= 1;
         if val.is_none() && self.curr != curr {
             self.error.get_or_insert(Error {
-                offset: self.tokens.get(self.curr).map_or_else(
-                    || self.tokens.last().map_or(0, |token| token.span.ed),
+                offset: self.token(self.curr).map_or_else(
+                    || self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
                     |token| token.span.st,
                 ),
                 message: "incomplete expression",
@@ -902,12 +928,12 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         val
     }
 
-    fn declare(&mut self, name: &'a str, val: Reference<'a>) -> usize {
+    fn declare(&mut self, name: &'a str, reference: Reference<'a>) -> usize {
         let scope = self.scopes.len() - 1;
         let index = self.bindings.len();
         self.bindings.push(Binding {
             name,
-            val,
+            reference,
             scope,
             captures: Vec::new(),
             calls: Vec::new(),
@@ -924,7 +950,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         let index = self.bindings.len();
         self.bindings.push(Binding {
             name,
-            val: Some(vec![name]),
+            reference: Some(vec![name]),
             scope: 0,
             captures: Vec::new(),
             calls: Vec::new(),
@@ -933,28 +959,31 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         index
     }
 
-    fn assign(&mut self, index: usize, val: Reference<'a>) {
-        if self.bindings[index].val != val {
+    fn assign(&mut self, index: usize, reference: Reference<'a>) {
+        if self.bindings[index].reference != reference {
             for call in std::mem::take(&mut self.bindings[index].calls) {
                 self.output.calls[call].reference = None;
             }
         }
 
-        self.bindings[index].val = val;
+        self.bindings[index].reference = reference;
         self.bindings[index].captures.clear();
         self.writes.push(index);
     }
 
-    fn restore(&mut self, vals: &[Reference<'a>]) {
+    fn restore(&mut self, references: &[Reference<'a>]) {
         for (index, binding) in self.bindings.iter_mut().enumerate() {
             if binding.scope < self.scopes.len() {
-                binding.val = vals.get(index).cloned().unwrap_or_else(|| Some(vec![binding.name]));
+                binding.reference = references
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| Some(vec![binding.name]));
             }
         }
     }
 
-    fn invalidate(&mut self, vals: &[Reference<'a>], writes_st: usize) {
-        self.restore(vals);
+    fn invalidate(&mut self, references: &[Reference<'a>], writes_st: usize) {
+        self.restore(references);
 
         let writes_ed = self.writes.len();
 
@@ -968,598 +997,81 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
     fn require_name(&mut self) -> Option<&'a str> {
         if let Some(name) = self.kind().and_then(TokenKind::name) {
-            self.curr += 1;
+            self.bump();
             return Some(name);
         }
 
-        self.error.get_or_insert(Error {
-            offset: self.tokens.get(self.curr).map_or_else(
-                || self.tokens.last().map_or(0, |token| token.span.ed),
-                |token| token.span.st,
-            ),
-            message: "missing identifier",
-        });
+        self.fail("missing identifier");
         None
     }
 
-    fn require_expr(&mut self, should_stop_colon: bool) {
-        if self.expr(0, should_stop_colon).is_none() {
-            self.error.get_or_insert(Error {
-                offset: self.tokens.get(self.curr).map_or_else(
-                    || self.tokens.last().map_or(0, |token| token.span.ed),
-                    |token| token.span.st,
-                ),
-                message: "missing expression",
-            });
+    fn require_expr(&mut self, should_stop_at_colon: bool) {
+        if self.read_expr(0, should_stop_at_colon).is_none() {
+            self.fail("missing expression");
         }
     }
 
-    fn require(&mut self, kind: &TokenKind<'a>) -> bool {
-        if self.take(kind) {
+    fn expect(&mut self, kind: &TokenKind<'a>) -> bool {
+        if self.eat(kind) {
             return true;
         }
 
-        self.error.get_or_insert(Error {
-            offset: self.tokens.get(self.curr).map_or_else(
-                || self.tokens.last().map_or(0, |token| token.span.ed),
-                |token| token.span.st,
-            ),
-            message: "missing syntax delimiter",
-        });
+        self.fail("missing syntax delimiter");
 
         false
     }
 
-    fn take(&mut self, kind: &TokenKind<'a>) -> bool {
+    fn eat(&mut self, kind: &TokenKind<'a>) -> bool {
         if self.kind() == Some(kind) {
-            self.curr += 1;
+            self.bump();
             true
         } else {
             false
         }
     }
 
+    fn token(&self, at: usize) -> Option<&'tokens Token<'a>> {
+        self.tokens.get(at).map(Borrow::borrow)
+    }
+
     fn kind(&self) -> Option<&TokenKind<'a>> {
-        self.tokens.get(self.curr).map(|token| &token.kind)
-    }
-}
-
-#[derive(Clone)]
-pub struct Lexer<'a> {
-    src: &'a str,
-    bytes: &'a [u8],
-    pub(super) curr: usize,
-}
-
-impl<'a> Lexer<'a> {
-    #[must_use]
-    pub fn new(src: &'a str) -> Self {
-        Self {
-            src,
-            bytes: src.as_bytes(),
-            curr: 0,
-        }
+        self.token(self.curr).map(|token| &token.kind)
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn read(&mut self) -> Result<Token<'a>, Error> {
-        let st = self.curr;
-        let byte = self.bytes[self.curr];
-
-        Ok(Token {
-            kind: if matches!(byte, b' ' | b'\t' | 0x0b | 0x0c) {
-                while self.curr < self.bytes.len() && matches!(self.bytes[self.curr], b' ' | b'\t' | 0x0b | 0x0c) {
-                    self.curr += 1;
-                }
-                TokenKind::Whitespace
-            } else if byte == b'\n' {
-                self.curr += 1;
-                TokenKind::Newline
-            } else if self.src[st..].starts_with("--") {
-                self.curr += 2;
-
-                if let Some(bracket) = self.read_bracket().map_err(|_| Error {
-                    offset: st,
-                    message: "unfinished long comment",
-                })? {
-                    TokenKind::Comment(Comment {
-                        content: &self.src[bracket.span.st..bracket.span.ed],
-                        bracket: Some(bracket),
-                    })
-                } else {
-                    self.curr += self.src[self.curr..].find('\n').unwrap_or(self.bytes.len() - self.curr);
-                    TokenKind::Comment(Comment {
-                        content: &self.src[st + 2..self.curr],
-                        bracket: None,
-                    })
-                }
-            } else if matches!(byte, b'"' | b'\'') {
-                TokenKind::String(self.read_string()?)
-            } else if byte == b'[' {
-                if let Some(bracket) = self.read_bracket()? {
-                    let st = bracket.span.st + usize::from(self.bytes.get(bracket.span.st) == Some(&b'\n'));
-                    TokenKind::String(Literal {
-                        val: Cow::Borrowed(&self.bytes[st..bracket.span.ed]),
-                        bracket: Some(bracket),
-                    })
-                } else {
-                    if self.bytes.get(st + 1) == Some(&b'=') {
-                        return Err(Error {
-                            offset: st,
-                            message: "invalid long string delimiter",
-                        });
-                    }
-
-                    self.curr += 1;
-                    TokenKind::LBracket
-                }
-            } else if byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80 {
-                while self.curr < self.bytes.len()
-                    && (self.bytes[self.curr].is_ascii_alphanumeric()
-                        || self.bytes[self.curr] == b'_'
-                        || self.bytes[self.curr] >= 0x80)
-                {
-                    self.curr += 1;
-                }
-
-                match &self.src[st..self.curr] {
-                    "local" => TokenKind::Local,
-                    word @ ("and" | "break" | "do" | "else" | "elseif" | "end" | "false" | "for" | "function"
-                    | "if" | "const" | "continue" | "goto" | "in" | "nil" | "not" | "or" | "repeat"
-                    | "return" | "then" | "true" | "until" | "while") => TokenKind::Keyword(word),
-                    word => TokenKind::Ident(word),
-                }
-            } else if let Some(op) = ["~>>", "&&", "||", "!=", "?.", "??", "::", "->", "<<", ">>"]
-                .into_iter()
-                .find(|op| self.src[st..].starts_with(op))
-            {
-                self.curr += op.len();
-                TokenKind::Operator(op)
-            } else if byte.is_ascii_digit()
-                || (byte == b'.' && self.bytes.get(self.curr + 1).is_some_and(u8::is_ascii_digit))
-            {
-                TokenKind::Number(self.read_number()?)
-            } else {
-                self.curr += 1;
-
-                match byte {
-                    b'@' => {
-                        return Err(Error {
-                            offset: st,
-                            message: "unexpected '@'",
-                        });
-                    }
-                    b'=' => {
-                        if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' {
-                            self.curr += 1;
-                            TokenKind::Eq
-                        } else {
-                            TokenKind::Assign
-                        }
-                    }
-                    b'~' if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' => {
-                        self.curr += 1;
-                        TokenKind::Ne
-                    }
-                    b'<' if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' => {
-                        self.curr += 1;
-                        TokenKind::Le
-                    }
-                    b'>' if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' => {
-                        self.curr += 1;
-                        TokenKind::Ge
-                    }
-                    b',' => TokenKind::Comma,
-                    b'.' => {
-                        if self.curr < self.bytes.len() && self.bytes[self.curr] == b'.' {
-                            self.curr += 1;
-                            if self.curr < self.bytes.len() && self.bytes[self.curr] == b'.' {
-                                self.curr += 1;
-                                TokenKind::Dots
-                            } else {
-                                TokenKind::Concat
-                            }
-                        } else {
-                            TokenKind::Dot
-                        }
-                    }
-                    b';' => TokenKind::Semicolon,
-                    b':' => TokenKind::Colon,
-                    b'~' => TokenKind::Operator("~"),
-                    b'&' => TokenKind::Operator("&"),
-                    b'|' => TokenKind::Operator("|"),
-                    b'!' => TokenKind::Operator("!"),
-                    b'?' => TokenKind::Operator("?"),
-                    b'(' => TokenKind::LParen,
-                    b')' => TokenKind::RParen,
-                    b']' => TokenKind::RBracket,
-                    b'{' => TokenKind::LBrace,
-                    b'}' => TokenKind::RBrace,
-                    _ => TokenKind::Other(char::from(byte)),
-                }
-            },
-            span: Span { st, ed: self.curr },
-        })
+    fn fail(&mut self, message: &'static str) {
+        self.error.get_or_insert(Error {
+            offset: self.token(self.curr).map_or_else(
+                || self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
+                |token| token.span.st,
+            ),
+            message,
+        });
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn read_number(&mut self) -> Result<&'a str, Error> {
-        let st = self.curr;
-        let mut prefix = self.src[st..].bytes().filter(|&byte| byte != b'_');
-        let base = match (prefix.next(), prefix.next()) {
-            (Some(b'0'), Some(b'x' | b'X')) => 16,
-            (Some(b'0'), Some(b'b' | b'B')) => 2,
-            _ => 10,
-        };
-        let exponent = if base == 16 { b'p' } else { b'e' };
-        let mut prev = self.bytes[self.curr];
+    fn peek(&self, offset: usize) -> Option<&'tokens Token<'a>> {
+        self.tokens[self.curr..]
+            .iter()
+            .map(Borrow::borrow)
+            .filter(|token| !token.kind.is_trivia())
+            .nth(offset)
+    }
+
+    fn bump(&mut self) {
+        self.prev = self.curr;
         self.curr += 1;
-
-        while self.curr < self.bytes.len() {
-            let byte = self.bytes[self.curr];
-            if byte.is_ascii_alphanumeric()
-                || matches!(byte, b'_' | b'.')
-                || byte >= 0x80
-                || (matches!(byte, b'+' | b'-') && prev.to_ascii_lowercase() == exponent)
-            {
-                if byte != b'_' {
-                    prev = byte;
-                }
-
-                self.curr += 1;
-            } else {
-                break;
-            }
-        }
-
-        let number = &self.src[st..self.curr];
-        let is_valid = (|| {
-            let mut bytes = number
-                .bytes()
-                .filter(|&byte| byte != b'_')
-                .map(|byte| byte.to_ascii_lowercase())
-                .peekable();
-            if base != 10 {
-                bytes.next();
-                bytes.next();
-            }
-
-            let mut has_digits = false;
-            let mut has_dot = false;
-            let mut is_float = false;
-            let mut val = Some(0u64);
-            let mut fraction = 0usize;
-            let mut fraction_ed = 0;
-
-            while let Some(&byte) = bytes.peek() {
-                let digit = match byte {
-                    b'0'..=b'9' => Some(byte - b'0'),
-                    b'a'..=b'f' if base == 16 => Some(byte - b'a' + 10),
-                    _ => None,
-                };
-
-                if let Some(digit) = digit {
-                    if digit >= base {
-                        return false;
-                    }
-                    has_digits = true;
-                    val = val.and_then(|val| val.checked_mul(u64::from(base))?.checked_add(u64::from(digit)));
-                    if has_dot {
-                        fraction += 1;
-                        if digit != 0 {
-                            fraction_ed = fraction;
-                        }
-                    }
-                } else if byte == b'.' && !has_dot && base != 2 {
-                    has_dot = true;
-                    is_float = true;
-                } else {
-                    break;
-                }
-                bytes.next();
-            }
-
-            if !has_digits || fraction_ed >= 1 << 20 || (base == 2 && val.is_none()) {
-                return false;
-            }
-
-            if base != 2 && bytes.peek() == Some(&exponent) {
-                is_float = true;
-                bytes.next();
-                if matches!(bytes.peek(), Some(b'+' | b'-')) {
-                    bytes.next();
-                }
-
-                let mut has_exponent = false;
-                let mut exponent = 0u32;
-
-                while let Some(&byte @ b'0'..=b'9') = bytes.peek() {
-                    has_exponent = true;
-                    exponent = exponent * 10 + u32::from(byte - b'0');
-                    if exponent >= 1 << 20 {
-                        return false;
-                    }
-                    bytes.next();
-                }
-
-                if !has_exponent {
-                    return false;
-                }
-            }
-
-            match [bytes.next(), bytes.next(), bytes.next(), bytes.next()] {
-                [None | Some(b'i'), None, None, None] => true,
-                [Some(b'l'), Some(b'l'), None | Some(b'u'), None] | [Some(b'u'), Some(b'l'), Some(b'l'), None] => {
-                    !is_float && val.is_some()
-                }
-                _ => false,
-            }
-        })();
-
-        if !is_valid {
-            return Err(Error {
-                offset: st,
-                message: "malformed number",
-            });
-        }
-
-        Ok(number)
+        self.skip_trivia();
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn read_string(&mut self) -> Result<Literal<'a>, Error> {
-        let st = self.curr;
-        let quote = self.bytes[st];
-        self.curr += 1;
-        let content_st = self.curr;
-        let mut val = None;
-        let mut copy_st = content_st;
-        let mut is_valid = true;
-        let mut is_closed = false;
-        let hex = |digit| match digit {
-            b'0'..=b'9' => Some(digit - b'0'),
-            b'a'..=b'f' => Some(digit - b'a' + 10),
-            b'A'..=b'F' => Some(digit - b'A' + 10),
-            _ => None,
-        };
-
-        while self.curr < self.bytes.len() {
-            let byte = self.bytes[self.curr];
-            if byte == quote {
-                self.curr += 1;
-                is_closed = true;
-                break;
-            }
-
-            if byte == b'\n' {
-                is_valid = false;
-                break;
-            }
-
-            if byte == b'\\' {
-                let val = val.get_or_insert_with(|| Vec::with_capacity(self.curr - content_st + 8));
-                val.extend_from_slice(&self.bytes[copy_st..self.curr]);
-                self.curr += 1;
-
-                if self.curr >= self.bytes.len() {
-                    is_valid = false;
-                    break;
-                }
-
-                let escape = self.bytes[self.curr];
-                self.curr += 1;
-
-                match escape {
-                    b'a' => val.push(b'\x07'),
-                    b'b' => val.push(b'\x08'),
-                    b'f' => val.push(b'\x0C'),
-                    b'n' => val.push(b'\n'),
-                    b'r' => val.push(b'\r'),
-                    b't' => val.push(b'\t'),
-                    b'v' => val.push(b'\x0B'),
-                    b'\\' | b'"' | b'\'' | b'\n' => val.push(escape),
-                    b'x' => {
-                        let Some(high) = self.bytes.get(self.curr).copied().and_then(hex) else {
-                            is_valid = false;
-                            continue;
-                        };
-                        self.curr += 1;
-                        let Some(low) = self.bytes.get(self.curr).copied().and_then(hex) else {
-                            is_valid = false;
-                            continue;
-                        };
-                        self.curr += 1;
-                        val.push((high << 4) | low);
-                    }
-                    b'u' => {
-                        if self.bytes.get(self.curr) != Some(&b'{') {
-                            is_valid = false;
-                            continue;
-                        }
-
-                        self.curr += 1;
-                        let mut code = 0u32;
-                        let mut digits = 0;
-
-                        while let Some(digit) = self.bytes.get(self.curr).copied().and_then(hex) {
-                            if let Some(next) = code.checked_mul(16).and_then(|v| v.checked_add(u32::from(digit))) {
-                                code = next;
-                            } else {
-                                is_valid = false;
-                            }
-
-                            digits += 1;
-                            self.curr += 1;
-                        }
-
-                        if self.bytes.get(self.curr) == Some(&b'}') {
-                            self.curr += 1;
-                        } else {
-                            is_valid = false;
-                        }
-
-                        if digits == 0 {
-                            is_valid = false;
-                        }
-
-                        if let Some(ch) = char::from_u32(code) {
-                            let mut buf = [0; 4];
-                            val.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                        } else {
-                            is_valid = false;
-                        }
-                    }
-                    b'z' => {
-                        while self.curr < self.bytes.len()
-                            && matches!(self.bytes[self.curr], b' ' | b'\t' | b'\n' | 0x0b | 0x0c)
-                        {
-                            self.curr += 1;
-                        }
-                    }
-                    digit @ b'0'..=b'9' => {
-                        let mut num = u32::from(digit - b'0');
-
-                        for _ in 0..2 {
-                            if self.curr < self.bytes.len() && self.bytes[self.curr].is_ascii_digit() {
-                                num = num * 10 + u32::from(self.bytes[self.curr] - b'0');
-                                self.curr += 1;
-                            } else {
-                                break;
-                            }
-                        }
-
-                        if let Ok(byte) = u8::try_from(num) {
-                            val.push(byte);
-                        } else {
-                            is_valid = false;
-                        }
-                    }
-                    _ => {
-                        is_valid = false;
-                        while self.bytes.get(self.curr).is_some_and(|byte| byte & 0xC0 == 0x80) {
-                            self.curr += 1;
-                        }
-                    }
-                }
-
-                copy_st = self.curr;
-            } else {
-                self.curr += 1;
-            }
-        }
-
-        if is_valid && is_closed {
-            Ok(Literal {
-                val: match val {
-                    Some(mut val) => {
-                        val.extend_from_slice(&self.bytes[copy_st..self.curr - 1]);
-                        Cow::Owned(val)
-                    }
-                    None => Cow::Borrowed(&self.bytes[content_st..self.curr - 1]),
-                },
-                bracket: None,
-            })
-        } else {
-            Err(Error {
-                offset: st,
-                message: if is_closed {
-                    "invalid string escape"
-                } else {
-                    "unfinished string"
-                },
-            })
+    fn skip_trivia(&mut self) {
+        while self.token(self.curr).is_some_and(|token| token.kind.is_trivia()) {
+            self.curr += 1;
         }
     }
-
-    fn read_bracket(&mut self) -> Result<Option<Bracket>, Error> {
-        let st = self.curr;
-
-        if self.bytes.get(st) != Some(&b'[') {
-            return Ok(None);
-        }
-
-        let mut curr = st + 1;
-
-        while self.bytes.get(curr) == Some(&b'=') {
-            curr += 1;
-        }
-
-        if self.bytes.get(curr) != Some(&b'[') {
-            return Ok(None);
-        }
-
-        let level = curr - st - 1;
-        let content_st = curr + 1;
-        let mut ed = content_st;
-        while ed < self.bytes.len() {
-            if self.bytes[ed] == b']' {
-                let mut curr = ed + 1;
-
-                while self.bytes.get(curr) == Some(&b'=') {
-                    curr += 1;
-                }
-
-                if curr - ed - 1 == level && self.bytes.get(curr) == Some(&b']') {
-                    self.curr = curr + 1;
-                    return Ok(Some(Bracket {
-                        span: Span { st: content_st, ed },
-                        level,
-                    }));
-                }
-            }
-
-            ed += 1;
-        }
-
-        Err(Error {
-            offset: st,
-            message: "unfinished long string",
-        })
-    }
 }
-
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.curr >= self.bytes.len() {
-            return None;
-        }
-
-        let token = self.read();
-
-        if token.is_err() {
-            self.curr = self.bytes.len();
-        }
-
-        Some(token)
-    }
-}
-
-#[derive(Default)]
-pub struct Analysis<'a> {
-    pub assigns: Vec<Assignment>,
-    pub calls: Vec<Call<'a>>,
-}
-
-pub struct Assignment {
-    pub span: Span,
-    pub targets: Vec<Span>,
-    pub vals: Vec<Span>,
-}
-
-pub struct Call<'a> {
-    pub stmt_st: Option<usize>,
-    pub span: Span,
-    pub reference: Reference<'a>,
-    pub args: Vec<Span>,
-}
-
-type Reference<'a> = Option<Vec<&'a str>>;
 
 struct Binding<'a> {
     name: &'a str,
-    val: Reference<'a>,
+    reference: Reference<'a>,
     scope: usize,
     captures: Vec<usize>,
     calls: Vec<usize>,
@@ -1570,102 +1082,13 @@ struct Expression<'a> {
     reference: Reference<'a>,
     binding: Option<usize>,
     captures: Vec<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token<'a> {
-    pub kind: TokenKind<'a>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenKind<'a> {
-    Keyword(&'a str),
-    Local,
-    Ident(&'a str),
-    String(Literal<'a>),
-    Number(&'a str),
-    Operator(&'a str),
-    Assign,
-    Eq,
-    Ne,
-    Le,
-    Ge,
-    Comma,
-    Dot,
-    Dots,
-    Concat,
-    Semicolon,
-    Colon,
-    LParen,
-    RParen,
-    LBracket,
-    RBracket,
-    LBrace,
-    RBrace,
-    Comment(Comment<'a>),
-    Whitespace,
-    Newline,
-    Other(char),
-}
-
-impl<'a> TokenKind<'a> {
-    pub(super) fn name(&self) -> Option<&'a str> {
-        match self {
-            Self::Ident(name) => Some(name),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Literal<'a> {
-    pub val: Cow<'a, [u8]>,
-    pub bracket: Option<Bracket>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Comment<'a> {
-    pub content: &'a str,
-    pub bracket: Option<Bracket>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Bracket {
-    pub span: Span,
-    pub level: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub st: usize,
-    pub ed: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Error {
-    pub offset: usize,
-    pub message: &'static str,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message)
-    }
-}
-
-impl std::error::Error for Error {}
-
-pub fn is_ident(name: &str) -> Result<bool, Error> {
-    let mut tokens = Lexer::new(name);
-    Ok(matches!(
-        tokens.next().transpose()?.map(|token| token.kind),
-        Some(ref kind) if kind.name().is_some()
-    ) && tokens.next().transpose()?.is_none())
+    is_target: bool,
+    is_call: bool,
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Lexer, is_ident};
     use super::*;
 
     #[test]
@@ -1879,9 +1302,9 @@ mod tests {
         assert!(!is_ident("").unwrap());
         assert!(!is_ident("123").unwrap());
         assert!(!is_ident("local").unwrap());
-        assert!(!is_ident("goto").unwrap());
-        assert!(!is_ident("const").unwrap());
-        assert!(!is_ident("continue").unwrap());
+        assert!(is_ident("goto").unwrap());
+        assert!(is_ident("const").unwrap());
+        assert!(is_ident("continue").unwrap());
         assert!(!is_ident("a.b").unwrap());
         assert!(!is_ident("a b").unwrap());
     }
@@ -2178,5 +1601,78 @@ mod tests {
             panic!("{src}");
         };
         assert_eq!(literal.val.as_ref(), b"ab");
+    }
+
+    #[test]
+    fn syntax_cases() {
+        for (name, src) in [
+            ("empty", " -- comment\n ; ; "),
+            (
+                "soft names",
+                "local const, continue, goto = 1, 2, 3; const = continue + goto",
+            ),
+            ("soft members", "local t = {const=1}; t.continue = t.const; t:goto()"),
+            ("continue", "while true do continue; end"),
+            ("trivia", "local --[[name]] value --[[assign]] = --[[value]] 1 ;"),
+            ("navigation", "local x = t?.[key]?.(1); local y = t?.:method?.(x)"),
+            ("labels", "::again:: goto again"),
+            ("group target", "(object).field = 1; (object)[1] += 2"),
+            ("calls", "(factory())(); factory().field()"),
+            (
+                "short functions",
+                "local f = |const, continue| -> do return const + continue; end",
+            ),
+            ("operators", "local x = a ?? b || c && d; x ~>>= 1; x ..= 'x'"),
+        ] {
+            let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+            if let Err(err) = Parser::new(&tokens).parse() {
+                panic!("{name}: {src:?}: {err} at {}", err.offset);
+            }
+        }
+
+        for (name, src) in [
+            ("label name", "::::"),
+            ("label close", "::again"),
+            ("bare name", "value"),
+            ("bare literal", "1"),
+            ("literal target", "1 = 2"),
+            ("call target", "f() = 2"),
+            ("group target", "(value) = 2"),
+            ("navigation target", "t?.field.other = 2"),
+            ("method arguments", "local x = t:method"),
+            ("navigation suffix", "local x = t?."),
+            ("short arrow", "local f = |x| x"),
+            ("method declaration", "function t:method.field() end"),
+            ("value list", "local x = 1,"),
+        ] {
+            let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+            let err = Parser::new(&tokens)
+                .parse()
+                .err()
+                .unwrap_or_else(|| panic!("{name}: {src:?}"));
+            assert!(err.offset <= src.len(), "{name}: {err} at {}", err.offset);
+        }
+    }
+
+    #[test]
+    fn fragment_spans() {
+        let src = "-- first\nlocal value = --[[inline]] first + second; -- tail\ncall(value);";
+        let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+        let mut parser = Parser::new(&tokens);
+        for (st, expected) in [
+            (src.find("first +").unwrap(), "first + second"),
+            (src.find("call").unwrap(), "call(value)"),
+        ] {
+            let span = parser.parse_expr(st).unwrap();
+            assert_eq!(&src[span.st..span.ed], expected, "expression at {st}");
+        }
+        let span = parser.parse_stmt(0).unwrap();
+        assert_eq!(
+            &src[span.st..span.ed],
+            "local value = --[[inline]] first + second;",
+            "statement"
+        );
+        assert!(Parser::new(&tokens).parse_expr(src.len()).is_err(), "expression at end");
+        assert!(Parser::new(&tokens).parse_stmt(src.len()).is_err(), "statement at end");
     }
 }

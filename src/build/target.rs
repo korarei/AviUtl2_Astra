@@ -70,6 +70,10 @@ pub(super) fn build(dir: &Path, build: &Build, build_type: BuildType) -> anyhow:
                 is_bundled,
                 build.suffix().unwrap_or_default(),
             )?);
+
+            if is_bundled && !output.script.is_empty() && !output.script.ends_with("\n\n") {
+                output.script.push('\n');
+            }
         }
     }
 
@@ -169,7 +173,7 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(
             fs::read_to_string(&files[0]).with_context(|| format!("failed to read '{}'", files[0].display()))?,
-            "@one\r\nreturn 1\r\n@two\r\nreturn 2\r\n"
+            "@one\r\nreturn 1\r\n\r\n@two\r\nreturn 2\r\n\r\n"
         );
         assert_eq!(
             fs::read_to_string(files[0].parent().unwrap().join("Default.demo.aul2")).with_context(|| {

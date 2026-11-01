@@ -1,5 +1,5 @@
+use super::astra;
 use super::lua::{self, TokenKind};
-use super::preprocess;
 use super::source::{self, Position};
 use super::validate;
 use crate::config::{BuildTarget, RESERVED_VARIABLES};
@@ -59,6 +59,8 @@ struct Builder<'a> {
     is_bundled: bool,
     suffix: &'a str,
     include_stack: Vec<PathBuf>,
+    once_files: HashSet<PathBuf>,
+    modules: BTreeMap<PathBuf, Module>,
     map: source::Map,
     scopes: Vec<Scope>,
     repls: Vec<String>,
@@ -127,7 +129,7 @@ impl Builder<'_> {
         let header_ed = locate_header(src);
         if header_ed != 0 {
             let ed = header_ed - usize::from(src[..header_ed].ends_with('\n'));
-            let expanded = preprocess::expand(&src[..ed], self.vars.as_ref())
+            let expanded = astra::expand(&src[..ed], self.vars.as_ref())
                 .map_err(|err| anyhow::anyhow!("{}: {err}", locate(err.offset)))?;
             expanded.append(&mut self.map, &map, 0..ed);
         }
@@ -141,7 +143,7 @@ impl Builder<'_> {
         let mut omit_ed = 0;
         let mut blocked_ed = 0;
         let mut repl = None;
-        let mut parser = preprocess::Parser::new(preprocess::Lexer::new(src));
+        let mut parser = astra::Parser::new(astra::Lexer::new(src));
 
         let mut i = lines.partition_point(|&st| st < header_ed);
         while lines.get(i).is_some_and(|&st| st < src.len()) {
@@ -171,9 +173,9 @@ impl Builder<'_> {
                 if token.span.st >= st
                     && let TokenKind::Comment(comment) = &token.kind
                     && comment.bracket.is_some()
-                    && comment.content.split_whitespace().next() == Some("#replace")
-                    && let Some(preprocess::Directive::Replace(_)) =
-                        preprocess::Parser::parse_directive(comment.content.trim_start(), true)
+                    && astra::Parser::read_directive(comment.content).is_some_and(|(name, _)| name == "replace")
+                    && let Some(astra::Directive::Replace(_)) =
+                        astra::Parser::parse_directive(comment.content.trim_start(), true)
                             .map_err(|err| anyhow::anyhow!("{}: {err}", locate(token.span.st)))?
                 {
                     repls.push((token.span, comment.content.trim_start()));
@@ -186,11 +188,8 @@ impl Builder<'_> {
                     && matches!(kind.trim_end(), "pixelshader" | "computeshader")
                     && let Some((_, body)) = rest.split_once(':')
                     && token.span.st >= st
+                    && src[st..token.span.st].is_empty()
                 {
-                    if !src[st..token.span.st].trim().is_empty() {
-                        bail!("{}: shader block must start on its own line", locate(token.span.st));
-                    }
-
                     shader = Some((
                         token.span,
                         body.as_ptr() as usize - src.as_ptr() as usize..bracket.span.ed,
@@ -224,8 +223,8 @@ impl Builder<'_> {
                 None
             } else {
                 comment
-                    .filter(|comment| comment.content.starts_with('#'))
-                    .map(|comment| comment.content)
+                    .map(|comment| comment.content.trim_start())
+                    .filter(|content| content.starts_with('#'))
             };
 
             blocked_ed = blocked;
@@ -248,20 +247,20 @@ impl Builder<'_> {
                 self.include_dirs,
             )?;
             let action = match action {
-                preprocess::Action::Replace(val) => {
+                astra::Action::Replace(val) => {
                     self.repls.push(val);
                     repls.retain(|(span, _)| first.as_ref().is_none_or(|token| token.span != *span));
                     if !is_block {
                         repl = Some(pos.clone());
                     }
-                    preprocess::Action::Keep
+                    astra::Action::Keep
                 }
                 action => action,
             };
 
-            if matches!(action, preprocess::Action::Keep) {
+            if matches!(action, astra::Action::Keep) {
                 for (span, content) in repls {
-                    if let preprocess::Action::Replace(val) = parser.process(
+                    if let astra::Action::Replace(val) = parser.process(
                         Some((content, true)),
                         self.vars.as_ref(),
                         &locate(span.st),
@@ -272,7 +271,7 @@ impl Builder<'_> {
                 }
             }
 
-            let next_line = if is_block && !matches!(&action, preprocess::Action::Keep) {
+            let next_line = if is_block && !matches!(&action, astra::Action::Keep) {
                 first
                     .as_ref()
                     .map_or(i + 1, |token| lines.partition_point(|&st| st < token.span.ed))
@@ -281,11 +280,11 @@ impl Builder<'_> {
             };
 
             match &action {
-                preprocess::Action::Keep => {
+                astra::Action::Keep => {
                     if let Some((span, body)) = shader {
                         let body_st = body.start;
                         let body_ed = body.end;
-                        let prefix = preprocess::expand(&src[st..body_st], self.vars.as_ref())
+                        let prefix = astra::expand(&src[st..body_st], self.vars.as_ref())
                             .map_err(|err| anyhow::anyhow!("{}: {err}", locate(st + err.offset)))?;
                         let body = Self::normalize_shader(&map.slice(body))?;
                         let nested = super::shader::Builder::build(
@@ -310,7 +309,7 @@ impl Builder<'_> {
                         }
 
                         let suffix_ed = lines.get(line_ed + 1).map_or(src.len(), |st| st - 1);
-                        let suffix = preprocess::expand(&src[body_ed..suffix_ed], self.vars.as_ref())
+                        let suffix = astra::expand(&src[body_ed..suffix_ed], self.vars.as_ref())
                             .map_err(|err| anyhow::anyhow!("{}: {err}", locate(body_ed + err.offset)))?;
                         suffix.append(&mut self.map, &map, body_ed..suffix_ed);
 
@@ -323,12 +322,12 @@ impl Builder<'_> {
                         self.map.append(&map, lines[i] - 1..lines[i]);
                     }
 
-                    let expanded = preprocess::expand(line, self.vars.as_ref())
+                    let expanded = astra::expand(line, self.vars.as_ref())
                         .map_err(|err| anyhow::anyhow!("{}: {err}", locate(st + err.offset)))?;
                     expanded.append(&mut self.map, &map, st..ed);
                     has_emitted = true;
                 }
-                preprocess::Action::Omit => {
+                astra::Action::Omit => {
                     let tokens = omit_tokens
                         .get_or_init(|| {
                             let mut lexer = lua::Lexer::new(src);
@@ -353,9 +352,13 @@ impl Builder<'_> {
                     }
                     omit_ed = stmt.ed;
                 }
-                preprocess::Action::Drop | preprocess::Action::PragmaOnce => {}
-                preprocess::Action::Replace(_) => bail!("{pos}: invalid #replace placement"),
-                preprocess::Action::Define(key, val) => {
+                astra::Action::Drop => {}
+                astra::Action::PragmaOnce => {
+                    self.once_files
+                        .insert(std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf()));
+                }
+                astra::Action::Replace(_) => bail!("{pos}: invalid #replace placement"),
+                astra::Action::Define(key, val) => {
                     if RESERVED_VARIABLES.contains(key) {
                         bail!("{pos}: cannot define reserved variable '{key}'");
                     }
@@ -363,7 +366,7 @@ impl Builder<'_> {
                     let vars = self.vars.to_mut();
                     vars.insert(
                         (*key).to_owned(),
-                        preprocess::expand(val, vars)
+                        astra::expand(val, vars)
                             .map_err(|err| {
                                 anyhow::anyhow!(
                                     "{}: {err}",
@@ -374,17 +377,17 @@ impl Builder<'_> {
                             .into_owned(),
                     );
                 }
-                preprocess::Action::Undef(key) => {
+                astra::Action::Undef(key) => {
                     self.vars.to_mut().shift_remove(*key);
                 }
-                preprocess::Action::Include(file) => {
+                astra::Action::Include(file) => {
                     if has_emitted {
                         self.map.append(&map, lines[i] - 1..lines[i]);
                     }
 
                     let include_st = self.map.len();
                     let nested_st = self.scopes.len();
-                    self.include(file, &pos)?;
+                    let is_reused = self.include(file, &pos)?;
 
                     if self.map.len() == include_st {
                         self.map.append(&map, lines[i]..lines[i]);
@@ -408,6 +411,7 @@ impl Builder<'_> {
                             file: file.clone(),
                             padding: indent.len(),
                             require: None,
+                            is_suppressed: is_reused,
                         });
                     }
 
@@ -460,7 +464,7 @@ impl Builder<'_> {
                 continue;
             };
 
-            if comment.content.split_whitespace().next() != Some("#replace") {
+            if astra::Parser::read_directive(comment.content).is_none_or(|(name, _)| name != "replace") {
                 continue;
             }
 
@@ -575,6 +579,7 @@ impl Builder<'_> {
             let index = edits.partition_point(|(old, _)| old.start <= span.st);
             index.checked_sub(1).is_some_and(|index| edits[index].0.end >= span.ed)
         };
+
         let shift = |at: usize| {
             let index = edits.partition_point(|(old, _)| old.start <= at);
             index.checked_sub(1).map_or(at, |index| {
@@ -607,16 +612,25 @@ impl Builder<'_> {
         let mut curr = scope.span.st;
 
         for Include {
-            span, padding, require, ..
+            span,
+            padding,
+            require,
+            is_suppressed,
+            ..
         } in &scope.includes
         {
             let Some(require) = require else {
+                if *is_suppressed {
+                    result.append(&self.map, curr..span.st);
+                    curr = span.ed;
+                }
+
                 continue;
             };
 
             let line_st = src[..require.st].rfind('\n').map_or(0, |at| at + 1);
             let indent = &src[line_st..];
-            let indent = &indent[..indent.bytes().take_while(|&byte| matches!(byte, b' ' | b'\t')).count()];
+            let indent = &indent[..indent.len() - indent.trim_start().len()];
             let prefix_st = span.ed + usize::from(src[span.ed..require.st].starts_with('\n'));
 
             result.append(&self.map, curr..span.st);
@@ -802,7 +816,7 @@ impl Builder<'_> {
             }
 
             let include = &scopes[scope].includes[include_index];
-            let require = lua::Parser::new(tokens.iter().copied())
+            let require = lua::Parser::new(&tokens)
                 .parse()
                 .map_err(|err| anyhow::anyhow!("{}: {}", self.map.locate(err.offset), err.message))?
                 .calls
@@ -940,9 +954,29 @@ impl Builder<'_> {
         Ok(())
     }
 
-    fn include(&mut self, file: &Path, pos: &Position) -> anyhow::Result<()> {
+    fn include(&mut self, file: &Path, pos: &Position) -> anyhow::Result<bool> {
         let key = std::fs::canonicalize(file)
             .with_context(|| format!("{pos}: failed to canonicalize include file '{}'", file.display()))?;
+
+        if self.once_files.contains(&key) {
+            if let Some(module) = self.modules.get(&key) {
+                let st = self.map.len();
+                self.map.append(&module.map, 0..module.map.len());
+                for scope in &module.scopes {
+                    let mut scope = scope.clone();
+                    scope.span.st += st;
+                    scope.span.ed += st;
+                    for include in &mut scope.includes {
+                        include.span.st += st;
+                        include.span.ed += st;
+                    }
+                    self.scopes.push(scope);
+                }
+                self.repls.extend(module.repls.iter().cloned());
+            }
+
+            return Ok(true);
+        }
 
         if self.include_stack.contains(&key) {
             bail!("{pos}: circular include detected: '{}'", file.display());
@@ -952,7 +986,10 @@ impl Builder<'_> {
             bail!("{pos}: include nesting exceeds 64 files");
         }
 
-        self.include_stack.push(key);
+        let st = self.map.len();
+        let scopes_st = self.scopes.len();
+        let repls_st = self.repls.len();
+        self.include_stack.push(key.clone());
 
         let result = crate::fs::read_file(file, self.target.encoding())
             .with_context(|| format!("{pos}: failed to read include file '{}'", file.display()))
@@ -960,7 +997,34 @@ impl Builder<'_> {
 
         let _ = self.include_stack.pop();
 
-        result
+        result?;
+
+        if self.once_files.contains(&key)
+            && file
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("lua"))
+        {
+            let mut scopes = self.scopes[scopes_st..].to_vec();
+            for scope in &mut scopes {
+                scope.span.st -= st;
+                scope.span.ed -= st;
+                for include in &mut scope.includes {
+                    include.span.st -= st;
+                    include.span.ed -= st;
+                }
+            }
+            self.modules.insert(
+                key,
+                Module {
+                    map: self.map.slice(st..self.map.len()),
+                    scopes,
+                    repls: self.repls[repls_st..].to_vec(),
+                },
+            );
+        }
+
+        Ok(false)
     }
 
     fn normalize_shader(map: &source::Map) -> anyhow::Result<source::Map> {
@@ -982,7 +1046,7 @@ impl Builder<'_> {
                 continue;
             }
 
-            if text[st..].starts_with("--#") {
+            if text[st + 2..].trim_start().starts_with('#') {
                 result.append(map, curr..st);
                 result.generate("//", map, st..st + 2);
                 curr = st + 2;
@@ -996,7 +1060,11 @@ impl Builder<'_> {
                 let TokenKind::Comment(comment) = token.kind else {
                     continue;
                 };
-                let Some(bracket) = comment.bracket.filter(|_| comment.content.starts_with('#')) else {
+
+                let Some(bracket) = comment
+                    .bracket
+                    .filter(|_| comment.content.trim_start().starts_with('#'))
+                else {
                     continue;
                 };
 
@@ -1033,6 +1101,7 @@ impl Builder<'_> {
         let map = std::mem::take(&mut self.map);
         let text = map.text();
         let st = text.len() - text.trim_start().len();
+        let indent = map.slice(text[..st].rfind('\n').map_or(0, |at| at + 1)..st);
         let text = text.trim();
         if text.is_empty() {
             return Ok(map.slice(0..0));
@@ -1052,7 +1121,7 @@ impl Builder<'_> {
             body_st = first_ed + usize::from(first_ed < text.len());
         } else if let Some(header) = first
             .strip_prefix("--")
-            .map(|tail| tail.trim_start_matches('-').trim_start_matches([' ', '\t']))
+            .map(|tail| tail.trim_start_matches('-').trim_start())
             .and_then(|tail| tail.strip_prefix('@'))
         {
             if self.is_bundled {
@@ -1076,6 +1145,9 @@ impl Builder<'_> {
         if body_st < text.len() {
             if !result.is_empty() {
                 result.generate("\n", &map, body_st..body_st);
+            }
+            if body_st == 0 && first.starts_with("--") {
+                result.append(&indent, 0..indent.len());
             }
             result.append(&map, body_st..map.len());
         }
@@ -1126,12 +1198,12 @@ impl Builder<'_> {
             let Some((kind, var_part)) = header.split_once('@') else {
                 continue;
             };
-            let kind = kind.trim_end_matches([' ', '\t']);
+            let kind = kind.trim_end();
             if kind.is_empty() || !kind.bytes().all(|b| b.is_ascii_lowercase()) {
                 continue;
             }
 
-            let var = var_part.trim_matches([' ', '\t']);
+            let var = var_part.trim();
             if !lua::is_ident(var).unwrap_or(false) || src[..span.st].rsplit('\n').next().unwrap().trim().is_empty() {
                 continue;
             }
@@ -1175,11 +1247,11 @@ impl Builder<'_> {
 
             if assign_st < curr
                 || !src[line_st..assign.span.st]
-                    .bytes()
-                    .all(|b| matches!(b, b' ' | b'\t' | b';'))
+                    .chars()
+                    .all(|c| c.is_whitespace() || c == ';')
                 || !src[assign.span.ed..span.st]
-                    .bytes()
-                    .all(|b| matches!(b, b' ' | b'\t' | b';'))
+                    .chars()
+                    .all(|c| c.is_whitespace() || c == ';')
                 || assign.targets.len() != 1
                 || assign.vals.len() > 1
             {
@@ -1204,7 +1276,7 @@ impl Builder<'_> {
             } else {
                 Cow::Borrowed(var_part)
             };
-            let trimmed = rest.trim_start_matches([' ', '\t']);
+            let trimmed = rest.trim_start();
             let ws = &rest[..rest.len() - trimmed.len()];
             let rest = if let Some(val) = assign.vals.first() {
                 resolve_default(kind, &src[val.st..val.ed], trimmed)
@@ -1222,6 +1294,58 @@ impl Builder<'_> {
         Ok(result)
     }
 
+    fn extract_shader<'s>(
+        map: &source::Map,
+        src: &str,
+        st: usize,
+        content: &'s str,
+        level: usize,
+    ) -> anyhow::Result<Option<Shader<'s>>> {
+        let Some((kind, rest)) = content.split_once('@') else {
+            return Ok(None);
+        };
+
+        if !matches!(kind.trim(), "pixelshader" | "computeshader") {
+            return Ok(None);
+        }
+
+        let Some((name, body)) = rest.split_once(':') else {
+            return Ok(None);
+        };
+
+        let prefix = src[..st].rsplit('\n').next().unwrap();
+        let has_indent = !prefix.is_empty() && prefix.trim().is_empty();
+        let has_space = kind.starts_with(char::is_whitespace);
+        let pos = map.locate(st);
+
+        if level != 0 {
+            tracing::warn!("{pos}: shader block must use '--[[...]]'; leaving it as comment");
+        }
+
+        if has_indent {
+            tracing::warn!("{pos}: whitespace before '--' for shader is not allowed; leaving it as comment");
+        }
+
+        if has_space {
+            tracing::warn!("{pos}: whitespace before shader kind is not allowed; leaving it as comment");
+        }
+
+        if level != 0 || has_indent || has_space {
+            return Ok(None);
+        }
+
+        if !prefix.trim().is_empty() {
+            bail!("{pos}: shader block must start on its own line");
+        }
+
+        Ok(Some(Shader {
+            pos,
+            kind: kind.trim_end(),
+            name: name.trim(),
+            body: body.trim(),
+        }))
+    }
+
     fn extract_defs<'s>(&self, map: &source::Map, src: &'s str) -> anyhow::Result<Definition<'s>> {
         let mut props = Vec::new();
         let mut shaders = Vec::new();
@@ -1236,35 +1360,19 @@ impl Builder<'_> {
                 if !matches!(token.kind, TokenKind::Whitespace | TokenKind::Newline) {
                     tokens.push(token);
                 }
+
                 continue;
             };
 
             if let Some(bracket) = comment.bracket {
-                if bracket.level == 0
-                    && let Some((kind, rest)) = comment.content.split_once('@')
-                    && matches!(kind.trim_end(), "pixelshader" | "computeshader")
-                    && let Some((name, body)) = rest.split_once(':')
-                {
-                    if !src[..token.span.st].rsplit('\n').next().unwrap().trim().is_empty() {
-                        bail!("{}: shader block must start on its own line", map.locate(token.span.st));
-                    }
-
-                    shaders.push(Shader {
-                        pos: map.locate(token.span.st),
-                        kind: kind.trim_end(),
-                        name: name.trim_matches(' '),
-                        body: body.trim(),
-                    });
+                if let Some(shader) = Self::extract_shader(map, src, token.span.st, comment.content, bracket.level)? {
+                    shaders.push(shader);
                 }
 
                 continue;
             }
 
             let curr = token.span.st;
-            if !src[..curr].rsplit('\n').next().unwrap().trim().is_empty() {
-                continue;
-            }
-
             let Some((header, body)) = comment.content.split_once(':') else {
                 continue;
             };
@@ -1274,6 +1382,50 @@ impl Builder<'_> {
                 .map_or((header.trim(), None), |(k, v)| (k.trim(), Some(v.trim())));
 
             if !kind.starts_with(|c: char| c.is_ascii_lowercase()) {
+                continue;
+            }
+
+            let prefix = src[..curr].rsplit('\n').next().unwrap();
+            let has_indent = !prefix.is_empty() && prefix.trim().is_empty();
+            if has_indent || comment.content.starts_with(char::is_whitespace) {
+                if kind.starts_with("track")
+                    || kind.starts_with("check")
+                    || matches!(
+                        kind,
+                        "color"
+                            | "file"
+                            | "folder"
+                            | "string"
+                            | "text"
+                            | "font"
+                            | "figure"
+                            | "select"
+                            | "value"
+                            | "hide"
+                            | "data"
+                            | "group"
+                            | "separator"
+                            | "script"
+                            | "param"
+                            | "dialog"
+                            | "speed"
+                    )
+                {
+                    let placement = if has_indent {
+                        "before '--' for property"
+                    } else {
+                        "between '--' and property"
+                    };
+                    tracing::warn!(
+                        "{}: whitespace {placement} '{kind}' is not allowed; leaving it as comment",
+                        map.locate(curr)
+                    );
+                }
+
+                continue;
+            }
+
+            if !prefix.trim().is_empty() {
                 continue;
             }
 
@@ -1439,7 +1591,7 @@ impl Builder<'_> {
 
                     continue;
                 }
-                (None, "group" | "separator") => {
+                (_, "group" | "separator") => {
                     if kind == "group" {
                         check(key)?;
                     }
@@ -1532,16 +1684,25 @@ struct Definition<'a> {
     tokens: Vec<lua::Token<'a>>,
 }
 
+struct Module {
+    map: source::Map,
+    scopes: Vec<Scope>,
+    repls: Vec<String>,
+}
+
+#[derive(Clone)]
 struct Scope {
     span: lua::Span,
     includes: Vec<Include>,
 }
 
+#[derive(Clone)]
 struct Include {
     span: lua::Span,
     file: PathBuf,
     padding: usize,
     require: Option<lua::Span>,
+    is_suppressed: bool,
 }
 
 pub fn build(
@@ -1559,6 +1720,8 @@ pub fn build(
         is_bundled,
         suffix,
         include_stack: std::fs::canonicalize(target.path()).into_iter().collect(),
+        once_files: HashSet::new(),
+        modules: BTreeMap::new(),
         map: source::Map::default(),
         scopes: Vec::new(),
         repls: Vec::new(),
@@ -1791,6 +1954,8 @@ mod tests {
             is_bundled: false,
             suffix: ".anm2",
             include_stack: Vec::new(),
+            once_files: HashSet::new(),
+            modules: BTreeMap::new(),
             map: source::Map::default(),
             scopes: Vec::new(),
             repls: Vec::new(),
@@ -1841,6 +2006,8 @@ mod tests {
             is_bundled: false,
             suffix: ".anm2",
             include_stack: Vec::new(),
+            once_files: HashSet::new(),
+            modules: BTreeMap::new(),
             map: source::Map::default(),
             scopes: Vec::new(),
             repls: Vec::new(),
@@ -1887,6 +2054,10 @@ mod tests {
         for (src, expected) in [
             ("local value = 1; --value@_:Value, _", "--value@value:Value, 1"),
             (
+                "local value = 1 --value\u{a0}@\u{3000}_\u{a0}:\u{3000}Value, _",
+                "--value@\u{3000}value\u{a0}:\u{3000}Value, 1",
+            ),
+            (
                 "local value = { first = 1, second = {2, 3} } --value@_:Value, _",
                 "--value@value:Value, { first = 1, second = {2, 3} }",
             ),
@@ -1931,6 +2102,8 @@ mod tests {
             is_bundled: false,
             suffix: ".anm2",
             include_stack: Vec::new(),
+            once_files: HashSet::new(),
+            modules: BTreeMap::new(),
             map: source::Map::default(),
             scopes: Vec::new(),
             repls: Vec::new(),
@@ -1998,6 +2171,8 @@ mod tests {
             is_bundled: false,
             suffix: ".anm2",
             include_stack: Vec::new(),
+            once_files: HashSet::new(),
+            modules: BTreeMap::new(),
             map: source::Map::default(),
             scopes: Vec::new(),
             repls: Vec::new(),

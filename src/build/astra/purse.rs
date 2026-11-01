@@ -1,190 +1,26 @@
-use super::source::{self, Position};
+use super::super::source::{self, Position};
+use super::{Action, Directive, Error, Lexer, TokenKind, expand};
 use crate::vars::is_ident;
 use anyhow::bail;
 use cel_interpreter::{Context, Program, Value};
 use indexmap::IndexMap;
 use std::borrow::Cow;
-use std::fmt;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-pub(super) struct Expander<'a> {
-    src: &'a str,
-    dst: Option<String>,
-    edits: Vec<Edit>,
-    curr: usize,
-}
-
-impl<'a> Expander<'a> {
-    pub(super) fn new(src: &'a str) -> Self {
-        Self {
-            src,
-            dst: None,
-            edits: Vec::new(),
-            curr: 0,
-        }
-    }
-
-    pub(super) fn expand(&mut self, src_st: usize, src_ed: usize, vars: &impl crate::vars::Vars) -> Result<(), Error> {
-        let mut rest = &self.src[src_st..src_ed];
-        while let Some(st) = rest.find("${") {
-            let rest_st = src_ed - rest.len();
-            let (placeholder, ed) = Self::parse(rest, st)
-                .map_err(|mut err| {
-                    err.offset += rest_st;
-                    err
-                })?
-                .expect("placeholder prefix has already been found");
-            self.replace(rest_st + st, rest_st + ed, placeholder, vars)?;
-            rest = &rest[ed..];
-        }
-
-        Ok(())
-    }
-
-    pub(super) fn finish(self) -> Expanded<'a> {
-        Expanded {
-            text: if let Some(mut dst) = self.dst {
-                dst.push_str(&self.src[self.curr..]);
-                Cow::Owned(dst)
-            } else {
-                Cow::Borrowed(self.src)
-            },
-            edits: self.edits,
-        }
-    }
-
-    pub(super) fn parse(src: &str, st: usize) -> Result<Option<(Placeholder<'_>, usize)>, Error> {
-        let Some(tail) = src.get(st..) else {
-            return Ok(None);
-        };
-
-        let (body, width, close) = if let Some(body) = tail.strip_prefix("${{") {
-            (body, 3, "}}")
-        } else if let Some(body) = tail.strip_prefix("${") {
-            (body, 2, "}")
-        } else {
-            return Ok(None);
-        };
-
-        let body = body.split('\n').next().unwrap();
-        if st > 0 && src.as_bytes()[st - 1] == b'$' {
-            let ed = body.find(close).map_or(body.len(), |ed| ed + close.len());
-            return Ok(Some((Placeholder::Escaped, st + width + ed)));
-        }
-
-        let ed = body.find(close).ok_or_else(|| Error {
-            offset: st,
-            message: "unclosed placeholder".into(),
-        })?;
-
-        let name = body[..ed].trim();
-        if name.is_empty() {
-            return Err(Error {
-                offset: st,
-                message: "empty variable name in placeholder".into(),
-            });
-        }
-
-        if !is_ident(name) {
-            return Err(Error {
-                offset: st,
-                message: format!("invalid variable name '{name}' in placeholder").into(),
-            });
-        }
-
-        Ok(Some((Placeholder::Variable(name), st + width + ed + close.len())))
-    }
-
-    pub(super) fn replace(
-        &mut self,
-        st: usize,
-        ed: usize,
-        placeholder: Placeholder<'_>,
-        vars: &impl crate::vars::Vars,
-    ) -> Result<(), Error> {
-        let (at, val, is_escaped) = match placeholder {
-            Placeholder::Variable(key) => (
-                st,
-                vars.get(key).ok_or_else(|| Error {
-                    offset: st,
-                    message: format!("variable '{key}' not found").into(),
-                })?,
-                false,
-            ),
-            Placeholder::Escaped => (st - 1, &self.src[st..ed], true),
-        };
-
-        let dst = self.dst.get_or_insert_with(|| String::with_capacity(self.src.len()));
-        dst.push_str(&self.src[self.curr..at]);
-
-        let st = dst.len();
-        dst.push_str(val);
-        self.edits.push((at..ed, st..dst.len(), is_escaped));
-        self.curr = ed;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct Expanded<'a> {
-    pub(super) text: Cow<'a, str>,
-    edits: Vec<Edit>,
-}
-
-impl Expanded<'_> {
-    pub(super) fn append(&self, map: &mut source::Map, src: &source::Map, span: Range<usize>) {
-        let st = span.start;
-        let mut curr = 0;
-
-        for (origin, output, is_escaped) in &self.edits {
-            map.append(src, st + curr..st + origin.start);
-
-            if *is_escaped {
-                map.append(src, st + origin.start + 1..st + origin.end);
-            } else {
-                map.generate(&self.text[output.clone()], src, st + origin.start..st + origin.end);
-            }
-            curr = origin.end;
-        }
-
-        map.append(src, st + curr..span.end);
-    }
-
-    fn locate(&self, at: usize) -> usize {
-        let Some(i) = self
-            .edits
-            .partition_point(|(_, output, _)| output.start <= at)
-            .checked_sub(1)
-        else {
-            return at;
-        };
-
-        let (origin, output, is_escaped) = &self.edits[i];
-        if at < output.end {
-            origin.start + if *is_escaped { 1 + at - output.start } else { 0 }
-        } else {
-            origin.end + at - output.end
-        }
-    }
-}
-
-type Edit = (Range<usize>, Range<usize>, bool);
-
-pub(super) struct Parser<'a> {
+pub(in crate::build) struct Parser<'a> {
     lexer: Lexer<'a>,
     stack: Vec<Frame>,
 }
 
 impl<'a> Parser<'a> {
-    pub(super) fn new(lexer: Lexer<'a>) -> Self {
+    pub(in crate::build) fn new(lexer: Lexer<'a>) -> Self {
         Self {
             lexer,
             stack: Vec::new(),
         }
     }
 
-    pub(super) fn parse(mut self, vars: &IndexMap<String, String>) -> Result<Cow<'a, str>, Error> {
+    pub(in crate::build) fn parse(mut self, vars: &IndexMap<String, String>) -> Result<Cow<'a, str>, Error> {
         let src = self.lexer.src;
         let mut dst = None;
         let mut curr = 0;
@@ -228,7 +64,7 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub(super) fn process<'text>(
+    pub(in crate::build) fn process<'text>(
         &mut self,
         comment: Option<(&'text str, bool)>,
         vars: &IndexMap<String, String>,
@@ -376,7 +212,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(super) fn finish(&self) -> anyhow::Result<()> {
+    pub(in crate::build) fn finish(&self) -> anyhow::Result<()> {
         if let Some(frame) = self.stack.last() {
             bail!("{}: unclosed conditional directive at end of file", frame.pos);
         }
@@ -384,18 +220,10 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    pub(super) fn parse_directive(src: &str, is_block: bool) -> Result<Option<Directive<'_>>, &'static str> {
-        let Some(body) = src.strip_prefix('#') else {
+    pub(in crate::build) fn parse_directive(src: &str, is_block: bool) -> Result<Option<Directive<'_>>, &'static str> {
+        let Some((name, rest)) = Self::read_directive(src) else {
             return Ok(None);
         };
-
-        let body = body.trim_start();
-        let ed = body.find(char::is_whitespace).unwrap_or(body.len());
-        let (name, rest) = body.split_at(ed);
-
-        if !is_ident(name) {
-            return Ok(None);
-        }
 
         Ok(match name {
             "replace" => {
@@ -482,6 +310,12 @@ impl<'a> Parser<'a> {
         })
     }
 
+    pub(in crate::build) fn read_directive(src: &str) -> Option<(&str, &str)> {
+        let body = src.trim_start().strip_prefix('#')?.trim_start();
+        let (name, rest) = body.split_at(body.find(char::is_whitespace).unwrap_or(body.len()));
+        is_ident(name).then_some((name, rest))
+    }
+
     fn is_condition_met(expr: &str, vars: &IndexMap<String, String>) -> Result<bool, Error> {
         let text = expand(expr, vars)?;
         let expr = Parser::new(Lexer::new(&text.text)).parse(vars).map_err(|mut err| {
@@ -497,7 +331,7 @@ impl<'a> Parser<'a> {
             });
         }
 
-        let checked = Self::normalize_negation(expr)?;
+        let normalized = Self::normalize_negation(expr)?;
         let mut context = Context::default();
         context.add_function("__astra_neg", |val: Value| -> cel_interpreter::ResolveResult {
             match val {
@@ -516,7 +350,7 @@ impl<'a> Parser<'a> {
         };
 
         let val = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Program::compile(&checked)
+            Program::compile(&normalized)
                 .map_err(|err| Error {
                     offset: 0,
                     message: normalize(err.to_string()).into(),
@@ -550,7 +384,7 @@ impl<'a> Parser<'a> {
         let tokens = Lexer::new(expr)
             .filter(|token| token.as_ref().map_or(true, |token| token.kind != TokenKind::Whitespace))
             .collect::<Result<Vec<_>, _>>()?;
-        let find_ed = |mut curr: usize| {
+        let find_group_ed = |mut curr: usize| {
             let mut depth = 0;
             while let Some(token) = tokens.get(curr) {
                 match token.kind {
@@ -600,14 +434,14 @@ impl<'a> Parser<'a> {
 
             let Some(operand) = tokens.get(ed) else { continue };
             ed = if matches!(operand.kind, TokenKind::Other('(' | '[' | '{')) {
-                find_ed(ed)
+                find_group_ed(ed)
             } else {
                 ed + 1
             };
 
             while let Some(token) = tokens.get(ed) {
                 match token.kind {
-                    TokenKind::Other('(' | '[') => ed = find_ed(ed),
+                    TokenKind::Other('(' | '[') => ed = find_group_ed(ed),
                     TokenKind::Other('.')
                         if tokens
                             .get(ed + 1)
@@ -629,17 +463,17 @@ impl<'a> Parser<'a> {
             return Ok(Cow::Borrowed(expr));
         }
 
-        let mut checked = String::with_capacity(expr.len());
+        let mut normalized = String::with_capacity(expr.len());
         let mut curr = 0;
 
         for (st, ed, text) in edits {
-            checked.push_str(&expr[curr..st]);
-            checked.push_str(text);
+            normalized.push_str(&expr[curr..st]);
+            normalized.push_str(text);
             curr = ed;
         }
 
-        checked.push_str(&expr[curr..]);
-        Ok(Cow::Owned(checked))
+        normalized.push_str(&expr[curr..]);
+        Ok(Cow::Owned(normalized))
     }
 
     fn parse_defined(&mut self, st: usize) -> Result<Option<(&'a str, usize)>, Error> {
@@ -692,157 +526,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct Lexer<'a> {
-    src: &'a str,
-    bytes: &'a [u8],
-    curr: usize,
-}
-
-impl<'a> Lexer<'a> {
-    pub(super) fn new(src: &'a str) -> Self {
-        Self {
-            src,
-            bytes: src.as_bytes(),
-            curr: 0,
-        }
-    }
-
-    fn read(&mut self) -> Result<Token<'a>, Error> {
-        let st = self.curr;
-        let byte = self.bytes[self.curr];
-        let kind = if byte.is_ascii_whitespace() {
-            while self.bytes.get(self.curr).is_some_and(u8::is_ascii_whitespace) {
-                self.curr += 1;
-            }
-            TokenKind::Whitespace
-        } else if matches!(byte, b'\'' | b'"') {
-            self.curr += 1;
-            loop {
-                let Some(&curr) = self.bytes.get(self.curr) else {
-                    return Err(Error {
-                        offset: st,
-                        message: "unclosed string".into(),
-                    });
-                };
-
-                if curr == b'\\' {
-                    self.curr += 1;
-
-                    if self.curr < self.bytes.len() {
-                        self.curr += 1;
-                    }
-                } else if curr == byte {
-                    self.curr += 1;
-                    break TokenKind::String;
-                } else if curr == b'\n' {
-                    return Err(Error {
-                        offset: st,
-                        message: "unclosed string".into(),
-                    });
-                } else {
-                    self.curr += 1;
-                }
-            }
-        } else if matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'_' | 0x80..=0xff) {
-            while self.curr < self.bytes.len()
-                && matches!(self.bytes[self.curr], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | 0x80..=0xff)
-            {
-                self.curr += 1;
-            }
-            TokenKind::Ident(&self.src[st..self.curr])
-        } else if byte.is_ascii_digit()
-            || (byte == b'.' && self.bytes.get(self.curr + 1).is_some_and(u8::is_ascii_digit))
-        {
-            let exponent = if self.src[st..].starts_with("0x") || self.src[st..].starts_with("0X") {
-                b'p'
-            } else {
-                b'e'
-            };
-            let mut prev = byte;
-            self.curr += 1;
-            while self.curr < self.bytes.len() {
-                let curr = self.bytes[self.curr];
-                if curr.is_ascii_alphanumeric()
-                    || curr == b'_'
-                    || (curr == b'.' && self.bytes.get(self.curr + 1) != Some(&b'.'))
-                    || (matches!(curr, b'+' | b'-') && prev.to_ascii_lowercase() == exponent)
-                {
-                    prev = curr;
-                    self.curr += 1;
-                } else {
-                    break;
-                }
-            }
-            TokenKind::Number(&self.src[st..self.curr])
-        } else if let Some(op) = ["&&", "||", "==", "~=", "!=", "<=", ">="]
-            .into_iter()
-            .find(|op| self.src[st..].starts_with(op))
-        {
-            self.curr += op.len();
-            TokenKind::Operator(op)
-        } else {
-            self.curr += self.src[self.curr..].chars().next().unwrap().len_utf8();
-            TokenKind::Other(char::from(byte))
-        };
-
-        Ok(Token {
-            kind,
-            span: Span { st, ed: self.curr },
-        })
-    }
-}
-
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.curr >= self.bytes.len() {
-            return None;
-        }
-
-        let token = self.read();
-
-        if token.is_err() {
-            self.curr = self.bytes.len();
-        }
-
-        Some(token)
-    }
-}
-
-pub(super) enum Directive<'a> {
-    Omit,
-    Replace(&'a str),
-    If(&'a str),
-    Elif(&'a str),
-    IfDef(&'a str),
-    IfNDef(&'a str),
-    Else,
-    EndIf,
-    Define(&'a str, &'a str),
-    Undef(&'a str),
-    Include(Cow<'a, str>, bool),
-    PragmaOnce,
-}
-
-pub(super) enum Action<'a> {
-    Keep,
-    Drop,
-    Omit,
-    Replace(String),
-    Define(&'a str, &'a str),
-    Undef(&'a str),
-    Include(PathBuf),
-    PragmaOnce,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Placeholder<'a> {
-    Variable(&'a str),
-    Escaped,
-}
-
 struct Frame {
     pos: Position,
     state: State,
@@ -858,50 +541,9 @@ enum State {
     ElseInactive,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct Token<'a> {
-    kind: TokenKind<'a>,
-    span: Span,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TokenKind<'a> {
-    Ident(&'a str),
-    String,
-    Number(&'a str),
-    Whitespace,
-    Operator(&'a str),
-    Other(char),
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Span {
-    st: usize,
-    ed: usize,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct Error {
-    pub(super) offset: usize,
-    pub(super) message: Cow<'static, str>,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for Error {}
-
-pub(super) fn expand<'text>(src: &'text str, vars: &impl crate::vars::Vars) -> Result<Expanded<'text>, Error> {
-    let mut expander = Expander::new(src);
-    expander.expand(0, src.len(), vars)?;
-    Ok(expander.finish())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::{Expander, Placeholder};
     use super::*;
 
     #[test]
@@ -1091,7 +733,7 @@ mod tests {
             Some(Directive::Undef("VALUE"))
         ));
 
-        for src in ["ordinary", " #omit", "#unknown value", "#pragma message(\"x\")"] {
+        for src in ["ordinary", "#unknown value", "#pragma message(\"x\")"] {
             assert!(Parser::parse_directive(src, false).unwrap().is_none(), "{src}");
         }
 
@@ -1245,6 +887,51 @@ mod tests {
 
         for src in ["${MISSING}", "${", "${A B}", "${{VALUE}"] {
             assert!(expand(src, &vars).is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn directive_cases() {
+        for (body, is_block_allowed) in [
+            ("omit", false),
+            ("replace VALUE", true),
+            ("if true", false),
+            ("elif false", false),
+            ("ifdef VALUE", false),
+            ("ifndef VALUE", false),
+            ("else", false),
+            ("endif", false),
+            ("define VALUE 1", true),
+            ("undef VALUE", true),
+            ("include \"file.lua\"", false),
+            ("include <file.lua>", false),
+            ("pragma once", false),
+        ] {
+            for prefix in ["#", " # ", "\t#\t"] {
+                let src = format!("{prefix}{body}");
+                assert!(Parser::parse_directive(&src, false).unwrap().is_some(), "line: {src:?}");
+                assert_eq!(
+                    Parser::parse_directive(&src, true).unwrap().is_some(),
+                    is_block_allowed,
+                    "block: {src:?}"
+                );
+            }
+        }
+        for (src, expected) in [
+            ("# replace", "#replace requires a single variable name"),
+            ("# omit extra", "unexpected argument after #omit"),
+            ("# if", "empty conditional expression in #if/#elif"),
+            ("# undef X Y", "unexpected argument after variable name in #undef"),
+            ("# include \"\"", "empty include path"),
+            ("# include \"file", "unclosed include path"),
+        ] {
+            assert_eq!(Parser::parse_directive(src, false).err(), Some(expected), "{src:?}");
+        }
+        for src in ["", "ordinary", "##include", "#unknown"] {
+            assert!(
+                Parser::parse_directive(src, false).unwrap().is_none(),
+                "ordinary: {src:?}"
+            );
         }
     }
 }

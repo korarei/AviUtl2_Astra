@@ -28,7 +28,7 @@ pub(crate) enum Command {
 pub(super) fn command(_config: &Config, args: &Args) -> anyhow::Result<()> {
     crate::fs::create_managed_dir(Path::new(".astra"))?;
 
-    let mut lock = crate::fs::Lock::new(Path::new(".astra"))?;
+    let mut lock = crate::fs::Lock::new(Path::new(".astra"), ".astra directory")?;
     let _guard = lock.write()?;
 
     let mut cache = crate::package::PackageCache::new(false)?;

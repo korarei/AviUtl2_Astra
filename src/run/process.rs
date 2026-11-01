@@ -194,11 +194,12 @@ impl AviUtl2Process {
         Ok(MonitorExit::Interrupted)
     }
 
-    fn stop(&self) -> anyhow::Result<()> {
+    fn stop(&self, mut bar: Option<&mut StatusBar>) -> anyhow::Result<()> {
         let pid = self.pid;
         let handle = self.handle.raw();
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         let mut event = unsafe { std::mem::zeroed::<DEBUG_EVENT>() };
+        let mut prev = None;
 
         match unsafe { WaitForSingleObject(handle, 0) } {
             WAIT_OBJECT_0 => return Ok(()),
@@ -215,6 +216,15 @@ impl AviUtl2Process {
         }
 
         while Instant::now() < deadline {
+            if let Some(bar) = bar.as_mut() {
+                let sec = deadline.saturating_duration_since(Instant::now()).as_secs() + 1;
+
+                if prev != Some(sec) {
+                    prev = Some(sec);
+                    bar.update(format_args!("Waiting for AviUtl ExEdit2 to exit ({sec}s)"));
+                }
+            }
+
             if unsafe { WaitForDebugEventEx(&raw mut event, 100) } != 0 {
                 if process_event(&event, handle)?.is_some() {
                     return Ok(());
@@ -232,6 +242,10 @@ impl AviUtl2Process {
                     return Err(err.into());
                 }
             }
+        }
+
+        if let Some(bar) = bar.as_mut() {
+            bar.update(format_args!("Terminating AviUtl ExEdit2"));
         }
 
         tracing::warn!("graceful shutdown timed out for AviUtl ExEdit2; terminating process (PID: {pid})");
@@ -339,6 +353,17 @@ impl StatusBar {
         }
 
         Some(Self { height })
+    }
+
+    fn update(&mut self, args: std::fmt::Arguments<'_>) {
+        let mut stderr = std::io::stderr().lock();
+        let _ = write!(
+            stderr,
+            "\x1b[{};1H {args}\x1b[K\x1b[{};1H",
+            self.height,
+            self.height.saturating_sub(1),
+        );
+        let _ = stderr.flush();
     }
 }
 
@@ -574,7 +599,7 @@ struct CONSOLE_SCREEN_BUFFER_INFO {
 }
 
 pub(super) fn run_process(exe: &Path, is_running: &AtomicBool) -> anyhow::Result<MonitorExit> {
-    let _status_bar = if let Some(bar) = StatusBar::start() {
+    let mut status_bar = if let Some(bar) = StatusBar::start() {
         Some(bar)
     } else {
         tracing::info!("Press 'Ctrl+C' to stop, 'Ctrl+R' or 'r + Enter' to reload");
@@ -588,11 +613,11 @@ pub(super) fn run_process(exe: &Path, is_running: &AtomicBool) -> anyhow::Result
         MonitorExit::ProcessExited(_) => {}
         MonitorExit::Interrupted => {
             tracing::info!("Stopping AviUtl ExEdit2");
-            child.stop().context("failed to stop AviUtl2")?;
+            child.stop(status_bar.as_mut()).context("failed to stop AviUtl2")?;
         }
         MonitorExit::ReloadRequested => {
             tracing::info!("Reloading AviUtl ExEdit2");
-            child.stop().context("failed to stop AviUtl2")?;
+            child.stop(status_bar.as_mut()).context("failed to stop AviUtl2")?;
         }
     }
 
@@ -620,7 +645,6 @@ pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
             return Err(err).with_context(|| format!("failed to inspect AviUtl2 executable '{}'", exe.display()));
         }
     };
-    let exe = crate::fs::to_key(&exe)?;
 
     let snapshot = UniqueHandle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) });
 
@@ -662,7 +686,13 @@ pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
 
             if process.is_valid()
                 && let Some(proc_path) = query_process_path(process.raw())
-                && crate::fs::to_key(&proc_path)? == exe
+                && std::fs::canonicalize(&proc_path).with_context(|| {
+                    format!(
+                        "failed to canonicalize process executable '{}' (PID: {})",
+                        proc_path.display(),
+                        entry.th32ProcessID
+                    )
+                })? == exe
             {
                 tracing::info!(
                     "Requesting AviUtl ExEdit2 to shut down (PID: {}, '{}')",
@@ -728,10 +758,7 @@ fn shutdown_process(process: &UniqueHandle, pid: u32) -> anyhow::Result<()> {
         let remaining = deadline.saturating_duration_since(Instant::now()).as_secs() + 1;
         if is_terminal && last_remaining != Some(remaining) {
             last_remaining = Some(remaining);
-            let _ = write!(
-                std::io::stderr(),
-                "\rWaiting for AviUtl ExEdit2 to exit... {remaining}s"
-            );
+            let _ = write!(std::io::stderr(), "\rWaiting for AviUtl ExEdit2 to exit ({remaining}s)");
             let _ = std::io::stderr().flush();
         }
     }
