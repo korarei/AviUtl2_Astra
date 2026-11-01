@@ -2,12 +2,13 @@ use anyhow::Context;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct Lock {
+    name: &'static str,
     file: PathBuf,
-    lock: fd_lock::RwLock<std::fs::File>,
+    inner: fd_lock::RwLock<std::fs::File>,
 }
 
 impl Lock {
-    pub(crate) fn new(dst: &Path) -> anyhow::Result<Self> {
+    pub(crate) fn new(dst: &Path, name: &'static str) -> anyhow::Result<Self> {
         let file = dst.join(".astra-lock");
         let lock = fd_lock::RwLock::new(
             std::fs::OpenOptions::new()
@@ -19,17 +20,28 @@ impl Lock {
                 .with_context(|| format!("failed to open '{}'", file.display()))?,
         );
 
-        Ok(Self { file, lock })
+        Ok(Self {
+            name,
+            file,
+            inner: lock,
+        })
     }
 
     pub(crate) fn write(&mut self) -> anyhow::Result<impl Drop + '_> {
-        tracing::info!(
-            "Acquiring file lock on '{}' (press Ctrl+C to cancel)",
-            self.file.display()
-        );
-        self.lock
-            .write()
-            .with_context(|| format!("failed to lock '{}'", self.file.display()))
+        let lock = &raw mut self.inner;
+
+        match unsafe { (*lock).try_write() } {
+            Ok(guard) => Ok(guard),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                tracing::info!(
+                    "Blocking waiting for file lock on {} (press Ctrl+C to cancel)",
+                    self.name
+                );
+
+                unsafe { (*lock).write() }.with_context(|| format!("failed to lock '{}'", self.file.display()))
+            }
+            Err(err) => Err(err).with_context(|| format!("failed to lock '{}'", self.file.display())),
+        }
     }
 }
 

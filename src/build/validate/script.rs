@@ -16,32 +16,13 @@ pub(in crate::build) fn validate_modern_props(
         let kind = prop.kind.to_ascii_lowercase();
         let pos = &prop.pos;
 
-        let Some(var) = prop.var else {
+        if prop.var.is_none() {
             match kind.as_str() {
                 _ if prop.is_track()
                     || prop.is_check()
                     || matches!(kind.as_str(), "color" | "file" | "param" | "dialog") =>
                 {
                     tracing::warn!("{pos}: '{kind}' uses legacy syntax");
-                }
-                "group" => {
-                    if let Some(rest) = prop.rest
-                        && !rest.is_empty()
-                    {
-                        let mut args = rest.split(',').map(str::trim);
-                        let folding = args.next().unwrap();
-                        if !matches!(folding, "true" | "false") {
-                            bail!("{pos}: folding of '{kind}' must be 'true' or 'false', got '{folding}'");
-                        }
-
-                        let count = args.count() + 1;
-                        if count >= 2 {
-                            tracing::warn!(
-                                "{pos}: '{kind}' has too many arguments; expected at most 1, got {}",
-                                count
-                            );
-                        }
-                    }
                 }
                 "script" => {
                     if let Some(rest) = prop.rest
@@ -64,33 +45,37 @@ pub(in crate::build) fn validate_modern_props(
                 _ => {}
             }
 
-            continue;
-        };
-
-        let validate = |var: &str| -> anyhow::Result<()> {
-            if !lua::is_ident(var).map_err(|err| anyhow::anyhow!("{pos}: {err}"))? {
-                bail!("{pos}: variable name of '{kind}' must be a valid Lua identifier, got '{var}'");
+            if kind != "group" {
+                continue;
             }
+        }
 
-            Ok(())
-        };
-
-        match kind.as_str() {
-            "track" | "check" | "checksection" | "color" | "file" | "folder" | "string" | "text" | "font"
-            | "figure" | "select" | "value" => {
-                validate(var)?;
-
-                if !vars.insert(var.to_owned()) {
-                    bail!("{pos}: duplicate variable name '{var}'");
+        if let Some(var) = prop.var {
+            let validate = |var: &str| -> anyhow::Result<()> {
+                if !lua::is_ident(var).map_err(|err| anyhow::anyhow!("{pos}: {err}"))? {
+                    bail!("{pos}: variable name of '{kind}' must be a valid Lua identifier, got '{var}'");
                 }
-            }
-            "hide" => validate(var)?,
-            "trackgroup" => {
-                for var in var.split(',').map(str::trim) {
+
+                Ok(())
+            };
+
+            match kind.as_str() {
+                "track" | "check" | "checksection" | "color" | "file" | "folder" | "string" | "text" | "font"
+                | "figure" | "select" | "value" | "group" | "separator" => {
                     validate(var)?;
+
+                    if !vars.insert(var.to_owned()) {
+                        bail!("{pos}: duplicate variable name '{var}'");
+                    }
                 }
+                "hide" => validate(var)?,
+                "trackgroup" => {
+                    for var in var.split(',').map(str::trim) {
+                        validate(var)?;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
 
         if kind == "track" {
@@ -101,6 +86,25 @@ pub(in crate::build) fn validate_modern_props(
         let args = || prop.rest.into_iter().flat_map(|rest| rest.split(',').map(str::trim));
 
         match kind.as_str() {
+            "group" => {
+                if let Some(rest) = prop.rest
+                    && !rest.is_empty()
+                {
+                    let mut args = args();
+                    let folding = args.next().unwrap();
+                    if !matches!(folding, "true" | "false") {
+                        bail!("{pos}: folding of '{kind}' must be 'true' or 'false', got '{folding}'");
+                    }
+
+                    let count = args.count() + 1;
+                    if count >= 2 {
+                        tracing::warn!(
+                            "{pos}: '{kind}' has too many arguments; expected at most 1, got {}",
+                            count
+                        );
+                    }
+                }
+            }
             "check" => {
                 let mut args = args();
                 let Some(default) = args.next() else {

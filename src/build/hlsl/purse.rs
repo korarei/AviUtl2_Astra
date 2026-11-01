@@ -1,191 +1,7 @@
-use std::borrow::Cow;
-use std::fmt;
-
-static SCALARS: [(&str, usize); 12] = [
-    ("float", 4),
-    ("half", 4),
-    ("min16float", 4),
-    ("min10float", 4),
-    ("double", 8),
-    ("uint", 4),
-    ("int", 4),
-    ("bool", 4),
-    ("dword", 4),
-    ("min16int", 4),
-    ("min12int", 4),
-    ("min16uint", 4),
-];
-
-static KEYWORDS: [&str; 168] = [
-    "AppendStructuredBuffer",
-    "asm",
-    "asm_fragment",
-    "BlendState",
-    "bool",
-    "break",
-    "Buffer",
-    "ByteAddressBuffer",
-    "case",
-    "cbuffer",
-    "centroid",
-    "class",
-    "column_major",
-    "compile",
-    "compile_fragment",
-    "CompileShader",
-    "const",
-    "continue",
-    "ComputeShader",
-    "ConsumeStructuredBuffer",
-    "default",
-    "DepthStencilState",
-    "DepthStencilView",
-    "discard",
-    "do",
-    "double",
-    "DomainShader",
-    "dword",
-    "else",
-    "export",
-    "extern",
-    "false",
-    "float",
-    "for",
-    "fxgroup",
-    "GeometryShader",
-    "globallycoherent",
-    "groupshared",
-    "half",
-    "HullShader",
-    "if",
-    "in",
-    "inline",
-    "inout",
-    "InputPatch",
-    "int",
-    "interface",
-    "line",
-    "lineadj",
-    "linear",
-    "LineStream",
-    "matrix",
-    "min16float",
-    "min10float",
-    "min16int",
-    "min12int",
-    "min16uint",
-    "namespace",
-    "nointerpolation",
-    "noperspective",
-    "NULL",
-    "out",
-    "OutputPatch",
-    "packoffset",
-    "pass",
-    "pixelfragment",
-    "PixelShader",
-    "point",
-    "PointStream",
-    "precise",
-    "RasterizerState",
-    "RasterizerOrderedBuffer",
-    "RasterizerOrderedByteAddressBuffer",
-    "RasterizerOrderedStructuredBuffer",
-    "RasterizerOrderedTexture1D",
-    "RasterizerOrderedTexture1DArray",
-    "RasterizerOrderedTexture2D",
-    "RasterizerOrderedTexture2DArray",
-    "RasterizerOrderedTexture3D",
-    "RenderTargetView",
-    "return",
-    "register",
-    "row_major",
-    "RWBuffer",
-    "RWByteAddressBuffer",
-    "RWStructuredBuffer",
-    "RWTexture1D",
-    "RWTexture1DArray",
-    "RWTexture2D",
-    "RWTexture2DArray",
-    "RWTexture3D",
-    "sample",
-    "sampler",
-    "SamplerState",
-    "SamplerComparisonState",
-    "sampler1D",
-    "sampler2D",
-    "sampler3D",
-    "samplerCUBE",
-    "sampler_state",
-    "shared",
-    "snorm",
-    "stateblock",
-    "stateblock_state",
-    "static",
-    "string",
-    "struct",
-    "switch",
-    "StructuredBuffer",
-    "tbuffer",
-    "technique",
-    "technique10",
-    "technique11",
-    "texture",
-    "Texture1D",
-    "Texture1DArray",
-    "Texture2D",
-    "Texture2DArray",
-    "Texture2DMS",
-    "Texture2DMSArray",
-    "Texture3D",
-    "TextureCube",
-    "TextureCubeArray",
-    "true",
-    "typedef",
-    "triangle",
-    "triangleadj",
-    "TriangleStream",
-    "uint",
-    "uniform",
-    "unorm",
-    "unsigned",
-    "vector",
-    "vertexfragment",
-    "VertexShader",
-    "void",
-    "volatile",
-    "while",
-    "auto",
-    "catch",
-    "char",
-    "const_cast",
-    "delete",
-    "dynamic_cast",
-    "enum",
-    "explicit",
-    "friend",
-    "goto",
-    "long",
-    "mutable",
-    "new",
-    "operator",
-    "private",
-    "protected",
-    "public",
-    "reinterpret_cast",
-    "short",
-    "signed",
-    "sizeof",
-    "static_cast",
-    "template",
-    "this",
-    "throw",
-    "try",
-    "typename",
-    "union",
-    "using",
-    "virtual",
-];
+use super::{
+    Action, Analysis, Annotation, Declaration, Directive, Error, Function, Lexer, Member, SCALARS, Scalar, Span, Token,
+    TokenKind, Type,
+};
 
 pub struct Parser<'a, 'tokens> {
     src: &'a str,
@@ -207,16 +23,26 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
     pub fn parse(mut self) -> Result<Analysis<'a, 'tokens>, Error> {
         while self.curr < self.tokens.len() {
-            self.read()?;
+            self.parse_item()?;
         }
 
         Ok(self.output)
     }
 
     #[allow(clippy::too_many_lines)]
-    pub(super) fn parse_declaration(src: &'a str, tokens: &[Token<'a>]) -> Result<Option<Declaration<'a>>, Error> {
+    pub(in crate::build) fn parse_declaration(
+        src: &'a str,
+        tokens: &[Token<'a>],
+    ) -> Result<Option<Declaration<'a>>, Error> {
         let mut curr = 0;
         let mut modifiers = Vec::new();
+        let skip = |curr: &mut usize| {
+            while tokens.get(*curr).is_some_and(|token| token.kind.is_trivia()) {
+                *curr += 1;
+            }
+        };
+        skip(&mut curr);
+        let st = curr;
 
         while let Some(token) = tokens.get(curr) {
             let TokenKind::Modifier(modifier) = token.kind else {
@@ -224,6 +50,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             };
             modifiers.push(modifier);
             curr += 1;
+            skip(&mut curr);
         }
 
         let (ty, len) = Self::parse_type(src, &tokens[curr..]);
@@ -235,22 +62,23 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             offset: token.span.st,
             message: "invalid declaration type",
         })?;
-        let mut decl = Declaration {
+        let mut declaration = Declaration {
             ty,
             span: Span {
-                st: tokens[0].span.st,
-                ed: tokens.last().unwrap().span.ed,
+                st: tokens[st].span.st,
+                ed: tokens.iter().rfind(|token| !token.kind.is_trivia()).unwrap().span.ed,
             },
             modifiers,
             members: Vec::new(),
         };
 
         let error = |curr: usize, message| Error {
-            offset: tokens.get(curr).map_or(decl.span.ed, |token| token.span.st),
+            offset: tokens.get(curr).map_or(declaration.span.ed, |token| token.span.st),
             message,
         };
 
         curr += len;
+        skip(&mut curr);
         loop {
             let member = tokens
                 .get(curr)
@@ -260,24 +88,23 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             };
 
             curr += 1;
+            skip(&mut curr);
             let mut dims = Vec::new();
 
             while tokens.get(curr).is_some_and(|token| token.kind == TokenKind::LBracket) {
                 let ed = Self::find_group(tokens, curr).ok_or_else(|| error(curr, "unclosed array dimension"))?;
-                dims.push(match &tokens[curr + 1..ed] {
-                    [
-                        Token {
-                            kind: TokenKind::Number(text),
-                            ..
-                        },
-                    ] => text.parse::<usize>().ok(),
+                let mut size = tokens[curr + 1..ed].iter().filter(|token| !token.kind.is_trivia());
+                dims.push(match (size.next().map(|token| &token.kind), size.next()) {
+                    (Some(TokenKind::Number(text)), None) => text.parse::<usize>().ok(),
                     _ => None,
                 });
                 curr = ed + 1;
+                skip(&mut curr);
             }
 
             let annotation = if tokens.get(curr).is_some_and(|token| token.kind == TokenKind::Colon) {
                 curr += 1;
+                skip(&mut curr);
                 let token = tokens
                     .get(curr)
                     .ok_or_else(|| error(curr, "missing declaration annotation"))?;
@@ -287,12 +114,14 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 };
 
                 curr += 1;
+                skip(&mut curr);
 
                 let args = if tokens.get(curr).is_some_and(|token| token.kind == TokenKind::LParen) {
                     let ed =
                         Self::find_group(tokens, curr).ok_or_else(|| error(curr, "unclosed declaration annotation"))?;
                     let args = &src[tokens[curr].span.ed..tokens[ed].span.st];
                     curr = ed + 1;
+                    skip(&mut curr);
                     Some(args)
                 } else {
                     None
@@ -305,6 +134,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
             if tokens.get(curr).is_some_and(|token| token.kind == TokenKind::Assign) {
                 curr += 1;
+                skip(&mut curr);
                 if tokens.get(curr).is_none_or(|token| token.kind == TokenKind::Comma) {
                     return Err(error(curr, "missing declaration initializer"));
                 }
@@ -324,7 +154,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 }
             }
 
-            decl.members.push(Member {
+            declaration.members.push(Member {
                 name,
                 span: member.span,
                 dims,
@@ -340,29 +170,30 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             }
 
             curr += 1;
+            skip(&mut curr);
         }
 
-        Ok(Some(decl))
+        Ok(Some(declaration))
     }
 
-    pub(super) fn parse_stmt(&mut self, st: usize) -> Result<Span, Error> {
+    pub fn parse_stmt(&mut self, st: usize) -> Result<Span, Error> {
         self.curr = self.tokens.partition_point(|token| token.span.st < st);
         self.skip_trivia();
         let st = self.curr;
-        self.stmt(0)?;
+        self.read_stmt(0)?;
         Ok(Span {
             st: self.tokens[st].span.st,
             ed: self.tokens[self.curr - 1].span.ed,
         })
     }
 
-    pub(super) fn parse_expr(&mut self, st: usize) -> Result<Span, Error> {
+    pub fn parse_expr(&mut self, st: usize) -> Result<Span, Error> {
         self.curr = self.tokens.partition_point(|token| token.span.st < st);
-        self.expr(0, 0, false)
+        self.read_expr(0, 0, false)
     }
 
     #[must_use]
-    pub(super) fn read_directive<'token>(token: &'token Token<'_>) -> Option<(&'token str, &'token str)> {
+    pub(in crate::build) fn read_directive<'token>(token: &'token Token<'_>) -> Option<(&'token str, &'token str)> {
         let TokenKind::Directive(text) = &token.kind else {
             return None;
         };
@@ -376,7 +207,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
     }
 
     #[must_use]
-    pub(super) fn find_group(tokens: &[Token<'_>], at: usize) -> Option<usize> {
+    pub(in crate::build) fn find_group(tokens: &[Token<'_>], at: usize) -> Option<usize> {
         let pair = |kind: &TokenKind<'_>| match kind {
             TokenKind::LParen => Some((b'(', true)),
             TokenKind::LBracket => Some((b'[', true)),
@@ -416,7 +247,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn expr(&mut self, depth: usize, min: u8, should_stop_colon: bool) -> Result<Span, Error> {
+    fn read_expr(&mut self, depth: usize, min_precedence: u8, should_stop_at_colon: bool) -> Result<Span, Error> {
         self.skip_trivia();
         let tokens = self.tokens;
         let src = self.src;
@@ -450,12 +281,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 let group_st = self.curr;
                 let mut type_st = group_st + 1;
 
-                while tokens.get(type_st).is_some_and(|token| {
-                    matches!(
-                        token.kind,
-                        TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                    )
-                }) {
+                while tokens.get(type_st).is_some_and(|token| token.kind.is_trivia()) {
                     type_st += 1;
                 }
 
@@ -496,12 +322,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 }) && tokens
                     .iter()
                     .skip(self.curr + 2)
-                    .find(|token| {
-                        !matches!(
-                            token.kind,
-                            TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                        )
-                    })
+                    .find(|token| !token.kind.is_trivia())
                     .is_none_or(|token| !can_start(token));
                 is_cast = ty.is_some()
                     && tokens.get(type_ed).is_some_and(|token| token.kind == TokenKind::RParen)
@@ -510,12 +331,12 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
                 if !is_cast {
                     self.curr = group_st + 1;
-                    self.expr_group(&TokenKind::RParen, depth, false)?;
+                    self.parse_expr_group(&TokenKind::RParen, depth, false)?;
                 }
             }
             Some(TokenKind::LBrace) => {
                 self.curr += 1;
-                self.expr_group(&TokenKind::RBrace, depth, true)?;
+                self.parse_expr_group(&TokenKind::RBrace, depth, true)?;
             }
             Some(TokenKind::Vector | TokenKind::Matrix) => {
                 let (ty, len) = Self::parse_type(src, &tokens[self.curr..]);
@@ -545,7 +366,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         self.skip_trivia();
 
         if is_cast {
-            ed = self.expr(depth + 1, 13, should_stop_colon)?.ed;
+            ed = self.read_expr(depth + 1, 13, should_stop_at_colon)?.ed;
         }
         loop {
             self.skip_trivia();
@@ -553,12 +374,12 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             match tokens.get(self.curr).map(|token| &token.kind) {
                 Some(TokenKind::LParen) => {
                     self.curr += 1;
-                    self.expr_group(&TokenKind::RParen, depth, true)?;
+                    self.parse_expr_group(&TokenKind::RParen, depth, true)?;
                     ed = tokens[self.curr - 1].span.ed;
                 }
                 Some(TokenKind::LBracket) => {
                     self.curr += 1;
-                    self.expr_group(&TokenKind::RBracket, depth, false)?;
+                    self.parse_expr_group(&TokenKind::RBracket, depth, false)?;
                     ed = tokens[self.curr - 1].span.ed;
                 }
                 Some(TokenKind::Dot) => {
@@ -581,9 +402,9 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     ed = tokens[self.curr].span.st + 2;
                     self.curr += 2;
                 }
-                Some(TokenKind::Other('?')) if min <= 2 => {
+                Some(TokenKind::Other('?')) if min_precedence <= 2 => {
                     self.curr += 1;
-                    self.expr(depth + 1, 0, true)?;
+                    self.read_expr(depth + 1, 0, true)?;
                     self.skip_trivia();
 
                     if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::Colon) {
@@ -591,9 +412,9 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     }
 
                     self.curr += 1;
-                    ed = self.expr(depth + 1, 2, should_stop_colon)?.ed;
+                    ed = self.read_expr(depth + 1, 2, should_stop_at_colon)?.ed;
                 }
-                Some(TokenKind::Colon) if should_stop_colon => break,
+                Some(TokenKind::Colon) if should_stop_at_colon => break,
                 Some(
                     TokenKind::Assign
                     | TokenKind::Other('+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '<' | '>' | '!'),
@@ -606,7 +427,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     .into_iter()
                     .find(|op| src[token_st..].starts_with(op))
                     .ok_or_else(|| error(self.curr, "invalid expression operator"))?;
-                    let priority = match op {
+                    let precedence = match op {
                         "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => 1,
                         "||" => 3,
                         "&&" => 4,
@@ -620,7 +441,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                         _ => 12,
                     };
 
-                    if priority < min {
+                    if precedence < min_precedence {
                         break;
                     }
 
@@ -629,7 +450,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                         self.curr += 1;
                     }
                     ed = self
-                        .expr(depth + 1, priority + u8::from(priority != 1), should_stop_colon)?
+                        .read_expr(depth + 1, precedence + u8::from(precedence != 1), should_stop_at_colon)?
                         .ed;
                 }
                 _ => break,
@@ -639,7 +460,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         Ok(Span { st, ed })
     }
 
-    fn expr_group(&mut self, closing: &TokenKind<'a>, depth: usize, can_be_empty: bool) -> Result<(), Error> {
+    fn parse_expr_group(&mut self, closing: &TokenKind<'a>, depth: usize, can_be_empty: bool) -> Result<(), Error> {
         self.skip_trivia();
         let tokens = self.tokens;
         let src_ed = self.src.len();
@@ -658,7 +479,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         }
 
         loop {
-            self.expr(depth + 1, 0, false)?;
+            self.read_expr(depth + 1, 0, false)?;
             self.skip_trivia();
 
             if tokens.get(self.curr).map(|token| &token.kind) == Some(closing) {
@@ -681,18 +502,13 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
     }
 
     fn skip_trivia(&mut self) {
-        while self.tokens.get(self.curr).is_some_and(|token| {
-            matches!(
-                token.kind,
-                TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-            )
-        }) {
+        while self.tokens.get(self.curr).is_some_and(|token| token.kind.is_trivia()) {
             self.curr += 1;
         }
     }
 
     #[allow(clippy::too_many_lines)]
-    fn stmt(&mut self, depth: usize) -> Result<(), Error> {
+    fn read_stmt(&mut self, depth: usize) -> Result<(), Error> {
         self.skip_trivia();
         let tokens = self.tokens;
         let src_ed = self.src.len();
@@ -738,13 +554,13 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     + 1;
             }
 
-            self.stmt(depth + 1)?;
+            self.read_stmt(depth + 1)?;
             let body_ed = self.curr;
             self.skip_trivia();
 
             if is_if && tokens.get(self.curr).map(|token| &token.kind) == Some(&TokenKind::Keyword("else")) {
                 self.curr += 1;
-                self.stmt(depth + 1)?;
+                self.read_stmt(depth + 1)?;
             } else if is_do {
                 if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::Keyword("while")) {
                     return Err(error(self.curr, "missing while after do"));
@@ -810,26 +626,34 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn read(&mut self) -> Result<(), Error> {
+    fn parse_item(&mut self) -> Result<(), Error> {
+        self.skip_trivia();
         let tokens = self.tokens;
         let kind = |i: usize| tokens.get(i).map(|token| &token.kind);
+        let next = |i: usize| i + tokens[i..].iter().take_while(|token| token.kind.is_trivia()).count();
         let st = self.curr;
 
         if tokens
             .get(st)
             .is_some_and(|token| token.kind == TokenKind::Keyword("typedef"))
             && tokens
-                .get(st + 1)
+                .get(next(st + 1))
                 .is_some_and(|token| token.kind == TokenKind::Keyword("struct"))
         {
-            self.curr += 1;
-            self.stmt(0)?;
+            self.curr = next(st + 1);
+            self.read_stmt(0)?;
             return Ok(());
         }
 
         let mut is_initializer = false;
         while let Some(token) = tokens.get(self.curr) {
             let curr = self.curr;
+            if token.kind.is_trivia() {
+                self.curr += 1;
+                continue;
+            }
+
+            let prev = tokens[..curr].iter().rposition(|token| !token.kind.is_trivia());
             if let Some((name, rest)) = Self::read_directive(token) {
                 self.curr += 1;
                 self.output.directives.push(Directive {
@@ -842,9 +666,9 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
             if !is_initializer
                 && let TokenKind::Ident(name) = token.kind
-                && curr > 0
+                && let Some(prev) = prev
                 && matches!(
-                    kind(curr - 1),
+                    kind(prev),
                     Some(
                         TokenKind::Ident(_)
                             | TokenKind::Type(_)
@@ -854,14 +678,14 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                             | TokenKind::Other('>')
                     )
                 )
-                && kind(curr + 1) == Some(&TokenKind::LParen)
-                && let Some(args_ed) = Self::find_group(tokens, curr + 1)
+                && kind(next(curr + 1)) == Some(&TokenKind::LParen)
+                && let Some(args_ed) = Self::find_group(tokens, next(curr + 1))
             {
-                let mut ed = args_ed + 1;
+                let mut ed = next(args_ed + 1);
                 if kind(ed) == Some(&TokenKind::Colon) {
-                    ed += 1;
+                    ed = next(ed + 1);
                     if matches!(kind(ed), Some(TokenKind::Ident(_))) {
-                        ed += 1;
+                        ed = next(ed + 1);
                     }
                 }
 
@@ -872,8 +696,8 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     self.output.functions.push(Function {
                         name,
                         span: token.span,
-                        is_void: kind(curr - 1) == Some(&TokenKind::Keyword("void")),
-                        has_numthreads: Self::find_numthreads(tokens, curr - 1).is_some(),
+                        is_void: kind(prev) == Some(&TokenKind::Keyword("void")),
+                        has_numthreads: Self::find_numthreads(tokens, prev).is_some(),
                     });
                     return Ok(());
                 }
@@ -1019,12 +843,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 )
         ) {
             let mut curr = 1;
-            while tokens.get(curr).is_some_and(|token| {
-                matches!(
-                    token.kind,
-                    TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                )
-            }) {
+            while tokens.get(curr).is_some_and(|token| token.kind.is_trivia()) {
                 curr += 1;
             }
 
@@ -1076,12 +895,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         for (index, token) in tokens
             .iter()
             .enumerate()
-            .filter(|(_, token)| {
-                !matches!(
-                    token.kind,
-                    TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                )
-            })
+            .filter(|(_, token)| !token.kind.is_trivia())
             .take(args.len())
         {
             args[count] = token;
@@ -1147,33 +961,44 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
     fn find_numthreads(tokens: &[Token<'_>], mut curr: usize) -> Option<Span> {
         let kind = |index: usize| tokens.get(index).map(|token| &token.kind);
 
-        while curr > 0 && matches!(kind(curr - 1), Some(TokenKind::Ident(_) | TokenKind::Modifier(_))) {
+        while curr > 0
+            && tokens.get(curr - 1).is_some_and(|token| {
+                token.kind.is_trivia() || matches!(token.kind, TokenKind::Ident(_) | TokenKind::Modifier(_))
+            })
+        {
             curr -= 1;
         }
 
         while curr > 0 && kind(curr - 1) == Some(&TokenKind::RBracket) {
             let group_st = Self::find_group(tokens, curr - 1)?;
 
-            if kind(group_st + 1) == Some(&TokenKind::Ident("numthreads")) {
-                return Some(tokens[group_st + 1].span);
+            if let Some(token) = tokens[group_st + 1..curr - 1]
+                .iter()
+                .find(|token| !token.kind.is_trivia())
+                && token.kind == TokenKind::Ident("numthreads")
+            {
+                return Some(token.span);
             }
 
             curr = group_st;
+            while curr > 0 && tokens[curr - 1].kind.is_trivia() {
+                curr -= 1;
+            }
         }
 
         None
     }
 }
 
-pub(super) struct Preprocessor {
+pub(in crate::build) struct Preprocessor {
     stack: Vec<Frame>,
     macros: std::collections::HashMap<String, Macro>,
-    pub(super) is_row_major: Option<bool>,
-    pub(super) has_packing: bool,
+    pub(in crate::build) is_row_major: Option<bool>,
+    pub(in crate::build) has_packing: bool,
 }
 
 impl Preprocessor {
-    pub(super) fn new() -> Self {
+    pub(in crate::build) fn new() -> Self {
         Self {
             stack: Vec::new(),
             macros: std::collections::HashMap::new(),
@@ -1183,7 +1008,7 @@ impl Preprocessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub(super) fn process(&mut self, token: &Token<'_>) -> Result<Option<Action>, Error> {
+    pub(in crate::build) fn process(&mut self, token: &Token<'_>) -> Result<Option<Action>, Error> {
         let Some((name, rest)) = Parser::read_directive(token) else {
             return Ok(None);
         };
@@ -1310,14 +1135,7 @@ impl Preprocessor {
                 let text = self.expand(rest);
                 let args = text.as_deref().and_then(|text| {
                     Lexer::new(text)
-                        .filter(|token| {
-                            token.as_ref().map_or(true, |token| {
-                                !matches!(
-                                    token.kind,
-                                    TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                                )
-                            })
-                        })
+                        .filter(|token| token.as_ref().map_or(true, |token| !token.kind.is_trivia()))
                         .collect::<Result<Vec<_>, _>>()
                         .ok()
                 });
@@ -1378,7 +1196,7 @@ impl Preprocessor {
         Ok(Some(action))
     }
 
-    pub(super) fn expand(&self, src: &str) -> Option<String> {
+    pub(in crate::build) fn expand(&self, src: &str) -> Option<String> {
         fn expand(preprocessor: &Preprocessor, src: &str, depth: usize) -> Option<String> {
             if depth >= 32 {
                 return None;
@@ -1424,9 +1242,15 @@ impl Preprocessor {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub(super) fn evaluate(&self, src: &str) -> Option<i32> {
+    pub(in crate::build) fn evaluate(&self, src: &str) -> Option<i32> {
         #[allow(clippy::too_many_lines)]
-        fn parse_expr(src: &str, tokens: &[Token<'_>], curr: &mut usize, min: u8, depth: usize) -> Option<i32> {
+        fn parse_expr(
+            src: &str,
+            tokens: &[Token<'_>],
+            curr: &mut usize,
+            min_precedence: u8,
+            depth: usize,
+        ) -> Option<i32> {
             if depth >= 200 {
                 return None;
             }
@@ -1481,7 +1305,7 @@ impl Preprocessor {
             };
 
             while let Some(token) = tokens.get(*curr) {
-                if token.kind == TokenKind::Other('?') && min <= 1 {
+                if token.kind == TokenKind::Other('?') && min_precedence <= 1 {
                     *curr += 1;
                     let first = parse_expr(src, tokens, curr, 0, depth + 1)?;
                     if tokens.get(*curr)?.kind != TokenKind::Colon {
@@ -1500,7 +1324,7 @@ impl Preprocessor {
                 .into_iter()
                 .find(|op| src[token.span.st..].starts_with(op));
                 let Some(op) = op else { break };
-                let priority = match op {
+                let precedence = match op {
                     "||" => 2,
                     "&&" => 3,
                     "|" => 4,
@@ -1513,7 +1337,7 @@ impl Preprocessor {
                     _ => 11,
                 };
 
-                if priority < min {
+                if precedence < min_precedence {
                     break;
                 }
 
@@ -1522,7 +1346,7 @@ impl Preprocessor {
                     *curr += 1;
                 }
 
-                let right = parse_expr(src, tokens, curr, priority + 1, depth + 1)?;
+                let right = parse_expr(src, tokens, curr, precedence + 1, depth + 1)?;
                 val = match op {
                     "+" => val.checked_add(right)?,
                     "-" => val.checked_sub(right)?,
@@ -1552,14 +1376,7 @@ impl Preprocessor {
         }
 
         let tokens = Lexer::new(src)
-            .filter(|token| {
-                token.as_ref().map_or(true, |token| {
-                    !matches!(
-                        token.kind,
-                        TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                    )
-                })
-            })
+            .filter(|token| token.as_ref().map_or(true, |token| !token.kind.is_trivia()))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         let mut text = String::new();
@@ -1605,14 +1422,7 @@ impl Preprocessor {
         text.push_str(&src[curr..]);
         let text = self.expand(&text)?;
         let tokens = Lexer::new(&text)
-            .filter(|token| {
-                token.as_ref().map_or(true, |token| {
-                    !matches!(
-                        token.kind,
-                        TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                    )
-                })
-            })
+            .filter(|token| token.as_ref().map_or(true, |token| !token.kind.is_trivia()))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
 
@@ -1621,7 +1431,7 @@ impl Preprocessor {
         (curr == tokens.len()).then_some(val)
     }
 
-    pub(super) fn finish(&self) -> Result<(), Error> {
+    pub(in crate::build) fn finish(&self) -> Result<(), Error> {
         if let Some(frame) = self.stack.last() {
             return Err(Error {
                 offset: frame.st,
@@ -1632,7 +1442,7 @@ impl Preprocessor {
         Ok(())
     }
 
-    pub(super) fn is_active(&self) -> Option<bool> {
+    pub(in crate::build) fn is_active(&self) -> Option<bool> {
         self.stack.last().map_or(Some(true), |frame| frame.is_active)
     }
 
@@ -1643,398 +1453,6 @@ impl Preprocessor {
             Some(Macro::Unknown) | None => None,
         }
     }
-}
-
-#[derive(Clone)]
-pub struct Lexer<'a> {
-    src: &'a str,
-    bytes: &'a [u8],
-    curr: usize,
-    can_read_directive: bool,
-}
-
-impl<'a> Lexer<'a> {
-    #[must_use]
-    pub fn new(src: &'a str) -> Self {
-        Self {
-            src,
-            bytes: src.as_bytes(),
-            curr: 0,
-            can_read_directive: true,
-        }
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn read(&mut self) -> Result<Token<'a>, Error> {
-        if self.can_read_directive && self.bytes[self.curr] == b'#' {
-            let st = self.curr;
-            let body_st = st + 1;
-            let mut lexer = Self::new(&self.src[body_st..]);
-            let mut ed = self.src.len();
-
-            loop {
-                lexer.can_read_directive = false;
-                let Some(token) = lexer.next() else {
-                    break;
-                };
-                let token = token.map_err(|mut err| {
-                    err.offset += body_st;
-                    err
-                })?;
-
-                if token.kind == TokenKind::Newline {
-                    let nl = body_st + token.span.st;
-                    if self.bytes[nl - 1] == b'\\' {
-                        continue;
-                    }
-
-                    ed = nl;
-                    break;
-                }
-            }
-
-            self.curr = ed + usize::from(ed < self.src.len());
-            self.can_read_directive = true;
-            let mut directive = None;
-            let mut curr = st;
-
-            for (rel, _) in self.src[st..ed].match_indices('\n') {
-                let nl = st + rel;
-                if nl <= st || self.bytes[nl - 1] != b'\\' {
-                    continue;
-                }
-
-                let directive = directive.get_or_insert_with(|| String::with_capacity(ed - st));
-                directive.push_str(&self.src[curr..nl - 1]);
-                curr = nl + 1;
-            }
-
-            let directive = directive.map_or_else(
-                || Cow::Borrowed(&self.src[st..ed]),
-                |mut directive| {
-                    directive.push_str(&self.src[curr..ed]);
-                    Cow::Owned(directive)
-                },
-            );
-
-            return Ok(Token {
-                kind: TokenKind::Directive(directive),
-                span: Span { st, ed },
-            });
-        }
-
-        let st = self.curr;
-        Ok(Token {
-            kind: if self.src[st..].starts_with("/*") {
-                self.curr += 2;
-                let content_st = self.curr;
-                let rel = self.src[self.curr..].find("*/").ok_or(Error {
-                    offset: st,
-                    message: "unfinished HLSL comment",
-                })?;
-                let content_ed = self.curr + rel;
-                self.curr += rel + 2;
-
-                if self.src[st..self.curr].contains('\n') {
-                    self.can_read_directive = true;
-                }
-
-                TokenKind::Comment(Comment {
-                    text: &self.src[st..self.curr],
-                    content: &self.src[content_st..content_ed],
-                    bracket: Some(Span {
-                        st: content_st,
-                        ed: content_ed,
-                    }),
-                })
-            } else if self.src[st..].starts_with("//") {
-                self.curr += 2;
-                loop {
-                    let ed = self.curr + self.src[self.curr..].find('\n').unwrap_or(self.bytes.len() - self.curr);
-                    if ed < self.bytes.len() && self.bytes[ed - 1] == b'\\' {
-                        self.curr = ed + 1;
-                    } else {
-                        self.curr = ed;
-                        break;
-                    }
-                }
-
-                TokenKind::Comment(Comment {
-                    text: &self.src[st..self.curr],
-                    content: &self.src[st + 2..self.curr],
-                    bracket: None,
-                })
-            } else if self.bytes[st] == b'\n' {
-                self.curr += 1;
-                self.can_read_directive = true;
-                TokenKind::Newline
-            } else if self.bytes[st].is_ascii_whitespace() {
-                while self.curr < self.bytes.len()
-                    && self.bytes[self.curr].is_ascii_whitespace()
-                    && self.bytes[self.curr] != b'\n'
-                {
-                    self.curr += 1;
-                }
-
-                TokenKind::Whitespace
-            } else if matches!(self.bytes[st], b'\'' | b'"') {
-                self.can_read_directive = false;
-                self.curr += 1;
-                loop {
-                    if self.curr >= self.bytes.len() || self.bytes[self.curr] == b'\n' {
-                        return Err(Error {
-                            offset: st,
-                            message: "unfinished HLSL string",
-                        });
-                    }
-
-                    if self.bytes[self.curr] == b'\\' {
-                        self.curr = (self.curr + 2).min(self.bytes.len());
-                    } else if self.bytes[self.curr] == self.bytes[st] {
-                        self.curr += 1;
-                        break TokenKind::String;
-                    } else {
-                        self.curr += 1;
-                    }
-                }
-            } else if self.bytes[st].is_ascii_digit()
-                || (self.bytes[st] == b'.' && self.bytes.get(st + 1).is_some_and(u8::is_ascii_digit))
-            {
-                self.can_read_directive = false;
-                let exponent = if self.src[st..].starts_with("0x") || self.src[st..].starts_with("0X") {
-                    b'p'
-                } else {
-                    b'e'
-                };
-
-                self.curr += 1;
-                while self.curr < self.bytes.len()
-                    && (self.bytes[self.curr].is_ascii_alphanumeric()
-                        || matches!(self.bytes[self.curr], b'_' | b'.')
-                        || (matches!(self.bytes[self.curr], b'+' | b'-')
-                            && self.bytes[self.curr - 1].to_ascii_lowercase() == exponent))
-                {
-                    self.curr += 1;
-                }
-
-                TokenKind::Number(&self.src[st..self.curr])
-            } else if self.bytes[st].is_ascii_alphabetic() || self.bytes[st] == b'_' || self.bytes[st] >= 0x80 {
-                self.can_read_directive = false;
-
-                while self.curr < self.bytes.len()
-                    && (self.bytes[self.curr].is_ascii_alphanumeric()
-                        || self.bytes[self.curr] == b'_'
-                        || self.bytes[self.curr] >= 0x80)
-                {
-                    self.curr += 1;
-                }
-
-                let text = &self.src[st..self.curr];
-                match text {
-                    "vector" => TokenKind::Vector,
-                    "matrix" => TokenKind::Matrix,
-                    "row_major" | "column_major" | "static" | "groupshared" | "const" | "uniform" | "volatile"
-                    | "precise" | "extern" | "shared" | "nointerpolation" | "linear" | "centroid" | "noperspective"
-                    | "sample" | "snorm" | "unorm" | "globallycoherent" | "in" | "out" | "inout" | "inline" => {
-                        TokenKind::Modifier(text)
-                    }
-                    _ => {
-                        let parse_dim = |text: &str| match *text.as_bytes() {
-                            [ch @ b'1'..=b'4'] => Some(usize::from(ch - b'0')),
-                            _ => None,
-                        };
-                        let ty = SCALARS.iter().find_map(|&(name, size)| {
-                            let suffix = text.strip_prefix(name)?;
-                            let scalar = Scalar { name, size };
-                            let ty = match suffix.split_once('x') {
-                                Some((rows, cols)) => Type::Matrix {
-                                    scalar,
-                                    rows: parse_dim(rows)?,
-                                    cols: parse_dim(cols)?,
-                                },
-                                None if suffix.is_empty() => Type::Scalar(scalar),
-                                None => Type::Vector {
-                                    scalar,
-                                    cols: parse_dim(suffix)?,
-                                },
-                            };
-                            Some(ty)
-                        });
-
-                        if let Some(ty) = ty {
-                            TokenKind::Type(ty)
-                        } else if KEYWORDS.contains(&text) {
-                            TokenKind::Keyword(text)
-                        } else {
-                            TokenKind::Ident(text)
-                        }
-                    }
-                }
-            } else {
-                self.can_read_directive = false;
-                self.curr += 1;
-                match self.bytes[st] {
-                    b'{' => TokenKind::LBrace,
-                    b'}' => TokenKind::RBrace,
-                    b'(' => TokenKind::LParen,
-                    b')' => TokenKind::RParen,
-                    b'[' => TokenKind::LBracket,
-                    b']' => TokenKind::RBracket,
-                    b'=' => TokenKind::Assign,
-                    b';' => TokenKind::Semicolon,
-                    b':' => TokenKind::Colon,
-                    b',' => TokenKind::Comma,
-                    b'.' => TokenKind::Dot,
-                    byte => TokenKind::Other(char::from(byte)),
-                }
-            },
-            span: Span { st, ed: self.curr },
-        })
-    }
-
-    fn is_number(text: &str) -> bool {
-        let bytes = text.as_bytes();
-
-        if text.starts_with("0x") || text.starts_with("0X") {
-            let ed = 2 + bytes[2..].iter().take_while(|byte| byte.is_ascii_hexdigit()).count();
-            return ed > 2 && matches!(&text[ed..], "" | "u" | "U" | "l" | "L");
-        }
-
-        let digits_ed = bytes.iter().take_while(|byte| byte.is_ascii_digit()).count();
-        let mut curr = digits_ed;
-        let mut is_float = false;
-
-        if bytes.get(curr) == Some(&b'.') {
-            is_float = true;
-            curr += 1;
-            let st = curr;
-            curr += bytes[curr..].iter().take_while(|byte| byte.is_ascii_digit()).count();
-            if digits_ed == 0 && curr == st {
-                return false;
-            }
-        } else if digits_ed == 0 {
-            return false;
-        }
-
-        if bytes.get(curr).is_some_and(|byte| matches!(*byte, b'e' | b'E')) {
-            is_float = true;
-            curr += 1;
-            if bytes.get(curr).is_some_and(|byte| matches!(*byte, b'+' | b'-')) {
-                curr += 1;
-            }
-
-            let st = curr;
-            curr += bytes[curr..].iter().take_while(|byte| byte.is_ascii_digit()).count();
-            if curr == st {
-                return false;
-            }
-        }
-
-        let suffix = &text[curr..];
-        if is_float || matches!(suffix, "f" | "F" | "h" | "H") {
-            matches!(suffix, "" | "f" | "F" | "h" | "H" | "l" | "L")
-        } else {
-            matches!(suffix, "" | "u" | "U" | "l" | "L")
-                && (digits_ed < 2 || bytes[0] != b'0' || bytes[..digits_ed].iter().all(|byte| *byte <= b'7'))
-        }
-    }
-}
-
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.curr >= self.bytes.len() {
-            return None;
-        }
-
-        let token = self.read();
-
-        if token.is_err() {
-            self.curr = self.bytes.len();
-        }
-
-        Some(token)
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct Analysis<'a, 'tokens> {
-    pub declarations: Vec<Declaration<'a>>,
-    pub functions: Vec<Function<'a>>,
-    pub directives: Vec<Directive<'tokens>>,
-    pub groups: Vec<Span>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Declaration<'a> {
-    pub ty: Type<'a>,
-    pub span: Span,
-    pub modifiers: Vec<&'a str>,
-    pub members: Vec<Member<'a>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Function<'a> {
-    pub name: &'a str,
-    pub span: Span,
-    pub is_void: bool,
-    pub has_numthreads: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Directive<'a> {
-    pub name: &'a str,
-    pub rest: &'a str,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Type<'a> {
-    Scalar(Scalar),
-    Vector { scalar: Scalar, cols: usize },
-    Matrix { scalar: Scalar, rows: usize, cols: usize },
-    Named(&'a str),
-}
-
-impl fmt::Display for Type<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Scalar(scalar) => f.write_str(scalar.name),
-            Self::Vector { scalar, cols } => write!(f, "{}{cols}", scalar.name),
-            Self::Matrix { scalar, rows, cols } => write!(f, "{}{rows}x{cols}", scalar.name),
-            Self::Named(name) => f.write_str(name),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Scalar {
-    pub name: &'static str,
-    pub size: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Member<'a> {
-    pub name: &'a str,
-    pub span: Span,
-    pub dims: Vec<Option<usize>>,
-    pub annotation: Option<Annotation<'a>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Annotation<'a> {
-    pub name: &'a str,
-    pub args: Option<&'a str>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Action {
-    Keep,
-    Drop,
-    Unknown,
-    Include,
-    MatrixPacking,
 }
 
 enum Macro {
@@ -2051,67 +1469,6 @@ struct Frame {
     is_active: Option<bool>,
     has_else: bool,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token<'a> {
-    pub kind: TokenKind<'a>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenKind<'a> {
-    Ident(&'a str),
-    Keyword(&'a str),
-    Modifier(&'a str),
-    Type(Type<'a>),
-    Vector,
-    Matrix,
-    Number(&'a str),
-    String,
-    Comment(Comment<'a>),
-    Directive(Cow<'a, str>),
-    Whitespace,
-    Newline,
-    LBrace,
-    RBrace,
-    LParen,
-    RParen,
-    LBracket,
-    RBracket,
-    Assign,
-    Semicolon,
-    Colon,
-    Comma,
-    Dot,
-    Other(char),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Comment<'a> {
-    pub text: &'a str,
-    pub content: &'a str,
-    pub bracket: Option<Span>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    pub st: usize,
-    pub ed: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Error {
-    pub offset: usize,
-    pub message: &'static str,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message)
-    }
-}
-
-impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
@@ -2316,14 +1673,7 @@ mod tests {
 
     fn tokenize(src: &str) -> Vec<Token<'_>> {
         Lexer::new(src)
-            .filter(|token| {
-                token.as_ref().map_or(true, |token| {
-                    !matches!(
-                        token.kind,
-                        TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_)
-                    )
-                })
-            })
+            .filter(|token| token.as_ref().map_or(true, |token| !token.kind.is_trivia()))
             .collect::<Result<Vec<_>, _>>()
             .unwrap()
     }
@@ -2806,5 +2156,70 @@ mod tests {
             let token = Lexer::new(src).next().unwrap().unwrap();
             assert_eq!(preprocessor.process(&token).unwrap(), expected, "{src}");
         }
+    }
+
+    #[test]
+    fn declaration_cases() {
+        for (name, src, members, dims) in [
+            ("scalar", " float value ", 1, vec![]),
+            ("matrix", "row_major matrix < float, 2, 3 > value", 1, vec![]),
+            ("arrays", "float4 value [ 2 ] [ 3 ], other", 2, vec![Some(2), Some(3)]),
+            ("annotation", "float4 value : packoffset ( c1 . y )", 1, vec![]),
+            ("alias", "Real value", 1, vec![]),
+            ("initializer", "float4 value = {1, 2, 3, 4}, other = 0", 2, vec![]),
+            ("trivia", "/*type*/ float /*name*/ value /*tail*/", 1, vec![]),
+        ] {
+            let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+            let declaration = Parser::parse_declaration(src, &tokens)
+                .unwrap_or_else(|err| panic!("{name}: {src:?}: {err} at {}", err.offset))
+                .unwrap();
+            assert_eq!(declaration.members.len(), members, "{name}: members");
+            assert_eq!(declaration.members[0].dims, dims, "{name}: dimensions");
+            assert_eq!(declaration.members[0].name, "value", "{name}: name");
+        }
+        for (name, src) in [
+            ("name", "float"),
+            ("member", "float 1"),
+            ("trailing comma", "float value,"),
+            ("array close", "float value[2"),
+            ("annotation", "float value:"),
+            ("annotation close", "float value:packoffset(c0"),
+            ("initializer", "float value ="),
+            ("type arguments", "matrix<float, 2> value"),
+        ] {
+            let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+            assert!(Parser::parse_declaration(src, &tokens).is_err(), "{name}: {src:?}");
+        }
+    }
+
+    #[test]
+    fn raw_tokens_and_fragments() {
+        let src = concat!(
+            "cbuffer Params : register(b0) { float4 color : packoffset(c0); }; ",
+            "[numthreads(1, 1, 1)] void main() { unused(); }"
+        );
+        let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+        let output = Parser::new(src, &tokens).parse().unwrap();
+        assert_eq!(output.groups.len(), 1, "cbuffer");
+        assert_eq!(output.functions.len(), 1, "function");
+        assert!(output.functions[0].is_void, "return type");
+        assert!(output.functions[0].has_numthreads, "attribute");
+
+        let src = " /* prefix */ float value = first + second; // tail";
+        let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+        let span = Parser::new(src, &tokens)
+            .parse_expr(src.find("first").unwrap())
+            .unwrap();
+        assert_eq!(&src[span.st..span.ed], "first + second", "expression");
+        let span = Parser::new(src, &tokens).parse_stmt(0).unwrap();
+        assert_eq!(&src[span.st..span.ed], "float value = first + second;", "statement");
+        assert!(
+            Parser::new(src, &tokens).parse_expr(src.len()).is_err(),
+            "expression at end"
+        );
+        assert!(
+            Parser::new(src, &tokens).parse_stmt(src.len()).is_err(),
+            "statement at end"
+        );
     }
 }

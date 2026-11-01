@@ -247,3 +247,29 @@ fn include_extensions() -> anyhow::Result<()> {
     assert_eq!(output.text, "float b = 3;\nfloat c;\nfloat b = 3;\n");
     Ok(())
 }
+
+#[test]
+fn accept_directive_spaces() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("input.hlsl");
+    std::fs::write(dir.path().join("values.hlsl"), "float included = ${VALUE};\n")?;
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
+
+    for prefix in ["//#", "// #", "//# ", "// # ", "//\t#\t", "//\u{a0}#\u{3000}"] {
+        let src = format!(
+            "{prefix}define VALUE 7\n\
+             {prefix}include \"values.hlsl\"\n\
+             {prefix}replace VALUE\nfloat value = 0;\n\
+             float inline_value = /* # replace VALUE */ 0;\n\
+             {prefix}omit\nfloat removed;\n\
+             {prefix}if true\nfloat kept;\n{prefix}endif\n"
+        );
+        assert_eq!(
+            astra::build::shader::build(&src, &file, &target, &[], &IndexMap::new())?.text,
+            "float included = 7;\nfloat value = 7;\nfloat inline_value =  7;\nfloat kept;\n",
+            "{prefix}"
+        );
+    }
+
+    Ok(())
+}

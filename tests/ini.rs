@@ -166,3 +166,28 @@ fn resolve_once() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn accept_directive_spaces() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("input.ini");
+    std::fs::write(dir.path().join("values.ini"), "included=${VALUE}\n")?;
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
+
+    for prefix in [";#", "; #", ";# ", "; # ", ";\t#\t", ";\u{a0}#\u{3000}"] {
+        let src = format!(
+            "{prefix}define VALUE 7\n\
+             {prefix}include \"values.ini\"\n\
+             {prefix}replace VALUE\nkey=0\n\
+             {prefix}omit\nremoved=1\n\
+             {prefix}if true\nkept=1\n{prefix}endif\n"
+        );
+        assert_eq!(
+            astra::build::ini::build(&src, &target, &[], &IndexMap::new())?,
+            "included=7\nkey=7\nkept=1\n",
+            "{prefix}"
+        );
+    }
+
+    Ok(())
+}

@@ -70,6 +70,10 @@ pub(super) fn build(dir: &Path, build: &Build, build_type: BuildType) -> anyhow:
                 is_bundled,
                 build.suffix().unwrap_or_default(),
             )?);
+
+            if is_bundled && !output.script.is_empty() && !output.script.ends_with("\n\n") {
+                output.script.push('\n');
+            }
         }
     }
 

@@ -1,5 +1,5 @@
+use super::astra::{self, Action, Parser};
 use super::hlsl;
-use super::preprocess::{self, Action, Parser};
 use super::source::{self, Position};
 use crate::config::{BuildTarget, RESERVED_VARIABLES};
 use anyhow::{Context as _, bail};
@@ -59,7 +59,7 @@ impl Builder<'_, '_> {
         let mut omit_ed = 0;
         let mut blocked_ed = 0;
         let mut repl = None;
-        let mut parser = Parser::new(preprocess::Lexer::new(&src));
+        let mut parser = Parser::new(astra::Lexer::new(&src));
 
         let mut i = 0;
 
@@ -88,8 +88,8 @@ impl Builder<'_, '_> {
                 if token.span.st >= st
                     && let hlsl::TokenKind::Comment(comment) = &token.kind
                     && comment.bracket.is_some()
-                    && comment.content.split_whitespace().next() == Some("#replace")
-                    && let Some(preprocess::Directive::Replace(_)) =
+                    && Parser::read_directive(comment.content).is_some_and(|(name, _)| name == "replace")
+                    && let Some(astra::Directive::Replace(_)) =
                         Parser::parse_directive(comment.content.trim_start(), true)
                             .map_err(|err| anyhow::anyhow!("{}: {err}", locate(token.span.st)))?
                 {
@@ -117,11 +117,7 @@ impl Builder<'_, '_> {
                 None
             } else {
                 comment.and_then(|comment| {
-                    let content = if is_block {
-                        comment.content.trim_start()
-                    } else {
-                        comment.content
-                    };
+                    let content = comment.content.trim_start();
                     content.starts_with('#').then_some(content)
                 })
             };
@@ -176,7 +172,7 @@ impl Builder<'_, '_> {
 
             match &action {
                 Action::Keep => {
-                    let expanded = preprocess::expand(line, self.vars.as_ref())
+                    let expanded = astra::expand(line, self.vars.as_ref())
                         .map_err(|err| anyhow::anyhow!("{}: {err}", locate(st + err.offset)))?;
                     expanded.append(&mut self.map, map, st..ed);
 
@@ -224,7 +220,7 @@ impl Builder<'_, '_> {
                     let vars = self.vars.to_mut();
                     vars.insert(
                         (*key).to_owned(),
-                        preprocess::expand(val, vars)
+                        astra::expand(val, vars)
                             .map_err(|err| {
                                 anyhow::anyhow!(
                                     "{}: {err}",
@@ -277,7 +273,7 @@ impl Builder<'_, '_> {
                 continue;
             };
 
-            if comment.content.split_whitespace().next() != Some("#replace") {
+            if Parser::read_directive(comment.content).is_none_or(|(name, _)| name != "replace") {
                 continue;
             }
 
