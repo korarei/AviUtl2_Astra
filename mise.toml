@@ -4,9 +4,9 @@ lockfile = true
 [tools]
 rust = { version = "1.99", profile = "minimal", components = [
     "clippy",
-    "rustfmt",
     "rust-analyzer",
     "rust-src",
+    "rustfmt",
 ] }
 
 [tasks.build]
