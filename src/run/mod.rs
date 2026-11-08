@@ -381,7 +381,7 @@ fn sync_package(
     let package = release
         .package()
         .ok_or_else(|| anyhow::anyhow!("release '{}' has no package", release.id()))?;
-    let config_hash = xxhash_rust::const_xxh3::xxh3_128(&serde_json::to_vec(&(config, release, kind.as_lowercase()))?);
+    let config_hash = xxhash_rust::xxh3::xxh3_128(&serde_json::to_vec(&(config, release, kind.as_lowercase()))?);
 
     let mut outputs = BTreeMap::new();
 

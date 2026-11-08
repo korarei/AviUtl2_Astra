@@ -1,6 +1,6 @@
 [package]
 name = "astra"
-version = "0.9.0"
+version = "0.10.0"
 authors = ["Korarei"]
 description = "Build tool and task runner for AviUtl ExEdit extensions"
 edition = "2024"
@@ -15,37 +15,36 @@ name = "astra"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0"
-cel-interpreter = "0.10"
-chardetng = "1.0"
-clap = { version = "4.6", features = ["derive"] }
-clean-path = "0.2"
-dotenvy = "0.15"
-encoding_rs = "0.8"
-fd-lock = "4.0"
-wax = "0.7"
-indexmap = { version = "2.14", features = ["serde"] }
-regex = "1.13"
-reqwest = { version = "0.13", default-features = false, features = [
+anyhow = "~1.0.0"
+cel-interpreter = "~0.10.0"
+chardetng = "~1.0.0"
+clap = { version = "~4.6.0", features = ["derive"] }
+clean-path = "~0.2.0"
+dotenvy = "~0.15.0"
+encoding_rs = "~0.8.0"
+fd-lock = "~4.0.0"
+wax = "~0.7.0"
+indexmap = { version = "~2.14.0", features = ["serde"] }
+regex = "~1.13.0"
+reqwest = { version = "~0.13.0", default-features = false, features = [
     "blocking",
-    "json",
     "native-tls",
 ] }
-semver = "1.0"
-schemars = "1.2"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_with = { version = "3.22", features = ["indexmap_2", "schemars_1"] }
-tempfile = "3.27"
-toml_edit = "0.25"
-textwrap = "0.16"
-toml = { version = "1.1", features = ["preserve_order"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-validator = { version = "0.21", features = ["derive"] }
-which = "8.0"
-xxhash-rust = { version = "0.8", features = ["const_xxh3", "xxh3"] }
-zip = { version = "9.2", default-features = false, features = ["deflate"] }
+semver = "~1.0.0"
+schemars = "~1.2.0"
+serde = { version = "~1.0.0", features = ["derive"] }
+serde_json = "~1.0.0"
+serde_with = { version = "~3.24.0", features = ["indexmap_2", "schemars_1"] }
+tempfile = "~3.27.0"
+toml_edit = "~0.25.0"
+textwrap = "~0.16.0"
+toml = { version = "~1.2.0", features = ["preserve_order"] }
+tracing = "~0.1.0"
+tracing-subscriber = { version = "~0.3.0", features = ["env-filter"] }
+validator = { version = "~0.21.0", features = ["derive"] }
+which = "~8.0.0"
+xxhash-rust = { version = "~0.8.0", features = ["xxh3"] }
+zip = { version = "~9.4.0", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3

@@ -213,7 +213,7 @@ mod tests {
         fs::write(&file, b"one")?;
 
         let first = crate::fs::hash_file(&file)?;
-        assert_eq!(first, xxhash_rust::const_xxh3::xxh3_128(b"one"));
+        assert_eq!(first, xxhash_rust::xxh3::xxh3_128(b"one"));
 
         fs::write(&file, b"two")?;
         assert_ne!(first, crate::fs::hash_file(&file)?);

@@ -48,7 +48,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: mise run build --release --target ${{ matrix.target }}
 
       - if: matrix.is_windows
         id: package-windows

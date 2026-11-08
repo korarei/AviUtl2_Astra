@@ -454,7 +454,8 @@ fn preserves_cols_after_trimming_leading_whitespace() {
         let src = format!("{prefix}local value = @");
         let err = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).unwrap_err();
         assert!(
-            err.to_string().contains(&format!("test.anm2:{line}:{}: unexpected '@'", col + 14)),
+            err.to_string()
+                .contains(&format!("test.anm2:{line}:{}: unexpected '@'", col + 14)),
             "{err}"
         );
     }
