@@ -1,5 +1,41 @@
 # Third-Party Licenses
 
+## [The Rust Standard Library](https://github.com/rust-lang/rust)
+
+The Rust Standard Library (`std`, `core`, `alloc`, etc.) is statically linked into this binary.
+
+- Copyright (c) The Rust Project Contributors (https://thanks.rust-lang.org)
+- Dual-licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0) or the [MIT
+License](http://opensource.org/licenses/MIT), at your option.
+
+```text
+Copyright (c) The Rust Project Contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
 ## Apache License 2.0
 
 Used by:
@@ -4825,7 +4861,7 @@ Used by:
 ### License text
 
 ```text
-Copyright (c) <year> <owner>. 
+Copyright (c) <year> <owner>.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
 
@@ -6436,7 +6472,7 @@ Used by:
 ### License text
 
 ```text
-(C) 2024 Trifecta Tech Foundation 
+(C) 2024 Trifecta Tech Foundation
 
 This software is provided 'as-is', without any express or implied
 warranty. In no event will the authors be held liable for any damages

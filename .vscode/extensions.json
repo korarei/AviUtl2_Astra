@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "EditorConfig.EditorConfig",
+    "hverlin.mise-vscode",
+    "rust-lang.rust-analyzer",
+    "tamasfe.even-better-toml"
+  ]
+}

@@ -78,7 +78,7 @@ impl PackageCache {
                     PackageSource::Url(src) => {
                         let Some(file) = UrlFile::read(&self.root.join("urls").join(format!(
                             "{:032x}.json",
-                            xxhash_rust::const_xxh3::xxh3_128(src.url().as_bytes())
+                            xxhash_rust::xxh3::xxh3_128(src.url().as_bytes())
                         )))?
                         else {
                             return Ok(None);
@@ -394,7 +394,7 @@ impl PackageCache {
 
         let path = self
             .blobs
-            .join(format!("{:032x}", xxhash_rust::const_xxh3::xxh3_128(bytes.as_ref())));
+            .join(format!("{:032x}", xxhash_rust::xxh3::xxh3_128(bytes.as_ref())));
         if !path.is_file() {
             fs::write_file(&path, &bytes)?;
         }
@@ -411,10 +411,10 @@ impl PackageCache {
             return Ok(());
         }
 
-        let manifest = self.root.join("urls").join(format!(
-            "{:032x}.json",
-            xxhash_rust::const_xxh3::xxh3_128(url.as_bytes())
-        ));
+        let manifest = self
+            .root
+            .join("urls")
+            .join(format!("{:032x}.json", xxhash_rust::xxh3::xxh3_128(url.as_bytes())));
 
         if !is_refresh
             && let Some(file) = UrlFile::read(&manifest)?

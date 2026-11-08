@@ -38,7 +38,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - run: cargo test --locked --target ${{ matrix.target }}
+      - run: mise run test --target ${{ matrix.target }}
 
   check:
     name: Check

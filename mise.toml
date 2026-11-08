@@ -5,20 +5,37 @@ lockfile = true
 rust = { version = "1.99", profile = "minimal", components = [
     "clippy",
     "rust-analyzer",
+    "rust-src",
     "rustfmt",
 ] }
 
+[tasks.build]
+raw_args = true
+run = "cargo build --locked"
+
 [tasks.check]
-usage = 'flag "--help" help="Show task help"'
+usage = 'flag "-h --help" help="Print help"'
 tools."cargo:cargo-deny" = "0.20"
 run = ["cargo clippy --locked", "cargo deny --locked check"]
 
+[tasks.fmt]
+raw_args = true
+run = "cargo fmt"
+
 [tasks.licenses]
-usage = 'flag "--help" help="Show task help"'
+usage = 'flag "-h --help" help="Print help"'
 tools."cargo:cargo-about" = { version = "0.9", features = "cli" }
 run = "cargo about generate --locked about.hbs -o THIRD_PARTY_LICENSES.md"
 
 [tasks.outdated]
-usage = 'flag "--help" help="Show task help"'
+usage = 'flag "-h --help" help="Print help"'
 tools."cargo:cargo-outdated" = "0.19"
 run = "cargo outdated"
+
+[tasks.test]
+raw_args = true
+run = "cargo test --locked"
+
+[tasks.update]
+usage = 'flag "-h --help" help="Print help"'
+run = "cargo update"
