@@ -15,33 +15,84 @@ mod run;
 mod schema;
 mod set_version;
 mod task;
+mod text;
 pub mod vars;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use cli::{Cli, Commands};
 use config::Config;
 use indexmap::IndexMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn run(args: &Cli) -> anyhow::Result<()> {
     let Some(command) = &args.command else {
         bail!("no command specified");
     };
 
-    if let Commands::Init(args) = command {
-        return init::command(args);
-    }
+    match command {
+        Commands::Init(cmd_args) => {
+            if args.config_path.is_some() {
+                tracing::warn!("--config-path is ignored for 'init'");
+            }
 
-    if let Commands::Schema(args) = command {
-        return schema::command(args);
-    }
+            if !args.define.is_empty() {
+                tracing::warn!("--define is ignored for 'init'");
+            }
 
-    let config_file = Config::find_path()?;
+            if args.project_version.is_some() {
+                tracing::warn!("--project-version is ignored for 'init'");
+            }
+
+            init::command(cmd_args)
+        }
+        Commands::Schema(cmd_args) => {
+            if args.config_path.is_some() {
+                tracing::warn!("--config-path is ignored for 'schema'");
+            }
+
+            if !args.define.is_empty() {
+                tracing::warn!("--define is ignored for 'schema'");
+            }
+
+            if args.project_version.is_some() {
+                tracing::warn!("--project-version is ignored for 'schema'");
+            }
+
+            schema::command(cmd_args)
+        }
+        Commands::SetVersion(cmd_args) => {
+            if !args.define.is_empty() {
+                tracing::warn!("--define is ignored for 'set-version'");
+            }
+
+            if args.project_version.is_some() {
+                tracing::warn!("--project-version is ignored for 'set-version'");
+            }
+
+            let config_file = resolve_config_path(args)?;
+            std::env::set_current_dir(config_file.parent().unwrap_or(Path::new(".")))?;
+
+            set_version::command(&config_file, cmd_args)
+        }
+        Commands::Build(build_args) => build::command(&load_config(args)?, build_args),
+        Commands::Cache(cache_args) => cache::command(&load_config(args)?, cache_args),
+        Commands::Clean => clean::command(&load_config(args)?),
+        Commands::Run(run_args) => run::run(&load_config(args)?, run_args),
+        Commands::Release(release_args) => release::command(&load_config(args)?, release_args),
+    }
+}
+
+fn resolve_config_path(args: &Cli) -> anyhow::Result<PathBuf> {
+    if let Some(path) = &args.config_path {
+        std::path::absolute(path).with_context(|| format!("failed to resolve absolute path '{}'", path.display()))
+    } else {
+        Config::find_path()
+    }
+}
+
+fn load_config(args: &Cli) -> anyhow::Result<Config> {
+    let config_file = resolve_config_path(args)?;
     std::env::set_current_dir(config_file.parent().unwrap_or(Path::new(".")))?;
-
-    if let Commands::SetVersion(args) = command {
-        return set_version::command(&config_file, args);
-    }
 
     let mut defines = IndexMap::with_capacity(args.define.len().div_ceil(2));
 
@@ -60,16 +111,5 @@ pub fn run(args: &Cli) -> anyhow::Result<()> {
         defines.insert(key.to_string(), val.to_string());
     }
 
-    let config = Config::load(&config_file, defines, args.project_version.as_deref())?;
-
-    match command {
-        Commands::Build(args) => build::command(&config, args)?,
-        Commands::Cache(args) => cache::command(&config, args)?,
-        Commands::Clean => clean::command(&config)?,
-        Commands::Init(_) | Commands::Schema(_) | Commands::SetVersion(_) => unreachable!(),
-        Commands::Run(args) => run::run(&config, args)?,
-        Commands::Release(args) => release::command(&config, args)?,
-    }
-
-    Ok(())
+    Config::load(&config_file, defines, args.project_version.as_deref())
 }

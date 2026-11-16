@@ -204,7 +204,7 @@ finally = ["task:finish"]
 
 [variables]
 PARENT = "parent"
-BUILD_NAME = "main"
+CUSTOM_BUILD_NAME = "main"
 TARGET_NAME = "named"
 TARGET_DIR = "include"
 ENCODING = "shift_jis"
@@ -215,7 +215,7 @@ MODE = "debug"
 build-dir = "out"
 
 [build.main]
-name = "${{ BUILD_NAME }}"
+name = "${{ CUSTOM_BUILD_NAME }}"
 suffix = " anm2 "
 enabled = " all "
 newline = " LF "
@@ -404,11 +404,21 @@ newline = "\r\n"
         targets[0].vars().get("SCRIPT_NAME").map(String::as_str),
         Some("named@main")
     );
+    assert_eq!(targets[0].vars().get("BUILD_ID").map(String::as_str), Some("main"));
+    assert_eq!(targets[0].vars().get("BUILD_NAME").map(String::as_str), Some("main"));
+    assert_eq!(
+        targets[0].vars().get("BUILD_TARGET_NAME").map(String::as_str),
+        Some("named")
+    );
     assert_eq!(targets[0].encoding(), encoding_rs::SHIFT_JIS);
     assert_eq!(targets[1].name(), "secondary");
     assert_eq!(
         targets[1].vars().get("SCRIPT_NAME").map(String::as_str),
         Some("secondary@main")
+    );
+    assert_eq!(
+        targets[1].vars().get("BUILD_TARGET_NAME").map(String::as_str),
+        Some("secondary")
     );
     assert_eq!(targets[1].encoding(), encoding_rs::UTF_8);
 
@@ -511,6 +521,7 @@ run = "echo build"
             ("OVERRIDE".to_owned(), "call".to_owned()),
         ]),
     };
+
     let task = config.task(&call)?;
     assert_eq!(task.id(), "hello");
     assert!(task.is_hidden());
@@ -554,7 +565,7 @@ version = 2
 
 [variables]
 ROOT = "root"
-BUILD_ID = "core"
+DEP_BUILD_ID = "core"
 WORKER = "worker"
 URL = "https://example.com/archive.zip"
 HOST = "example.com"
@@ -574,9 +585,9 @@ variables = { LOCAL = "${{ ROOT }}" }
 dependencies = [
     "clean",
     "task:setup",
-    "build:${{ BUILD_ID }}",
+    "build:${{ DEP_BUILD_ID }}",
     { task = "${{ WORKER }}", environment = { FOO = "${{ LOCAL }}" }, variables = { BAR = "${{ LOCAL }}" } },
-    { build = "${{ BUILD_ID }}", variables = { BAZ = "${{ LOCAL }}" } }
+    { build = "${{ DEP_BUILD_ID }}", variables = { BAZ = "${{ LOCAL }}" } }
 ]
 finally = ["task:finish"]
 
@@ -594,7 +605,7 @@ report-issue = "https://${{ HOST }}/issues"
 
 [[release.publish.package.content]]
 dir = "Plugin/${{ LOCAL }}"
-source = ["build:${{ BUILD_ID }}", "build:main", { build = "build:main" }]
+source = ["build:${{ DEP_BUILD_ID }}", "build:main", { build = "build:main" }]
 
 [[release.publish.package.content]]
 dir = "Script/${{ LOCAL }}"
@@ -610,7 +621,7 @@ source = "custom/${{ PATH_VALUE }}"
 
 [[release.publish.package.content]]
 dir = "Figure/${{ LOCAL }}"
-source = { build = "${{ BUILD_ID }}" }
+source = { build = "${{ DEP_BUILD_ID }}" }
 
 [[release.publish.package.content]]
 dir = "Transition/${{ LOCAL }}"
@@ -676,12 +687,19 @@ changelog = "changes"
     assert_eq!(task, "worker");
     assert_eq!(env.get("FOO").map(String::as_str), Some("root"));
     assert_eq!(vars.get("BAR").map(String::as_str), Some("root"));
+
     let ReleaseDependency::Build(build) = &release.depends()[4] else {
         panic!("detailed release build expected");
     };
     assert_eq!(build.id(), "core");
     assert_eq!(build.vars().get("BAZ").map(String::as_str), Some("root"));
     assert_eq!(release.finally()[0].id(), "finish");
+    assert_eq!(
+        release.finally()[0].vars().get("RELEASE_ID").map(String::as_str),
+        Some("publish")
+    );
+    assert!(release.finally()[0].vars().contains_key("RELEASE_DIR"));
+    assert!(release.finally()[0].vars().contains_key("RELEASE_DIRECTORY"));
 
     let package = release.package().unwrap();
     assert_eq!(package.filename(), "demo.AU2PKG.ZIP");
@@ -721,11 +739,13 @@ changelog = "changes"
     };
     assert_eq!(url.should_extract(), Some(true));
     assert_eq!(url.picks(), &["*.txt"]);
+
     let PackageSource::Url(url) = &contents[1].sources()[0] else {
         panic!("URL source expected");
     };
     assert_eq!(url.should_extract(), None);
     assert_eq!(url.picks(), &[] as &[String]);
+
     let PackageSource::File(file) = &contents[7].sources()[0] else {
         panic!("file source expected");
     };

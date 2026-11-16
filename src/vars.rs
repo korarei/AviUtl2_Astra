@@ -1,29 +1,9 @@
 use anyhow::bail;
 use indexmap::IndexMap;
-use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub trait Vars {
     fn get(&self, key: &str) -> Option<&str>;
-}
-
-impl Vars for &[&BTreeMap<String, String>] {
-    fn get(&self, key: &str) -> Option<&str> {
-        self.iter().find_map(|map| map.get(key))
-    }
-}
-
-impl Vars for BTreeMap<String, String> {
-    fn get(&self, key: &str) -> Option<&str> {
-        BTreeMap::get(self, key).map(String::as_str)
-    }
-}
-
-impl Vars for &BTreeMap<String, String> {
-    fn get(&self, key: &str) -> Option<&str> {
-        BTreeMap::get(*self, key).map(String::as_str)
-    }
 }
 
 impl Vars for IndexMap<String, String> {
@@ -35,18 +15,6 @@ impl Vars for IndexMap<String, String> {
 impl Vars for &IndexMap<String, String> {
     fn get(&self, key: &str) -> Option<&str> {
         IndexMap::get(*self, key).map(String::as_str)
-    }
-}
-
-impl Vars for Cow<'_, BTreeMap<String, String>> {
-    fn get(&self, key: &str) -> Option<&str> {
-        BTreeMap::get(self.as_ref(), key).map(String::as_str)
-    }
-}
-
-impl Vars for &Cow<'_, BTreeMap<String, String>> {
-    fn get(&self, key: &str) -> Option<&str> {
-        BTreeMap::get(self.as_ref(), key).map(String::as_str)
     }
 }
 

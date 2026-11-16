@@ -1,33 +1,29 @@
 use super::{Error, Span, Token, TokenKind};
 
 #[derive(Clone)]
-pub(in crate::build) struct Lexer<'a> {
-    pub(super) src: &'a str,
-    bytes: &'a [u8],
+pub(super) struct Lexer<'a> {
+    src: &'a str,
     curr: usize,
 }
 
 impl<'a> Lexer<'a> {
-    pub(in crate::build) fn new(src: &'a str) -> Self {
-        Self {
-            src,
-            bytes: src.as_bytes(),
-            curr: 0,
-        }
+    pub(super) fn new(src: &'a str) -> Self {
+        Self { src, curr: 0 }
     }
 
     fn read_token(&mut self) -> Result<Token<'a>, Error> {
+        let bytes = self.src.as_bytes();
         let st = self.curr;
-        let byte = self.bytes[self.curr];
+        let byte = bytes[self.curr];
         let kind = if byte.is_ascii_whitespace() {
-            while self.bytes.get(self.curr).is_some_and(u8::is_ascii_whitespace) {
+            while bytes.get(self.curr).is_some_and(u8::is_ascii_whitespace) {
                 self.curr += 1;
             }
             TokenKind::Whitespace
         } else if matches!(byte, b'\'' | b'"') {
             self.curr += 1;
             loop {
-                let Some(&curr) = self.bytes.get(self.curr) else {
+                let Some(&curr) = bytes.get(self.curr) else {
                     return Err(Error {
                         offset: st,
                         message: "unclosed string".into(),
@@ -37,7 +33,7 @@ impl<'a> Lexer<'a> {
                 if curr == b'\\' {
                     self.curr += 1;
 
-                    if self.curr < self.bytes.len() {
+                    if self.curr < bytes.len() {
                         self.curr += 1;
                     }
                 } else if curr == byte {
@@ -53,27 +49,25 @@ impl<'a> Lexer<'a> {
                 }
             }
         } else if matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'_' | 0x80..=0xff) {
-            while self.curr < self.bytes.len()
-                && matches!(self.bytes[self.curr], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | 0x80..=0xff)
+            while self.curr < bytes.len()
+                && matches!(bytes[self.curr], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | 0x80..=0xff)
             {
                 self.curr += 1;
             }
             TokenKind::Ident(&self.src[st..self.curr])
-        } else if byte.is_ascii_digit()
-            || (byte == b'.' && self.bytes.get(self.curr + 1).is_some_and(u8::is_ascii_digit))
-        {
-            let exponent = if self.src[st..].starts_with("0x") || self.src[st..].starts_with("0X") {
+        } else if byte.is_ascii_digit() || (byte == b'.' && bytes.get(self.curr + 1).is_some_and(u8::is_ascii_digit)) {
+            let exponent = if self.src[st..].get(..2).is_some_and(|p| p.eq_ignore_ascii_case("0x")) {
                 b'p'
             } else {
                 b'e'
             };
             let mut prev = byte;
             self.curr += 1;
-            while self.curr < self.bytes.len() {
-                let curr = self.bytes[self.curr];
+            while self.curr < bytes.len() {
+                let curr = bytes[self.curr];
                 if curr.is_ascii_alphanumeric()
                     || curr == b'_'
-                    || (curr == b'.' && self.bytes.get(self.curr + 1) != Some(&b'.'))
+                    || (curr == b'.' && bytes.get(self.curr + 1) != Some(&b'.'))
                     || (matches!(curr, b'+' | b'-') && prev.to_ascii_lowercase() == exponent)
                 {
                     prev = curr;
@@ -90,7 +84,7 @@ impl<'a> Lexer<'a> {
             self.curr += op.len();
             TokenKind::Operator(op)
         } else {
-            self.curr += self.src[self.curr..].chars().next().unwrap().len_utf8();
+            self.curr += 1;
             TokenKind::Other(char::from(byte))
         };
 
@@ -105,14 +99,14 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.curr >= self.bytes.len() {
+        if self.curr >= self.src.len() {
             return None;
         }
 
         let token = self.read_token();
 
         if token.is_err() {
-            self.curr = self.bytes.len();
+            self.curr = self.src.len();
         }
 
         Some(token)
@@ -124,7 +118,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_and_errors() {
+    fn read_tokens() {
         for src in [
             "名前",
             "defined",

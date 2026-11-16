@@ -2,11 +2,11 @@
 lockfile = true
 
 [tools]
-rust = { version = "1.99", profile = "minimal", components = [
-    "clippy",
-    "rust-analyzer",
-    "rust-src",
-    "rustfmt",
+rust = { version = "1.100", profile = "minimal", components = [
+  "clippy",
+  "rust-analyzer",
+  "rust-src",
+  "rustfmt",
 ] }
 
 [tasks.build]

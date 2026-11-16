@@ -87,6 +87,46 @@ pub(super) enum MonitorExit {
     Interrupted,
 }
 
+pub(super) fn install_ctrl_handler() -> std::io::Result<(&'static AtomicBool, impl Drop)> {
+    type PHANDLER_ROUTINE = Option<unsafe extern "system" fn(DWORD) -> BOOL>;
+
+    const CTRL_C_EVENT: DWORD = 0;
+    const CTRL_BREAK_EVENT: DWORD = 1;
+
+    static IS_RUNNING: AtomicBool = AtomicBool::new(true);
+
+    unsafe extern "system" fn handle_console_ctrl(ctrl_type: DWORD) -> BOOL {
+        match ctrl_type {
+            CTRL_C_EVENT | CTRL_BREAK_EVENT => {
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                1
+            }
+            _ => 0,
+        }
+    }
+
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(HandlerRoutine: PHANDLER_ROUTINE, Add: BOOL) -> BOOL;
+    }
+
+    IS_RUNNING.store(true, Ordering::SeqCst);
+
+    if unsafe { SetConsoleCtrlHandler(Some(handle_console_ctrl), 1) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let guard = std::mem::DropGuard::new((), |()| {
+        if unsafe { SetConsoleCtrlHandler(Some(handle_console_ctrl), 0) } == 0 {
+            tracing::warn!(
+                "failed to unregister console control handler: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    });
+
+    Ok((&IS_RUNNING, guard))
+}
+
 struct AviUtl2Process {
     handle: UniqueHandle,
     pid: u32,

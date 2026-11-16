@@ -1,38 +1,13 @@
 mod lex;
-mod purse;
+mod parse;
 
 pub use lex::Lexer;
-pub use purse::Parser;
+pub use parse::{Parser, is_ident, parse_byte_string, parse_integer, parse_number, parse_string};
 
 use std::borrow::Cow;
 use std::fmt;
 
-#[derive(Default)]
-pub struct Analysis<'a> {
-    pub assigns: Vec<Assignment>,
-    pub calls: Vec<Call<'a>>,
-}
-
-pub struct Assignment {
-    pub span: Span,
-    pub targets: Vec<Span>,
-    pub vals: Vec<Span>,
-}
-
-pub struct Call<'a> {
-    pub stmt_st: Option<usize>,
-    pub span: Span,
-    pub reference: Reference<'a>,
-    pub args: Vec<Span>,
-}
-
 type Reference<'a> = Option<Vec<&'a str>>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token<'a> {
-    pub kind: TokenKind<'a>,
-    pub span: Span,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind<'a> {
@@ -49,7 +24,7 @@ pub enum TokenKind<'a> {
     Ge,
     Comma,
     Dot,
-    Dots,
+    Ellipsis,
     Concat,
     Semicolon,
     Colon,
@@ -66,16 +41,41 @@ pub enum TokenKind<'a> {
 }
 
 impl<'a> TokenKind<'a> {
-    pub(super) fn name(&self) -> Option<&'a str> {
+    pub(in crate::build) fn name(&self) -> Option<&'a str> {
         match self {
             Self::Ident(name) | Self::Keyword(name @ ("goto" | "const" | "continue")) => Some(name),
             _ => None,
         }
     }
 
-    pub(super) fn is_trivia(&self) -> bool {
+    pub(in crate::build) fn is_trivia(&self) -> bool {
         matches!(self, Self::Whitespace | Self::Newline | Self::Comment(_))
     }
+}
+
+#[derive(Default)]
+pub struct Analysis<'a> {
+    pub assigns: Vec<Assign>,
+    pub calls: Vec<Call<'a>>,
+}
+
+pub struct Assign {
+    pub span: Span,
+    pub targets: Vec<Span>,
+    pub vals: Vec<Span>,
+}
+
+pub struct Call<'a> {
+    pub stmt_st: Option<usize>,
+    pub span: Span,
+    pub reference: Reference<'a>,
+    pub args: Vec<Span>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token<'a> {
+    pub kind: TokenKind<'a>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,11 +115,3 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-pub fn is_ident(name: &str) -> Result<bool, Error> {
-    let mut tokens = Lexer::new(name);
-    Ok(matches!(
-        tokens.next().transpose()?.map(|token| token.kind),
-        Some(ref kind) if kind.name().is_some()
-    ) && tokens.next().transpose()?.is_none())
-}

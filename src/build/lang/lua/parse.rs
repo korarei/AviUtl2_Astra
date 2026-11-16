@@ -1,49 +1,49 @@
-use super::{Analysis, Assignment, Call, Error, Reference, Span, Token, TokenKind};
+use super::{Analysis, Assign, Call, Error, Lexer, Literal, Reference, Span, Token, TokenKind};
 use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet};
 
 const MAX_DEPTH: usize = 200;
 
 pub struct Parser<'a, 'tokens, T = Token<'a>> {
+    src_ed: usize,
     tokens: &'tokens [T],
     curr: usize,
     prev: usize,
     depth: usize,
     error: Option<Error>,
     stmt_st: Option<usize>,
-    context_curr: usize,
-    context: Vec<(Option<&'tokens TokenKind<'a>>, usize)>,
+    ctx: Ctx<'a, 'tokens>,
     scopes: Vec<HashMap<&'a str, usize>>,
     bindings: Vec<Binding<'a>>,
-    functions: Vec<usize>,
+    func_scopes: Vec<usize>,
     writes: Vec<usize>,
     output: Analysis<'a>,
 }
 
 impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
     #[must_use]
-    pub fn new(tokens: &'tokens [T]) -> Self {
+    pub fn new(src: &str, tokens: &'tokens [T]) -> Self {
         Self {
+            src_ed: src.len(),
             tokens,
-            curr: tokens
-                .iter()
-                .position(|token| !token.borrow().kind.is_trivia())
-                .unwrap_or(tokens.len()),
+            curr: 0,
             prev: 0,
             depth: 0,
             error: None,
             stmt_st: None,
-            context_curr: 0,
-            context: Vec::new(),
+            ctx: Ctx::default(),
             scopes: vec![HashMap::new()],
             bindings: Vec::new(),
-            functions: Vec::new(),
+            func_scopes: Vec::new(),
             writes: Vec::new(),
             output: Analysis::default(),
         }
     }
 
     pub fn parse(mut self) -> Result<Analysis<'a>, Error> {
+        self.reset();
+        self.curr = 0;
+        self.skip_trivia();
         self.parse_block();
 
         if let Some(error) = self.error {
@@ -60,67 +60,19 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
         Ok(self.output)
     }
 
-    pub fn parse_expr(&mut self, st: usize) -> Result<Span, Error> {
+    pub fn parse_stmt_at(&mut self, st: usize) -> Result<Span, Error> {
+        self.reset();
         self.curr = self.tokens.partition_point(|token| token.borrow().span.st < st);
         self.skip_trivia();
 
-        if self.curr < self.context_curr {
-            self.context.clear();
-            self.context_curr = 0;
-        }
-
-        if self.context.is_empty() {
-            self.context.push((None, 0));
-        }
-
-        while self.context_curr < self.curr {
-            let (kind, conditionals) = *self.context.last().unwrap();
-            let token = self.tokens[self.context_curr].borrow();
-            match &token.kind {
-                TokenKind::LParen
-                | TokenKind::LBracket
-                | TokenKind::LBrace
-                | TokenKind::Keyword("function" | "if" | "while" | "for" | "repeat") => {
-                    self.context.push((Some(&token.kind), 0));
-                }
-                TokenKind::Keyword("do") if matches!(kind, Some(TokenKind::Keyword("while" | "for"))) => {
-                    self.context.last_mut().unwrap().0 = Some(&token.kind);
-                }
-                TokenKind::Keyword("do") => self.context.push((Some(&token.kind), 0)),
-                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Keyword("end" | "until")
-                    if self.context.len() > 1 =>
-                {
-                    self.context.pop();
-                }
-                TokenKind::Operator("?") => self.context.last_mut().unwrap().1 += 1,
-                TokenKind::Colon if conditionals != 0 => self.context.last_mut().unwrap().1 -= 1,
-                _ => {}
-            }
-
-            self.context_curr += 1;
-        }
-
-        let val = self.read_expr(0, self.context.last().unwrap().1 != 0);
-        if let Some(error) = self.error {
-            return Err(error);
-        }
-
-        val.map(|val| val.span).ok_or(Error {
-            offset: self.token(self.curr).map_or(st, |token| token.span.st),
-            message: "missing expression",
-        })
-    }
-
-    pub fn parse_stmt(&mut self, st: usize) -> Result<Span, Error> {
-        self.curr = self.tokens.partition_point(|token| token.borrow().span.st < st);
-        self.skip_trivia();
         let st = self.curr;
         let token = self.token(st).ok_or(Error {
-            offset: self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
+            offset: self.src_ed,
             message: "missing statement",
         })?;
         let span_st = token.span.st;
-        self.read_stmt();
+
+        self.parse_stmt();
 
         if let Some(error) = self.error {
             return Err(error);
@@ -134,19 +86,71 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
         }
 
         self.eat(&TokenKind::Semicolon);
+
         Ok(Span {
             st: span_st,
             ed: self.tokens[self.prev].borrow().span.ed,
         })
     }
 
+    pub fn parse_expr_at(&mut self, st: usize) -> Result<Span, Error> {
+        self.reset();
+        self.curr = self.tokens.partition_point(|token| token.borrow().span.st < st);
+        self.skip_trivia();
+
+        if self.curr < self.ctx.ed {
+            self.ctx.stack.clear();
+            self.ctx.ed = 0;
+        }
+
+        if self.ctx.stack.is_empty() {
+            self.ctx.stack.push((None, 0));
+        }
+
+        while self.ctx.ed < self.curr {
+            let (kind, conditionals) = *self.ctx.stack.last().unwrap();
+            let token = self.tokens[self.ctx.ed].borrow();
+
+            match &token.kind {
+                TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::Keyword("function" | "if" | "while" | "for" | "repeat") => {
+                    self.ctx.stack.push((Some(&token.kind), 0));
+                }
+                TokenKind::Keyword("do") if matches!(kind, Some(TokenKind::Keyword("while" | "for"))) => {
+                    self.ctx.stack.last_mut().unwrap().0 = Some(&token.kind);
+                }
+                TokenKind::Keyword("do") => self.ctx.stack.push((Some(&token.kind), 0)),
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Keyword("end" | "until")
+                    if self.ctx.stack.len() > 1 =>
+                {
+                    self.ctx.stack.pop();
+                }
+                TokenKind::Operator("?") => self.ctx.stack.last_mut().unwrap().1 += 1,
+                TokenKind::Colon if conditionals != 0 => self.ctx.stack.last_mut().unwrap().1 -= 1,
+                _ => {}
+            }
+
+            self.ctx.ed += 1;
+        }
+
+        let val = self.parse_expr(0, self.ctx.stack.last().unwrap().1 != 0);
+
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+
+        val.map(|val| val.span).ok_or(Error {
+            offset: self.token(self.curr).map_or(self.src_ed, |token| token.span.st),
+            message: "missing expression",
+        })
+    }
+
     fn parse_block(&mut self) {
         if self.depth + 1 >= MAX_DEPTH {
             self.error.get_or_insert(Error {
-                offset: self.token(self.curr).map_or_else(
-                    || self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
-                    |token| token.span.st,
-                ),
+                offset: self.token(self.curr).map_or(self.src_ed, |token| token.span.st),
                 message: "chunk has too many syntax levels",
             });
             return;
@@ -162,7 +166,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
             )
         {
             let st = self.curr;
-            self.read_stmt();
+            self.parse_stmt();
 
             if self.curr == st {
                 self.error.get_or_insert(Error {
@@ -182,11 +186,11 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn read_stmt(&mut self) {
+    fn parse_stmt(&mut self) {
         let st = self.curr;
         let prev_stmt_st = self.stmt_st.replace(self.tokens[st].borrow().span.st);
 
-        match self.kind().cloned() {
+        match self.kind() {
             Some(TokenKind::Local | TokenKind::Keyword("const"))
                 if self.kind() == Some(&TokenKind::Local)
                     || self.peek(1).is_some_and(|token| {
@@ -199,9 +203,9 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                         self.declare(name, None);
                     }
 
-                    self.parse_function(false);
+                    self.parse_func(false);
                 } else {
-                    self.parse_assignment(st, true);
+                    self.parse_assign(st, true);
                 }
             }
             Some(TokenKind::Keyword("function")) => {
@@ -224,7 +228,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                     }
                 }
 
-                self.parse_function(is_method);
+                self.parse_func(is_method);
             }
             Some(TokenKind::Keyword("if")) => {
                 self.bump();
@@ -259,8 +263,8 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                 self.parse_scoped_block();
                 self.expect(&TokenKind::Keyword("end"));
             }
-            Some(TokenKind::Keyword("while" | "for" | "repeat")) => {
-                let kind = self.kind().cloned().unwrap();
+            Some(TokenKind::Keyword(kind @ ("while" | "for" | "repeat"))) => {
+                let kind = *kind;
                 self.bump();
                 let writes_st = self.writes.len();
                 let calls_st = self.output.calls.len();
@@ -271,7 +275,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                     .collect::<Vec<_>>();
                 let mut names = Vec::new();
 
-                if kind == TokenKind::Keyword("for") {
+                if kind == "for" {
                     while let Some(name) = self.require_name() {
                         names.push(name);
 
@@ -308,11 +312,11 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                             });
                         }
                     }
-                } else if kind == TokenKind::Keyword("while") {
+                } else if kind == "while" {
                     self.require_expr(false);
                 }
 
-                if kind != TokenKind::Keyword("repeat") {
+                if kind != "repeat" {
                     self.expect(&TokenKind::Keyword("do"));
                 }
 
@@ -324,7 +328,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
 
                 self.parse_block();
 
-                if kind == TokenKind::Keyword("repeat") {
+                if kind == "repeat" {
                     self.expect(&TokenKind::Keyword("until"));
                     self.require_expr(false);
                 } else {
@@ -333,7 +337,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
 
                 self.scopes.pop().expect("scope must exist");
 
-                let changed = self.writes[writes_st..]
+                let writes = self.writes[writes_st..]
                     .iter()
                     .filter_map(|&index| references.get(index).and_then(Option::as_deref))
                     .collect::<HashSet<_>>();
@@ -342,7 +346,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                     if call
                         .reference
                         .as_ref()
-                        .is_some_and(|reference| (1..=reference.len()).any(|ed| changed.contains(&reference[..ed])))
+                        .is_some_and(|reference| (1..=reference.len()).any(|ed| writes.contains(&reference[..ed])))
                     {
                         call.reference = None;
                     }
@@ -378,27 +382,27 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                 self.expect(&TokenKind::Operator("::"));
             }
             Some(TokenKind::Semicolon) => self.bump(),
-            _ => self.parse_assignment(st, false),
+            _ => self.parse_assign(st, false),
         }
 
         self.stmt_st = prev_stmt_st;
     }
 
     #[allow(clippy::too_many_lines)]
-    fn parse_assignment(&mut self, st: usize, is_local: bool) {
+    fn parse_assign(&mut self, st: usize, is_local: bool) {
         let mut targets = Vec::new();
-        let mut names = Vec::new();
         let mut bindings = Vec::new();
 
         loop {
             let target_st = self.curr;
             let name = self.kind().and_then(TokenKind::name);
 
-            let expression = if is_local {
+            let expr = if is_local {
                 if self.require_name().is_none() {
                     return;
                 }
-                Expression {
+
+                Expr {
                     span: self.tokens[target_st].borrow().span,
                     reference: None,
                     binding: None,
@@ -407,16 +411,16 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                     is_call: false,
                 }
             } else {
-                let Some(expression) = self.read_expr(15, false) else {
+                let Some(expr) = self.parse_expr(15, false) else {
                     self.fail("missing assignment target");
                     return;
                 };
 
-                expression
+                expr
             };
 
-            if !is_local && !expression.is_target {
-                if expression.is_call && targets.is_empty() && self.kind() != Some(&TokenKind::Assign) {
+            if !is_local && !expr.is_target {
+                if expr.is_call && targets.is_empty() && self.kind() != Some(&TokenKind::Assign) {
                     return;
                 }
 
@@ -424,9 +428,8 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                 return;
             }
 
-            names.push(name.filter(|_| self.prev == target_st));
-            bindings.push(expression.binding);
-            targets.push(expression.span);
+            bindings.push((name.filter(|_| self.prev == target_st), expr.binding));
+            targets.push(expr.span);
 
             if !self.eat(&TokenKind::Comma) {
                 break;
@@ -462,8 +465,9 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
             return;
         }
 
-        let vals = if has_vals || is_compound {
+        let mut vals = if has_vals || is_compound {
             let Some(vals) = self.parse_exprs() else { return };
+
             if vals.is_empty() {
                 self.error.get_or_insert(Error {
                     offset: self.tokens[self.prev].borrow().span.ed,
@@ -477,25 +481,26 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
             Vec::new()
         };
 
-        let ed = self.tokens[self.prev].borrow().span.ed;
-
-        for (index, name) in names.iter().enumerate() {
-            let val = if is_compound {
+        for (index, (name, binding)) in bindings.into_iter().enumerate() {
+            let mut val = vals.get_mut(index);
+            let reference = if is_compound {
                 None
             } else {
-                vals.get(index).and_then(|val| val.reference.clone())
+                val.as_mut().and_then(|val| val.reference.take())
             };
 
-            if is_local {
-                if let Some(name) = name {
-                    let binding = self.declare(name, val);
-                    self.bindings[binding].captures = vals.get(index).map_or_else(Vec::new, |val| val.captures.clone());
+            let binding = if is_local {
+                name.map(|name| self.declare(name, reference))
+            } else {
+                if let Some(binding) = binding {
+                    self.assign(binding, if name.is_some() { reference } else { None });
                 }
-            } else if let Some(binding) = bindings[index] {
-                self.assign(binding, if name.is_some() { val } else { None });
-                if name.is_some() {
-                    self.bindings[binding].captures = vals.get(index).map_or_else(Vec::new, |val| val.captures.clone());
-                }
+
+                binding.filter(|_| name.is_some())
+            };
+
+            if let Some(binding) = binding {
+                self.bindings[binding].captures = val.map_or_else(Vec::new, |val| std::mem::take(&mut val.captures));
             }
         }
 
@@ -503,132 +508,48 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
             return;
         }
 
-        self.output.assigns.push(Assignment {
+        self.output.assigns.push(Assign {
             span: Span {
                 st: self.tokens[st].borrow().span.st,
-                ed,
+                ed: self.tokens[self.prev].borrow().span.ed,
             },
             targets,
             vals: vals.into_iter().map(|val| val.span).collect(),
         });
     }
 
-    fn parse_exprs(&mut self) -> Option<Vec<Expression<'a>>> {
+    fn parse_exprs(&mut self) -> Option<Vec<Expr<'a>>> {
         let mut vals = Vec::new();
-        let Some(val) = self.read_expr(0, false) else {
+        let Some(val) = self.parse_expr(0, false) else {
             return Some(vals);
         };
 
         vals.push(val);
 
         while self.eat(&TokenKind::Comma) {
-            let Some(val) = self.read_expr(0, false) else {
+            let Some(val) = self.parse_expr(0, false) else {
                 self.error.get_or_insert(Error {
                     offset: self.tokens[self.prev].borrow().span.ed,
                     message: "missing expression after comma",
                 });
                 return None;
             };
+
             vals.push(val);
         }
 
         Some(vals)
     }
 
-    fn parse_parameters(&mut self, ed: &TokenKind<'a>) -> Vec<&'a str> {
-        let mut names = Vec::new();
-
-        if self.eat(ed) {
-            return names;
-        }
-
-        loop {
-            if self.eat(&TokenKind::Dots) {
-                break;
-            }
-
-            let Some(name) = self.require_name() else { return names };
-            names.push(name);
-
-            if !self.eat(&TokenKind::Comma) {
-                break;
-            }
-        }
-
-        self.expect(ed);
-        names
-    }
-
-    fn parse_function(&mut self, is_method: bool) {
-        if !self.expect(&TokenKind::LParen) {
-            return;
-        }
-
-        let mut names = self.parse_parameters(&TokenKind::RParen);
-        if is_method {
-            names.insert(0, "self");
-        }
-
-        self.parse_function_body(names, false, false);
-    }
-
-    fn parse_short_function(&mut self, name: Option<&'a str>, should_stop_at_colon: bool) {
-        let names = if let Some(name) = name {
-            vec![name]
-        } else if self.eat(&TokenKind::Operator("||")) {
-            Vec::new()
-        } else if self.eat(&TokenKind::Operator("|")) {
-            self.parse_parameters(&TokenKind::Operator("|"))
-        } else {
-            return;
-        };
-
-        if self.expect(&TokenKind::Operator("->")) {
-            self.parse_function_body(names, true, should_stop_at_colon);
-        }
-    }
-
-    fn parse_function_body(&mut self, names: Vec<&'a str>, is_short: bool, should_stop_at_colon: bool) {
-        let prev_stmt_st = self.stmt_st.take();
-        let references = self
-            .bindings
-            .iter()
-            .map(|binding| binding.reference.clone())
-            .collect::<Vec<_>>();
-        let writes_st = self.writes.len();
-
-        self.functions.push(self.scopes.len());
-        self.scopes.push(HashMap::new());
-
-        for name in names {
-            self.declare(name, None);
-        }
-
-        if is_short && !self.eat(&TokenKind::Keyword("do")) {
-            self.require_expr(should_stop_at_colon);
-        } else {
-            self.parse_block();
-            self.expect(&TokenKind::Keyword("end"));
-        }
-
-        self.scopes.pop().expect("scope must exist");
-        self.functions.pop().expect("function scope must exist");
-        self.invalidate(&references, writes_st);
-        self.stmt_st = prev_stmt_st;
-    }
-
     #[allow(clippy::too_many_lines)]
-    fn read_expr(&mut self, min_precedence: u8, should_stop_at_colon: bool) -> Option<Expression<'a>> {
+    fn parse_expr(&mut self, min_prec: u8, should_stop_at_colon: bool) -> Option<Expr<'a>> {
         if self.error.is_some() {
             return None;
         }
 
         if self.depth + 1 >= MAX_DEPTH {
             self.error = Some(Error {
-                offset: self.token(self.curr).map_or_else(
-                    || self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
-                    |token| token.span.st,
-                ),
+                offset: self.token(self.curr).map_or(self.src_ed, |token| token.span.st),
                 message: "chunk has too many syntax levels",
             });
             return None;
@@ -646,15 +567,16 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
             let mut is_prefix = false;
             let mut is_target = false;
             let mut is_call = false;
-            let mut has_safe_navigation = false;
+            let mut is_safe = false;
 
             match &token.kind {
                 TokenKind::Ident(name) | TokenKind::Keyword(name @ ("goto" | "const" | "continue")) => {
                     let name = *name;
                     self.bump();
+
                     if self.kind() == Some(&TokenKind::Operator("->")) {
-                        self.parse_short_function(Some(name), should_stop_at_colon);
-                        return Some(Expression {
+                        self.parse_short_func(Some(name), should_stop_at_colon);
+                        return Some(Expr {
                             span: Span {
                                 st,
                                 ed: self.tokens[self.prev].borrow().span.ed,
@@ -666,6 +588,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                             is_call: false,
                         });
                     }
+
                     is_prefix = true;
                     is_target = true;
                     let index = self.resolve(name);
@@ -674,7 +597,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                     captures.clone_from(&self.bindings[index].captures);
 
                     if self
-                        .functions
+                        .func_scopes
                         .last()
                         .is_some_and(|&scope| self.bindings[index].scope < scope)
                     {
@@ -683,16 +606,16 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                 }
                 TokenKind::String(_)
                 | TokenKind::Number(_)
-                | TokenKind::Dots
+                | TokenKind::Ellipsis
                 | TokenKind::Keyword("nil" | "true" | "false") => self.bump(),
                 TokenKind::Other('-' | '#') | TokenKind::Operator("~" | "!") | TokenKind::Keyword("not") => {
                     self.bump();
-                    self.read_expr(13, false)?;
+                    self.parse_expr(13, false)?;
                 }
                 TokenKind::LParen => {
                     is_prefix = true;
                     self.bump();
-                    let val = self.read_expr(0, false)?;
+                    let val = self.parse_expr(0, false)?;
                     reference = val.reference;
                     binding = val.binding;
                     captures = val.captures;
@@ -704,7 +627,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                     self.bump();
                     while self.kind().is_some() && self.kind() != Some(&TokenKind::RBrace) {
                         if self.eat(&TokenKind::LBracket) {
-                            self.read_expr(0, false)?;
+                            self.parse_expr(0, false)?;
                             if !self.expect(&TokenKind::RBracket) || !self.expect(&TokenKind::Assign) {
                                 return None;
                             }
@@ -715,7 +638,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                             self.bump();
                         }
 
-                        self.read_expr(0, false)?;
+                        self.parse_expr(0, false)?;
                         if self.kind() == Some(&TokenKind::RBrace) {
                             break;
                         }
@@ -732,30 +655,31 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                 }
                 TokenKind::Keyword("function") => {
                     self.bump();
-                    self.parse_function(false);
+                    self.parse_func(false);
                 }
-                TokenKind::Operator("|" | "||") => self.parse_short_function(None, should_stop_at_colon),
+                TokenKind::Operator("|" | "||") => self.parse_short_func(None, should_stop_at_colon),
                 _ => return None,
             }
 
             if is_prefix {
                 loop {
-                    match self.kind().cloned() {
+                    match self.kind() {
                         Some(TokenKind::Dot) => {
                             self.bump();
-                            is_target = !has_safe_navigation;
+                            is_target = !is_safe;
                             is_call = false;
                             let name = self.require_name()?;
+
                             if let Some(reference) = &mut reference {
                                 reference.push(name);
                             }
                         }
                         Some(TokenKind::LBracket) => {
                             self.bump();
-                            is_target = !has_safe_navigation;
+                            is_target = !is_safe;
                             is_call = false;
                             let key_st = self.curr;
-                            self.read_expr(0, false)?;
+                            self.parse_expr(0, false)?;
 
                             if self.prev == key_st
                                 && let TokenKind::String(key) = &self.tokens[key_st].borrow().kind
@@ -775,7 +699,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                         }
                         Some(TokenKind::Operator("?.")) => {
                             self.bump();
-                            has_safe_navigation = true;
+                            is_safe = true;
                             is_target = false;
                             is_call = false;
                             if let Some(name) = self.kind().and_then(TokenKind::name) {
@@ -801,8 +725,9 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                             self.bump();
                             self.require_name()?;
                             if self.eat(&TokenKind::Operator("?.")) {
-                                has_safe_navigation = true;
+                                is_safe = true;
                             }
+
                             if !matches!(
                                 self.kind(),
                                 Some(TokenKind::LParen | TokenKind::LBrace | TokenKind::String(_))
@@ -824,7 +749,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
 
                                 args
                             } else {
-                                vec![self.read_expr(15, false)?]
+                                vec![self.parse_expr(15, false)?]
                             };
 
                             if reference.is_some() {
@@ -852,7 +777,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
             }
 
             loop {
-                let (precedence, is_right_associative) = match self.kind() {
+                let (prec, is_right_associative) = match self.kind() {
                     Some(TokenKind::Keyword("or") | TokenKind::Operator("||" | "??")) => (1, false),
                     Some(TokenKind::Keyword("and") | TokenKind::Operator("&&")) => (2, false),
                     Some(
@@ -874,12 +799,12 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                     _ => break,
                 };
 
-                if precedence < min_precedence {
+                if prec < min_prec {
                     break;
                 }
 
                 self.bump();
-                self.read_expr(precedence + u8::from(!is_right_associative), should_stop_at_colon)?;
+                self.parse_expr(prec + u8::from(!is_right_associative), should_stop_at_colon)?;
                 is_target = false;
                 is_call = false;
                 reference = None;
@@ -887,14 +812,14 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                 captures.clear();
             }
 
-            if min_precedence == 0 && self.eat(&TokenKind::Operator("?")) {
-                self.read_expr(0, true)?;
+            if min_prec == 0 && self.eat(&TokenKind::Operator("?")) {
+                self.parse_expr(0, true)?;
 
                 if !self.expect(&TokenKind::Colon) {
                     return None;
                 }
 
-                self.read_expr(0, false)?;
+                self.parse_expr(0, false)?;
                 is_target = false;
                 is_call = false;
                 reference = None;
@@ -902,7 +827,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                 captures.clear();
             }
 
-            Some(Expression {
+            Some(Expr {
                 span: Span {
                     st,
                     ed: self.tokens[self.prev].borrow().span.ed,
@@ -918,14 +843,108 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
         self.depth -= 1;
         if val.is_none() && self.curr != curr {
             self.error.get_or_insert(Error {
-                offset: self.token(self.curr).map_or_else(
-                    || self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
-                    |token| token.span.st,
-                ),
+                offset: self.token(self.curr).map_or(self.src_ed, |token| token.span.st),
                 message: "incomplete expression",
             });
         }
         val
+    }
+
+    fn parse_func(&mut self, is_method: bool) {
+        if !self.expect(&TokenKind::LParen) {
+            return;
+        }
+
+        let mut params = self.parse_params(&TokenKind::RParen);
+
+        if is_method {
+            params.insert(0, "self");
+        }
+
+        self.parse_func_body(params, false, false);
+    }
+
+    fn parse_short_func(&mut self, name: Option<&'a str>, should_stop_at_colon: bool) {
+        let params = if let Some(name) = name {
+            vec![name]
+        } else if self.eat(&TokenKind::Operator("||")) {
+            Vec::new()
+        } else if self.eat(&TokenKind::Operator("|")) {
+            self.parse_params(&TokenKind::Operator("|"))
+        } else {
+            return;
+        };
+
+        if self.expect(&TokenKind::Operator("->")) {
+            self.parse_func_body(params, true, should_stop_at_colon);
+        }
+    }
+
+    fn parse_func_body(&mut self, params: Vec<&'a str>, is_short: bool, should_stop_at_colon: bool) {
+        let prev_stmt_st = self.stmt_st.take();
+        let references = self
+            .bindings
+            .iter()
+            .map(|binding| binding.reference.clone())
+            .collect::<Vec<_>>();
+        let writes_st = self.writes.len();
+
+        self.func_scopes.push(self.scopes.len());
+        self.scopes.push(HashMap::new());
+
+        for name in params {
+            self.declare(name, None);
+        }
+
+        if is_short && !self.eat(&TokenKind::Keyword("do")) {
+            self.require_expr(should_stop_at_colon);
+        } else {
+            self.parse_block();
+            self.expect(&TokenKind::Keyword("end"));
+        }
+
+        self.scopes.pop().expect("scope must exist");
+        self.func_scopes.pop().expect("function scope must exist");
+        self.invalidate(&references, writes_st);
+        self.stmt_st = prev_stmt_st;
+    }
+
+    fn parse_params(&mut self, closing: &TokenKind<'a>) -> Vec<&'a str> {
+        let mut params = Vec::new();
+
+        if self.eat(closing) {
+            return params;
+        }
+
+        loop {
+            if self.eat(&TokenKind::Ellipsis) {
+                break;
+            }
+
+            let Some(name) = self.require_name() else { return params };
+            params.push(name);
+
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+
+        self.expect(closing);
+        params
+    }
+
+    fn reset(&mut self) {
+        self.prev = 0;
+        self.depth = 0;
+        self.error = None;
+        self.stmt_st = None;
+        self.scopes.truncate(1);
+        self.scopes[0].clear();
+        self.bindings.clear();
+        self.func_scopes.clear();
+        self.writes.clear();
+        self.output.assigns.clear();
+        self.output.calls.clear();
     }
 
     fn declare(&mut self, name: &'a str, reference: Reference<'a>) -> usize {
@@ -959,25 +978,26 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
         index
     }
 
-    fn assign(&mut self, index: usize, reference: Reference<'a>) {
-        if self.bindings[index].reference != reference {
-            for call in std::mem::take(&mut self.bindings[index].calls) {
+    fn assign(&mut self, binding: usize, reference: Reference<'a>) {
+        if self.bindings[binding].reference != reference {
+            for call in std::mem::take(&mut self.bindings[binding].calls) {
                 self.output.calls[call].reference = None;
             }
         }
 
-        self.bindings[index].reference = reference;
-        self.bindings[index].captures.clear();
-        self.writes.push(index);
+        self.bindings[binding].reference = reference;
+        self.bindings[binding].captures.clear();
+        self.writes.push(binding);
     }
 
     fn restore(&mut self, references: &[Reference<'a>]) {
         for (index, binding) in self.bindings.iter_mut().enumerate() {
             if binding.scope < self.scopes.len() {
-                binding.reference = references
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| Some(vec![binding.name]));
+                if let Some(reference) = references.get(index) {
+                    binding.reference.clone_from(reference);
+                } else {
+                    binding.reference = Some(vec![binding.name]);
+                }
             }
         }
     }
@@ -1006,7 +1026,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
     }
 
     fn require_expr(&mut self, should_stop_at_colon: bool) {
-        if self.read_expr(0, should_stop_at_colon).is_none() {
+        if self.parse_expr(0, should_stop_at_colon).is_none() {
             self.fail("missing expression");
         }
     }
@@ -1030,22 +1050,12 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
         }
     }
 
-    fn token(&self, at: usize) -> Option<&'tokens Token<'a>> {
-        self.tokens.get(at).map(Borrow::borrow)
+    fn token(&self, pos: usize) -> Option<&'tokens Token<'a>> {
+        self.tokens.get(pos).map(Borrow::borrow)
     }
 
     fn kind(&self) -> Option<&TokenKind<'a>> {
         self.token(self.curr).map(|token| &token.kind)
-    }
-
-    fn fail(&mut self, message: &'static str) {
-        self.error.get_or_insert(Error {
-            offset: self.token(self.curr).map_or_else(
-                || self.tokens.last().map(Borrow::borrow).map_or(0, |token| token.span.ed),
-                |token| token.span.st,
-            ),
-            message,
-        });
     }
 
     fn peek(&self, offset: usize) -> Option<&'tokens Token<'a>> {
@@ -1067,6 +1077,19 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
             self.curr += 1;
         }
     }
+
+    fn fail(&mut self, message: &'static str) {
+        self.error.get_or_insert(Error {
+            offset: self.token(self.curr).map_or(self.src_ed, |token| token.span.st),
+            message,
+        });
+    }
+}
+
+#[derive(Default)]
+struct Ctx<'a, 'tokens> {
+    ed: usize,
+    stack: Vec<(Option<&'tokens TokenKind<'a>>, usize)>,
 }
 
 struct Binding<'a> {
@@ -1077,7 +1100,7 @@ struct Binding<'a> {
     calls: Vec<usize>,
 }
 
-struct Expression<'a> {
+struct Expr<'a> {
     span: Span,
     reference: Reference<'a>,
     binding: Option<usize>,
@@ -1086,10 +1109,572 @@ struct Expression<'a> {
     is_call: bool,
 }
 
+#[must_use]
+pub fn parse_number(src: &str) -> Option<f64> {
+    let src = src.trim_matches(|ch| matches!(ch, ' ' | '\t'..='\u{c}'));
+    let is_neg = src.starts_with('-');
+    let src = src.trim_prefix(['+', '-']);
+
+    if src.eq_ignore_ascii_case("nan") {
+        return Some(f64::NAN);
+    }
+
+    if src.eq_ignore_ascii_case("inf") || src.eq_ignore_ascii_case("infinity") {
+        return Some(if is_neg { f64::NEG_INFINITY } else { f64::INFINITY });
+    }
+
+    if !matches!(src.as_bytes(), [b'0'..=b'9', ..] | [b'.', b'0'..=b'9', ..]) {
+        return None;
+    }
+
+    let src = if src.contains('_') {
+        Cow::Owned(src.replace('_', ""))
+    } else {
+        Cow::Borrowed(src)
+    };
+    let src = src.as_ref();
+
+    let val = match src.as_bytes() {
+        [b'0', b'x' | b'X', ..] => parse_hex(&src[2..])?,
+        [b'0', b'b' | b'B', b'0'..=b'1', ..] => to_float(u64::from_str_radix(&src[2..], 2).ok()?, 0, false),
+        _ => {
+            split_number(src, ['e', 'E'])?;
+
+            src.parse::<f64>().ok()?
+        }
+    };
+
+    Some(if is_neg { -val } else { val })
+}
+
+#[must_use]
+pub fn parse_integer(src: &str) -> Option<i64> {
+    let src = src.trim_matches(|ch| matches!(ch, ' ' | '\t'..='\u{c}'));
+    let is_neg = src.starts_with('-');
+    let src = src.trim_prefix(['+', '-']);
+
+    if !matches!(src.as_bytes(), [b'0'..=b'9', ..]) {
+        return None;
+    }
+
+    let src = if src.contains('_') {
+        Cow::Owned(src.replace('_', ""))
+    } else {
+        Cow::Borrowed(src)
+    };
+    let (src, radix) = match src.as_bytes() {
+        [b'0', b'x' | b'X', ..] => (&src[2..], 16),
+        [b'0', b'b' | b'B', ..] => (&src[2..], 2),
+        _ => (src.as_ref(), 10),
+    };
+
+    if src.starts_with('+') {
+        return None;
+    }
+
+    let val = u64::from_str_radix(src, radix).ok()?;
+
+    if is_neg {
+        0i64.checked_sub_unsigned(val)
+    } else {
+        i64::try_from(val).ok()
+    }
+}
+
+pub fn is_ident(name: &str) -> Result<bool, Error> {
+    let mut tokens = Lexer::new(name);
+    Ok(matches!(
+        tokens.next().transpose()?.map(|token| token.kind),
+        Some(ref kind) if kind.name().is_some()
+    ) && tokens.next().transpose()?.is_none())
+}
+
+pub fn parse_byte_string(src: &str) -> Result<Option<Cow<'_, [u8]>>, Error> {
+    Ok(parse_literal(src)?.map(|(literal, _)| literal.val))
+}
+
+pub fn parse_string(src: &str) -> Result<Option<Cow<'_, str>>, Error> {
+    let Some((literal, span)) = parse_literal(src)? else {
+        return Ok(None);
+    };
+
+    let error = Error {
+        offset: span.st,
+        message: "string is not valid UTF-8",
+    };
+
+    let val = match literal.val {
+        Cow::Borrowed(bytes) => Cow::Borrowed(std::str::from_utf8(bytes).map_err(|_| error)?),
+        Cow::Owned(bytes) => Cow::Owned(String::from_utf8(bytes).map_err(|_| error)?),
+    };
+
+    Ok(Some(val))
+}
+
+fn parse_hex(src: &str) -> Option<f64> {
+    let (src, exp) = split_number(src, ['p', 'P'])?;
+    let mut mantissa = 0u64;
+    let mut shift = 0i64;
+    let mut has_remainder = false;
+    let mut has_digits = false;
+    let mut has_dot = false;
+
+    for byte in src.bytes() {
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            b'.' if !has_dot => {
+                has_dot = true;
+                continue;
+            }
+            _ => return None,
+        };
+
+        has_digits = true;
+
+        if 64 - mantissa.leading_zeros() <= 56 {
+            mantissa = (mantissa << 4) | u64::from(digit);
+
+            if has_dot {
+                shift = shift.saturating_sub(4);
+            }
+        } else {
+            if !has_dot {
+                shift = shift.saturating_add(4);
+            }
+
+            has_remainder |= digit != 0;
+        }
+    }
+
+    if !has_digits {
+        return None;
+    }
+
+    Some(to_float(mantissa, exp.saturating_add(shift), has_remainder))
+}
+
+fn split_number(src: &str, marker: [char; 2]) -> Option<(&str, i64)> {
+    let (src, exp) = if let Some((src, exp)) = src.split_once(marker) {
+        let exp = exp.parse::<i32>().ok()?;
+
+        if exp.unsigned_abs() >= 1 << 20 {
+            return None;
+        }
+
+        (src, i64::from(exp))
+    } else {
+        (src, 0)
+    };
+
+    if let Some((_, fraction)) = src.split_once('.')
+        && fraction.trim_end_matches('0').len() >= 1 << 20
+    {
+        return None;
+    }
+
+    Some((src, exp))
+}
+
+fn to_float(mantissa: u64, exp: i64, has_remainder: bool) -> f64 {
+    if mantissa == 0 {
+        return 0.0;
+    }
+
+    let bits = 64 - mantissa.leading_zeros();
+    let mut exponent = exp.saturating_add(i64::from(bits) - 1);
+
+    if exponent > 1023 {
+        return f64::INFINITY;
+    }
+
+    if exponent < -1075 {
+        return 0.0;
+    }
+
+    let round_right = |val: u64, drop: u32| -> u64 {
+        let half = 1u64 << (drop - 1);
+        let rem = val & ((1u64 << drop) - 1);
+        let val = val >> drop;
+        let should_round_up = rem > half || (rem == half && (has_remainder || (val & 1) != 0));
+
+        val + u64::from(should_round_up)
+    };
+
+    if exponent >= -1022 {
+        let sig = if bits <= 53 {
+            mantissa << (53 - bits)
+        } else {
+            round_right(mantissa, bits - 53)
+        };
+
+        let sig = if sig == (1u64 << 53) {
+            exponent += 1;
+
+            if exponent > 1023 {
+                return f64::INFINITY;
+            }
+
+            sig >> 1
+        } else {
+            sig
+        };
+
+        let biased_exp = u64::try_from(exponent + 1023).unwrap();
+
+        f64::from_bits((biased_exp << 52) | (sig & ((1u64 << 52) - 1)))
+    } else {
+        let sig = if exp >= -1074 {
+            mantissa << u32::try_from(exp + 1074).unwrap()
+        } else {
+            round_right(mantissa, u32::try_from(-1074 - exp).unwrap())
+        };
+
+        f64::from_bits(sig)
+    }
+}
+
+fn parse_literal(src: &str) -> Result<Option<(Literal<'_>, Span)>, Error> {
+    let mut tokens = Lexer::new(src).filter(|token| token.as_ref().map_or(true, |token| !token.kind.is_trivia()));
+    let Some(Token {
+        kind: TokenKind::String(literal),
+        span,
+    }) = tokens.next().transpose()?
+    else {
+        return Ok(None);
+    };
+
+    if tokens.next().transpose()?.is_some() {
+        return Ok(None);
+    }
+
+    Ok(Some((literal, span)))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::{Lexer, is_ident};
     use super::*;
+
+    #[test]
+    fn parses_integers() {
+        for (src, expected) in [
+            ("0", 0),
+            ("+0", 0),
+            ("-0", 0),
+            ("42", 42),
+            ("+42", 42),
+            ("-42", -42),
+            (" \t-1_000\n", -1000),
+            ("1__0_", 10),
+            ("0x2a", 42),
+            ("+0X2A", 42),
+            ("-0_xF_F", -255),
+            ("0b101010", 42),
+            ("-0_B10_10", -10),
+            ("9007199254740993", 9_007_199_254_740_993),
+            ("-9007199254740993", -9_007_199_254_740_993),
+            ("9223372036854775807", i64::MAX),
+            ("-9223372036854775808", i64::MIN),
+            ("0x7fff_ffff_ffff_ffff", i64::MAX),
+            ("-0x8000_0000_0000_0000", i64::MIN),
+        ] {
+            assert_eq!(parse_integer(src), Some(expected), "{src}");
+        }
+
+        assert_eq!(parse_integer(&format!("0b{}", "1".repeat(63))), Some(i64::MAX));
+        assert_eq!(parse_integer(&format!("-0b1{}", "0".repeat(63))), Some(i64::MIN));
+        assert_eq!(parse_integer(&format!("0b{}1", "0".repeat(100))), Some(1));
+    }
+
+    #[test]
+    fn rejects_integers() {
+        for src in [
+            "",
+            " ",
+            "+",
+            "-",
+            "++1",
+            "--1",
+            "+-1",
+            "- 1",
+            "_1",
+            "+_1",
+            "1.0",
+            "1.5",
+            ".5",
+            "1e3",
+            "0x1p3",
+            "0x1.0",
+            "0x",
+            "0b",
+            "0x+1",
+            "0b+1",
+            "0b2",
+            "0xg",
+            "NaN",
+            "inf",
+            "-infinity",
+            "1LL",
+            "1i",
+            "9223372036854775808",
+            "-9223372036854775809",
+            "18446744073709551616",
+            "0x8000000000000000",
+            "-0x8000000000000001",
+            "0x10000000000000000",
+            "\u{a0}1",
+            "1\u{a0}",
+        ] {
+            assert_eq!(parse_integer(src), None, "{src}");
+        }
+
+        assert_eq!(parse_integer(&format!("0b1{}", "0".repeat(63))), None);
+        assert_eq!(parse_integer(&format!("-0b{}", "1".repeat(64))), None);
+    }
+
+    #[test]
+    fn parses_luajit_numbers() {
+        for (src, expected) in [
+            ("0", 0.0),
+            (" 1", 1.0),
+            ("1 ", 1.0),
+            ("\t\n\u{b}\u{c} -0x1p2 \t", -4.0),
+            ("+0", 0.0),
+            ("-0", -0.0),
+            ("42", 42.0),
+            ("1_000", 1000.0),
+            ("1__0_", 10.0),
+            ("-1_2.5_0e+1", -125.0),
+            ("1e_+_3", 1000.0),
+            ("+.1_25", 0.125),
+            ("+5", 5.0),
+            ("-3.5", -3.5),
+            (".5", 0.5),
+            ("+.5", 0.5),
+            ("-.5", -0.5),
+            ("5.", 5.0),
+            ("1e3", 1000.0),
+            ("2.5E-2", 0.025),
+            ("0x0", 0.0),
+            ("+0x2", 2.0),
+            ("-0XFF", -255.0),
+            ("0_xF_F", 255.0),
+            ("0x1_.8_p+1_0", 1536.0),
+            ("0x1.fp3", 15.5),
+            ("-0x.8p0", -0.5),
+            ("+0x1.P-2", 0.25),
+            ("0x1.8", 1.5),
+            ("0x10000000000000000", 18_446_744_073_709_551_616.0),
+            ("0x1.fffffffffffffp1023", f64::MAX),
+            ("0x1p-1022", f64::MIN_POSITIVE),
+            ("0x0.fffffffffffffp-1022", f64::from_bits((1 << 52) - 1)),
+            ("0x0.fffffffffffff8p-1022", f64::MIN_POSITIVE),
+            ("0x0p999999", 0.0),
+            ("0x1p-999999", 0.0),
+            ("-0x0p1048575", -0.0),
+            ("0x1p-1048575", 0.0),
+            ("0x0000.0001P+16", 1.0),
+            ("0b0", 0.0),
+            ("+0b101", 5.0),
+            ("-0B1111", -15.0),
+            ("0_b10_10", 10.0),
+            (
+                "0b1111111111111111111111111111111111111111111111111111111111111111",
+                18_446_744_073_709_551_616.0,
+            ),
+        ] {
+            let actual = parse_number(src).unwrap();
+            assert_eq!(actual.to_bits(), expected.to_bits(), "{src}");
+        }
+    }
+
+    #[test]
+    fn parses_nonfinite_numbers() {
+        for src in [
+            "inf",
+            "INF",
+            "infinity",
+            "InFiNiTy",
+            "1e400",
+            "0x1p1024",
+            "0x1.fffffffffffff8p1023",
+        ] {
+            for (sign, expected) in [("", f64::INFINITY), ("+", f64::INFINITY), ("-", f64::NEG_INFINITY)] {
+                assert_eq!(parse_number(&format!("{sign}{src}")), Some(expected), "{sign}{src}");
+            }
+        }
+
+        for src in ["nan", "NaN", "+NAN", "-nan", " \tnan\n"] {
+            assert!(parse_number(src).unwrap().is_nan(), "{src}");
+        }
+    }
+
+    #[test]
+    fn limits_numbers() {
+        assert_eq!(parse_number(&format!("0b{}1", "0".repeat(100))), Some(1.0));
+        assert_eq!(parse_number(&format!("0b1{}", "0".repeat(64))), None);
+
+        for prefix in ["", "0x"] {
+            assert_eq!(
+                parse_number(&format!("{prefix}0.{}1", "0".repeat((1 << 20) - 2))),
+                Some(0.0)
+            );
+            assert_eq!(parse_number(&format!("{prefix}0.{}1", "0".repeat((1 << 20) - 1))), None);
+            assert_eq!(
+                parse_number(&format!("{prefix}0.1{}", "0".repeat(1 << 20))),
+                Some(if prefix.is_empty() { 0.1 } else { 0.0625 })
+            );
+        }
+    }
+
+    #[test]
+    fn rounds_numbers() {
+        for (src, expected) in [
+            (format!("0b1{}1", "0".repeat(52)), 9_007_199_254_740_992.0f64),
+            (format!("0b1{}11", "0".repeat(51)), 9_007_199_254_740_996.0f64),
+        ] {
+            assert_eq!(parse_number(&src).unwrap().to_bits(), expected.to_bits(), "{src}");
+        }
+
+        assert_eq!(
+            parse_number("0x1.00000000000008p0").unwrap().to_bits(),
+            1.0f64.to_bits()
+        );
+        assert_eq!(
+            parse_number("0x1.00000000000018p0").unwrap().to_bits(),
+            (1.0 + 2.0 * f64::EPSILON).to_bits()
+        );
+        assert_eq!(
+            parse_number("0x1.00000000000008000000001p0").unwrap().to_bits(),
+            (1.0 + f64::EPSILON).to_bits()
+        );
+        assert_eq!(
+            parse_number("0x1.fffffffffffff8p0").unwrap().to_bits(),
+            2.0f64.to_bits()
+        );
+        assert_eq!(parse_number("0x1p-1074").unwrap().to_bits(), 1);
+        assert_eq!(parse_number("0x0.8p-1074").unwrap().to_bits(), 0);
+        assert_eq!(parse_number("0x0.8000000000000001p-1074").unwrap().to_bits(), 1);
+    }
+
+    #[test]
+    fn rejects_numbers() {
+        for src in [
+            "",
+            "\u{a0}1",
+            "1\u{a0}",
+            "- 1",
+            "+",
+            "-",
+            ".",
+            "++1",
+            "+-1",
+            "_1",
+            "+_1",
+            "._5",
+            "i_nf",
+            "n_an",
+            "infinite",
+            "nan(1)",
+            "inf1",
+            "1e",
+            "1e+",
+            "1e1048576",
+            "1e-1048576",
+            "0x",
+            "0x.",
+            "0x1p",
+            "0x1p+",
+            "0x1p1048576",
+            "0x1p-1048576",
+            "0x1p999999999999999999999999",
+            "0x1p+-1",
+            "0x1p--1",
+            "0x1p1p1",
+            "0x1.2.3",
+            "0x.p1",
+            "0x1e+2",
+            "0xg",
+            "0b",
+            "0b2",
+            "0b1.0",
+            "0b1p2",
+            "1LL",
+            "1ULL",
+            "1i",
+        ] {
+            assert_eq!(parse_number(src), None, "{src}");
+        }
+    }
+
+    #[test]
+    fn parses_strings() {
+        for (src, expected) in [
+            (r#""""#, ""),
+            (r#"'hello'"#, "hello"),
+            (r#"  "hello"  "#, "hello"),
+            ("[[raw\\nline]]", r"raw\nline"),
+            ("[=[nested [[br]]]=]", "nested [[br]]"),
+            (r#""a\nb\tc""#, "a\nb\tc"),
+            (r#""\xc3\xa9""#, "\u{e9}"),
+            ("-- comment\n \"ok\" -- trailing\n", "ok"),
+        ] {
+            assert_eq!(parse_string(src).unwrap().as_deref(), Some(expected), "{src}");
+        }
+
+        assert_eq!(
+            parse_byte_string(r#""\xff\x00""#).unwrap().as_deref(),
+            Some(&b"\xff\x00"[..])
+        );
+    }
+
+    #[test]
+    fn rejects_strings() {
+        for src in [
+            "",
+            "   ",
+            "-- comment",
+            "123",
+            "nil",
+            "ident",
+            r#""a" .. "b""#,
+            r#"123 "unterminated"#,
+        ] {
+            assert_eq!(parse_string(src).unwrap(), None, "{src}");
+            assert_eq!(parse_byte_string(src).unwrap(), None, "{src}");
+        }
+
+        for src in [r#""unterminated"#, "[[unterminated", r#""ok" "unterminated"#] {
+            assert!(parse_string(src).is_err(), "{src}");
+            assert!(parse_byte_string(src).is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_utf8() {
+        for src in [r#""\xff""#, "-- comment\n  \"\\xff\"", r#""\xc3\x28""#] {
+            let error = parse_string(src).unwrap_err();
+
+            assert_eq!(error.offset, src.find('"').unwrap(), "{src}");
+            assert_eq!(error.message, "string is not valid UTF-8", "{src}");
+            assert!(parse_byte_string(src).unwrap().is_some(), "{src}");
+        }
+    }
+
+    #[test]
+    fn isolate_fragments() {
+        let src = "local value = 1; call(value)";
+        let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+        let mut parser = Parser::new(src, &tokens);
+        assert!(parser.parse_expr_at(0).is_err());
+        let span = parser.parse_expr_at(src.find("call").unwrap()).unwrap();
+        assert_eq!(&src[span.st..span.ed], "call(value)");
+        parser.parse_stmt_at(0).unwrap();
+        let analysis = parser.parse().unwrap();
+        assert_eq!(analysis.assigns.len(), 1);
+        assert_eq!(analysis.calls.len(), 1);
+    }
 
     #[test]
     fn parse_expr() {
@@ -1103,24 +1688,24 @@ mod tests {
         ] {
             let src = format!("-- annotation\n{value}, retained");
             let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-            let span = Parser::new(&tokens).parse_expr(0).unwrap();
+            let span = Parser::new(&src, &tokens).parse_expr_at(0).unwrap();
             assert_eq!(&src[span.st..span.ed], value);
         }
 
         for src in ["", "1 +", "{1 2}", "{key =}", "{[key] 1}", "(1", "local a = 1"] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(Parser::new(&tokens).parse_expr(0).is_err(), "{src}");
+            assert!(Parser::new(&src, &tokens).parse_expr_at(0).is_err(), "{src}");
         }
     }
 
     #[test]
-    fn preserve_context() {
+    fn preserve_ctx() {
         let src = "flag ? function() return object:method() end : other:method(), flag ? first + second : fallback";
         let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(&src, &tokens);
 
         for value in ["object:method()", "other:method()", "first + second", "other:method()"] {
-            let span = parser.parse_expr(src.find(value).unwrap()).unwrap();
+            let span = parser.parse_expr_at(src.find(value).unwrap()).unwrap();
             assert_eq!(&src[span.st..span.ed], value);
         }
     }
@@ -1140,7 +1725,7 @@ mod tests {
         ] {
             let src = format!("-- annotation\n{statement}\nlocal retained = 1");
             let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-            let span = Parser::new(&tokens).parse_stmt(0).unwrap();
+            let span = Parser::new(&src, &tokens).parse_stmt_at(0).unwrap();
             assert_eq!(&src[span.st..span.ed], statement);
         }
 
@@ -1155,7 +1740,7 @@ mod tests {
             "foo(1",
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(Parser::new(&tokens).parse_stmt(0).is_err(), "{src}");
+            assert!(Parser::new(&src, &tokens).parse_stmt_at(0).is_err(), "{src}");
         }
     }
 
@@ -1164,7 +1749,7 @@ mod tests {
         let src = "local api = object.operation; do local api = other end; \
             function helper(api) api('local') end; api('name')";
         let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-        let output = Parser::new(&tokens).parse().unwrap();
+        let output = Parser::new(&src, &tokens).parse().unwrap();
         assert_eq!(output.calls.len(), 2);
         assert!(output.calls[0].reference.is_none());
         assert_eq!(
@@ -1199,7 +1784,7 @@ mod tests {
         ] {
             let src = format!("local result = {value}; object.operation('name')");
             let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-            let output = Parser::new(&tokens).parse().unwrap();
+            let output = Parser::new(&src, &tokens).parse().unwrap();
             let assign = output.assigns.last().unwrap();
             assert_eq!(assign.targets.len(), 1, "{value}");
             assert_eq!(assign.vals.len(), 1, "{value}");
@@ -1284,14 +1869,14 @@ mod tests {
             format!("local value = {}1", "flag ? nil : ".repeat(500)),
         ] {
             let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-            let error = Parser::new(&tokens).parse().err().unwrap();
+            let error = Parser::new(&src, &tokens).parse().err().unwrap();
             assert!(error.offset < src.len());
             assert_eq!(error.message, "chunk has too many syntax levels");
         }
 
         let src = format!("local value = {}1{}", "(".repeat(20), ")".repeat(20));
         let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-        assert!(Parser::new(&tokens).parse().is_ok());
+        assert!(Parser::new(&src, &tokens).parse().is_ok());
     }
 
     #[test]
@@ -1381,7 +1966,7 @@ mod tests {
     fn parse_calls() -> anyhow::Result<()> {
         let src = "local value = 1; obj.require('ignored'); require('first'); require [[second]]";
         let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>()?;
-        let analysis = Parser::new(&tokens).parse()?;
+        let analysis = Parser::new(&src, &tokens).parse()?;
         let names = analysis
             .calls
             .iter()
@@ -1445,7 +2030,7 @@ mod tests {
             "local api = object.operation; local function helper() api('name') end",
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            let output = Parser::new(&tokens).parse().unwrap();
+            let output = Parser::new(&src, &tokens).parse().unwrap();
             assert_eq!(
                 output.calls.last().unwrap().reference.as_deref(),
                 Some(["object", "operation"].as_slice()),
@@ -1459,7 +2044,7 @@ mod tests {
             "local api = object.operation; function api() end; api('name')",
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            let output = Parser::new(&tokens).parse().unwrap();
+            let output = Parser::new(&src, &tokens).parse().unwrap();
             assert_ne!(
                 output.calls.last().unwrap().reference.as_deref(),
                 Some(["object", "operation"].as_slice()),
@@ -1472,7 +2057,7 @@ mod tests {
     fn preserve_assignments() {
         let src = "local first, second = 1, get_values(); table.value = 2; table[key] = 3";
         let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-        let output = Parser::new(&tokens).parse().unwrap();
+        let output = Parser::new(&src, &tokens).parse().unwrap();
         assert_eq!(output.assigns.len(), 3);
         let first = &output.assigns[0];
         assert_eq!(
@@ -1535,7 +2120,7 @@ mod tests {
             "until true",
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(Parser::new(&tokens).parse().is_err(), "{src}");
+            assert!(Parser::new(&src, &tokens).parse().is_err(), "{src}");
         }
     }
 
@@ -1549,12 +2134,12 @@ mod tests {
             "for key, item in pairs(values) do end",
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(Parser::new(&tokens).parse().is_ok(), "{src}");
+            assert!(Parser::new(&src, &tokens).parse().is_ok(), "{src}");
         }
     }
 
     #[test]
-    fn parse_parameters() {
+    fn parse_params() {
         for src in [
             "function f() end",
             "function f(a, b) end",
@@ -1564,7 +2149,7 @@ mod tests {
             "local f = |a, b| -> a + b",
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(Parser::new(&tokens).parse().is_ok(), "{src}");
+            assert!(Parser::new(&src, &tokens).parse().is_ok(), "{src}");
         }
     }
 
@@ -1604,7 +2189,7 @@ mod tests {
     }
 
     #[test]
-    fn syntax_cases() {
+    fn parse_syntax() {
         for (name, src) in [
             ("empty", " -- comment\n ; ; "),
             (
@@ -1625,7 +2210,7 @@ mod tests {
             ("operators", "local x = a ?? b || c && d; x ~>>= 1; x ..= 'x'"),
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            if let Err(err) = Parser::new(&tokens).parse() {
+            if let Err(err) = Parser::new(&src, &tokens).parse() {
                 panic!("{name}: {src:?}: {err} at {}", err.offset);
             }
         }
@@ -1646,7 +2231,7 @@ mod tests {
             ("value list", "local x = 1,"),
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            let err = Parser::new(&tokens)
+            let err = Parser::new(&src, &tokens)
                 .parse()
                 .err()
                 .unwrap_or_else(|| panic!("{name}: {src:?}"));
@@ -1655,24 +2240,30 @@ mod tests {
     }
 
     #[test]
-    fn fragment_spans() {
+    fn parse_fragments() {
         let src = "-- first\nlocal value = --[[inline]] first + second; -- tail\ncall(value);";
         let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-        let mut parser = Parser::new(&tokens);
+        let mut parser = Parser::new(&src, &tokens);
         for (st, expected) in [
             (src.find("first +").unwrap(), "first + second"),
             (src.find("call").unwrap(), "call(value)"),
         ] {
-            let span = parser.parse_expr(st).unwrap();
+            let span = parser.parse_expr_at(st).unwrap();
             assert_eq!(&src[span.st..span.ed], expected, "expression at {st}");
         }
-        let span = parser.parse_stmt(0).unwrap();
+        let span = parser.parse_stmt_at(0).unwrap();
         assert_eq!(
             &src[span.st..span.ed],
             "local value = --[[inline]] first + second;",
             "statement"
         );
-        assert!(Parser::new(&tokens).parse_expr(src.len()).is_err(), "expression at end");
-        assert!(Parser::new(&tokens).parse_stmt(src.len()).is_err(), "statement at end");
+        assert!(
+            Parser::new(&src, &tokens).parse_expr_at(src.len()).is_err(),
+            "expression at end"
+        );
+        assert!(
+            Parser::new(&src, &tokens).parse_stmt_at(src.len()).is_err(),
+            "statement at end"
+        );
     }
 }

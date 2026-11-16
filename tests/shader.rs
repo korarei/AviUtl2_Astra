@@ -5,7 +5,7 @@ use std::path::Path;
 #[test]
 fn reject_comments() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let err = astra::build::shader::build(
+    let err = build_hlsl(
         "float value;\n  /* unfinished",
         Path::new("test.hlsl"),
         &target,
@@ -28,14 +28,14 @@ fn omit_statements() -> anyhow::Result<()> {
         "do removed(); while (flag);",
     ] {
         let src = format!("float before;\n//#omit\n// annotation\n{statement} float retained;\n");
-        let output = astra::build::shader::build(&src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
-        assert!(output.text.contains("float before;"), "{}", output.text);
-        assert!(output.text.contains("float retained;"), "{}", output.text);
-        assert!(!output.text.contains(statement), "{}", output.text);
+        let output = build_hlsl(&src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
+        assert!(output.text().contains("float before;"), "{}", output.text());
+        assert!(output.text().contains("float retained;"), "{}", output.text());
+        assert!(!output.text().contains(statement), "{}", output.text());
         assert!(
-            !output.text.contains("annotation") && !output.text.contains("#omit"),
+            !output.text().contains("annotation") && !output.text().contains("#omit"),
             "{}",
-            output.text
+            output.text()
         );
     }
 
@@ -53,7 +53,9 @@ fn resolve_once() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
     let src = "//#include \"values.hlsl\"\n//#include \"values.hlsl\"\nfloat tail = ${VALUE};";
     assert_eq!(
-        astra::build::shader::build(src, &file, &target, &[], &IndexMap::new())?.text,
+        build_hlsl(src, &file, &target, &[], &IndexMap::new())?
+            .text()
+            .into_owned(),
         "float value;\nfloat tail = 2;\n"
     );
     Ok(())
@@ -65,14 +67,13 @@ fn locate_include_errors() -> anyhow::Result<()> {
     let file = dir.path().join("input.hlsl");
     std::fs::write(dir.path().join("values.hlsl"), "float a;\nfloat b = ${MISSING};")?;
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
-    let err =
-        astra::build::shader::build("//#include \"values.hlsl\"\n", &file, &target, &[], &IndexMap::new()).unwrap_err();
+    let err = build_hlsl("//#include \"values.hlsl\"\n", &file, &target, &[], &IndexMap::new()).unwrap_err();
     assert!(
         err.to_string()
             .contains("values.hlsl:2:11: variable 'MISSING' not found"),
         "{err}"
     );
-    assert!(astra::build::shader::build("//#include \"missing.hlsl\"", &file, &target, &[], &IndexMap::new()).is_err());
+    assert!(build_hlsl("//#include \"missing.hlsl\"", &file, &target, &[], &IndexMap::new()).is_err());
     Ok(())
 }
 
@@ -83,8 +84,7 @@ fn reject_include_cycles() -> anyhow::Result<()> {
     std::fs::write(&file, "//#include \"values.hlsl\"\n")?;
     std::fs::write(dir.path().join("values.hlsl"), "//#include \"input.hlsl\"\n")?;
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
-    let err =
-        astra::build::shader::build("//#include \"values.hlsl\"\n", &file, &target, &[], &IndexMap::new()).unwrap_err();
+    let err = build_hlsl("//#include \"values.hlsl\"\n", &file, &target, &[], &IndexMap::new()).unwrap_err();
     assert!(err.to_string().contains("values.hlsl:1:3: circular include"), "{err}");
     Ok(())
 }
@@ -99,7 +99,9 @@ fn preserve_native_directives() -> anyhow::Result<()> {
         float4 value;\n\
         #endif\n";
     assert_eq!(
-        astra::build::shader::build(src, Path::new("input.hlsl"), &target, &[], &IndexMap::new())?.text,
+        build_hlsl(src, Path::new("input.hlsl"), &target, &[], &IndexMap::new())?
+            .text()
+            .into_owned(),
         src
     );
     Ok(())
@@ -117,8 +119,8 @@ fn preserve_comments() -> anyhow::Result<()> {
         // continued \\\n\
         //#include <missing.hlsl>\n\
         float value;";
-    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
-    assert_eq!(output.text, format!("{src}\n"));
+    let output = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
+    assert_eq!(output.text(), format!("{src}\n"));
     Ok(())
 }
 
@@ -126,7 +128,7 @@ fn preserve_comments() -> anyhow::Result<()> {
 fn reject_strings() -> anyhow::Result<()> {
     let src = "\"unfinished\n#pragma pack_matrix(row_major)\n";
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let err = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new()).unwrap_err();
+    let err = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new()).unwrap_err();
     assert!(
         err.to_string().contains("test.hlsl:1:1: unfinished HLSL string"),
         "{err}"
@@ -149,13 +151,14 @@ fn expand_variables() -> anyhow::Result<()> {
                */\n\
                // /* ${VALUE}\n\
                //#define RESULT ${VALUE}\n\
+               string text = \"${VALUE}\";\n\
                float value = ${RESULT};\n";
-    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
+    let output = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &vars)?;
     let expected = src
         .replace("//#define RESULT ${VALUE}\n", "")
-        .replace("${VALUE}", "4")
+        .replace("string text = \"${VALUE}\";", "string text = \"4\";")
         .replace("${RESULT}", "4");
-    assert_eq!(output.text, expected);
+    assert_eq!(output.text(), expected);
     Ok(())
 }
 
@@ -171,17 +174,17 @@ fn expand_definitions() -> anyhow::Result<()> {
         //#ifdef VALUE\n\
         float leaked;\n\
         //#endif\n";
-    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
-    assert_eq!(output.text, "float value = 1 +\n2;\n");
+    let output = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new())?;
+    assert_eq!(output.text(), "float value = 1 +\n2;\n");
 
     let src = "/*#define VALUE\n${MISSING}\n*/\n";
-    let err = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new()).unwrap_err();
+    let err = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &IndexMap::new()).unwrap_err();
     assert!(
         err.to_string().contains("test.hlsl:2:1: variable 'MISSING' not found"),
         "{err}"
     );
 
-    let err = astra::build::shader::build(
+    let err = build_hlsl(
         "/*#define VALUE\n1",
         Path::new("test.hlsl"),
         &target,
@@ -201,8 +204,8 @@ fn skip_conditions() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
     let vars = IndexMap::from([("VALUE".to_owned(), "4".to_owned())]);
     let src = "//#if false\n/*\n//#endif\n*/\nint discarded;\n//#endif\nfloat value = ${VALUE};\n";
-    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
-    assert_eq!(output.text, "float value = 4;\n");
+    let output = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &vars)?;
+    assert_eq!(output.text(), "float value = 4;\n");
     Ok(())
 }
 
@@ -212,19 +215,21 @@ fn resolve_includes() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     std::fs::write(dir.path().join("tail.hlsl"), "float b;")?;
     let build = |src| {
-        astra::build::shader::build(
+        build_hlsl(
             src,
             Path::new("test.hlsl"),
             &target,
             &[dir.path().to_owned()],
             &IndexMap::new(),
         )
-        .map(|output| output.text)
+        .map(|output| output.text().into_owned())
     };
+
     assert_eq!(build("float a;")?, "float a;\n");
     assert_eq!(build("float a;\n//#define X 1")?, "float a;\n");
     assert_eq!(build("//#include <tail.hlsl>\nfloat a;")?, "float b;\nfloat a;\n");
     assert_eq!(build("float a;\n//#include <tail.hlsl>")?, "float a;\nfloat b;\n");
+
     Ok(())
 }
 
@@ -235,7 +240,7 @@ fn include_extensions() -> anyhow::Result<()> {
     std::fs::write(dir.path().join("tail.lua"), "//#define VALUE 3\nfloat b = ${VALUE};")?;
     std::fs::write(dir.path().join("tail.txt"), "float c;")?;
     let build = |src| {
-        astra::build::shader::build(
+        build_hlsl(
             src,
             Path::new("test.hlsl"),
             &target,
@@ -243,8 +248,10 @@ fn include_extensions() -> anyhow::Result<()> {
             &IndexMap::new(),
         )
     };
+
     let output = build("//#include <tail.lua>\n//#include <tail.txt>\n//#include <tail.lua>")?;
-    assert_eq!(output.text, "float b = 3;\nfloat c;\nfloat b = 3;\n");
+    assert_eq!(output.text(), "float b = 3;\nfloat c;\nfloat b = 3;\n");
+
     Ok(())
 }
 
@@ -265,11 +272,49 @@ fn accept_directive_spaces() -> anyhow::Result<()> {
              {prefix}if true\nfloat kept;\n{prefix}endif\n"
         );
         assert_eq!(
-            astra::build::shader::build(&src, &file, &target, &[], &IndexMap::new())?.text,
+            build_hlsl(&src, &file, &target, &[], &IndexMap::new())?
+                .text()
+                .into_owned(),
             "float included = 7;\nfloat value = 7;\nfloat inline_value =  7;\nfloat kept;\n",
             "{prefix}"
         );
     }
 
     Ok(())
+}
+
+#[test]
+fn replacement_offsets_through_includes() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("input.hlsl");
+    std::fs::write(
+        dir.path().join("values.hlsl"),
+        "//#pragma once\nfloat child = /*#replace VALUE*/0;\n//#define VALUE 2\n",
+    )?;
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
+    let vars = IndexMap::from([("VALUE".to_owned(), "1".to_owned())]);
+    let src = "float before=/*#replace VALUE*/0;\n//#include \"values.hlsl\"\n//#include \"values.hlsl\"\nfloat after=/*#replace VALUE*/0;\n";
+    assert_eq!(
+        build_hlsl(src, &file, &target, &[], &vars)?.text().into_owned(),
+        "float before=1;\nfloat child = 1;\nfloat after=2;\n",
+    );
+    Ok(())
+}
+
+fn build_hlsl(
+    src: &str,
+    file: &std::path::Path,
+    target: &astra::config::BuildTarget,
+    dirs: &[std::path::PathBuf],
+    vars: &indexmap::IndexMap<String, String>,
+) -> anyhow::Result<astra::build::Map> {
+    let map = astra::build::Map::new(
+        src,
+        astra::build::Pos {
+            file: file.into(),
+            line: 1,
+            col: 1,
+        },
+    );
+    astra::build::shader::hlsl::build(&map, target, dirs, vars)
 }

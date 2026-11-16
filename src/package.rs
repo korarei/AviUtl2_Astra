@@ -4,7 +4,6 @@ use crate::config::{
 };
 use crate::{fs, http};
 use anyhow::{Context, bail};
-use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -18,7 +17,6 @@ pub(crate) struct PackageCache {
     root: PathBuf,
     blobs: PathBuf,
     trees: PathBuf,
-    client: Option<&'static Client>,
     urls: BTreeMap<String, UrlFile>,
     archives: BTreeMap<PathBuf, PathBuf>,
     paths: BTreeSet<PathBuf>,
@@ -34,7 +32,6 @@ impl PackageCache {
             blobs: root.join("blobs"),
             trees: root.join("trees"),
             root,
-            client: None,
             urls: BTreeMap::new(),
             archives: BTreeMap::new(),
             paths: BTreeSet::new(),
@@ -53,7 +50,6 @@ impl PackageCache {
                 blobs: root.join("blobs"),
                 trees: root.join("trees"),
                 root,
-                client: None,
                 urls: BTreeMap::new(),
                 archives: BTreeMap::new(),
                 paths: BTreeSet::new(),
@@ -368,6 +364,7 @@ impl PackageCache {
                 dst: dst.join(name),
                 src: std::path::absolute(&file.path)?,
             };
+
             self.reserve(&file.dst)?;
             Ok(vec![file])
         }
@@ -427,25 +424,17 @@ impl PackageCache {
 
         tracing::info!("Downloading '{url}'");
 
-        if self.client.is_none() {
-            self.client = Some(http::client()?);
-        }
-
-        let response = self
-            .client
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("the HTTP client is not initialized"))?
-            .get(url)
-            .send()?
-            .error_for_status()?;
+        let response = http::client()?.get(url).send()?.error_for_status()?;
         let filename = response
             .url()
             .path_segments()
             .and_then(|mut segments| segments.next_back())
             .filter(|name| !name.is_empty())
             .map(str::to_owned);
+
         std::fs::create_dir_all(&self.blobs)
             .with_context(|| format!("failed to create directory '{}'", self.blobs.display()))?;
+
         let file = http::to_temp_file(&self.blobs, response, url, MAX_URL_BYTES)?;
         let path = self.blobs.join(format!("{:032x}", fs::hash_file(file.path())?));
 
@@ -460,6 +449,7 @@ impl PackageCache {
             path,
             name: filename,
         };
+
         file.write(&manifest)?;
         let _ = self.urls.insert(url.to_owned(), file);
         Ok(())
@@ -730,7 +720,6 @@ mod tests {
         );
 
         let mut cache = PackageCache {
-            client: None,
             urls: BTreeMap::new(),
             archives: BTreeMap::new(),
             paths: BTreeSet::new(),

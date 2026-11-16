@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// Build tool and task runner for `AviUtl ExEdit` extensions.
 ///
@@ -11,6 +12,10 @@ pub struct Cli {
     /// Enable verbose debug logging.
     #[arg(short = 'v', long = "verbose", global = true)]
     pub is_verbose: bool,
+
+    /// Path to astra.toml configuration file.
+    #[arg(long = "config-path", global = true, value_name = "PATH")]
+    pub(crate) config_path: Option<PathBuf>,
 
     /// Override the project version defined in astra.toml.
     #[arg(long = "project-version", global = true, value_name = "VERSION")]
@@ -32,6 +37,7 @@ pub(crate) enum Commands {
     ///
     /// Compiles configured build targets according to the specified build type (debug/release).
     Build(crate::build::Args),
+
     /// Manage package cache.
     ///
     /// Cleans all cached packages, removes unused cache entries, or refreshes cached package URLs.

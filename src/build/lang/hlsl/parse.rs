@@ -1,39 +1,58 @@
 use super::{
-    Action, Analysis, Annotation, Declaration, Directive, Error, Function, Lexer, Member, SCALARS, Scalar, Span, Token,
-    TokenKind, Type,
+    Action, Analysis, Annotation, Decl, Directive, Error, Func, Lexer, Member, SCALARS, Scalar, Span, Token, TokenKind,
+    Type,
 };
+
+enum Macro {
+    Object(String),
+    Func,
+    Undefined,
+    Unknown,
+}
 
 pub struct Parser<'a, 'tokens> {
     src: &'a str,
     tokens: &'tokens [Token<'a>],
     curr: usize,
-    output: Analysis<'a, 'tokens>,
 }
 
 impl<'a, 'tokens> Parser<'a, 'tokens> {
     #[must_use]
     pub fn new(src: &'a str, tokens: &'tokens [Token<'a>]) -> Self {
-        Self {
-            src,
-            tokens,
-            curr: 0,
-            output: Analysis::default(),
-        }
+        Self { src, tokens, curr: 0 }
     }
 
     pub fn parse(mut self) -> Result<Analysis<'a, 'tokens>, Error> {
+        self.curr = 0;
+        let mut output = Analysis::default();
+
         while self.curr < self.tokens.len() {
-            self.parse_item()?;
+            self.parse_item(&mut output)?;
         }
 
-        Ok(self.output)
+        Ok(output)
+    }
+
+    pub fn parse_stmt_at(&mut self, st: usize) -> Result<Span, Error> {
+        self.curr = self.tokens.partition_point(|token| token.span.st < st);
+        self.skip_trivia();
+
+        let st = self.curr;
+        self.parse_stmt(0)?;
+
+        Ok(Span {
+            st: self.tokens[st].span.st,
+            ed: self.tokens[self.curr - 1].span.ed,
+        })
+    }
+
+    pub fn parse_expr_at(&mut self, st: usize) -> Result<Span, Error> {
+        self.curr = self.tokens.partition_point(|token| token.span.st < st);
+        self.parse_expr(0, 0, false)
     }
 
     #[allow(clippy::too_many_lines)]
-    pub(in crate::build) fn parse_declaration(
-        src: &'a str,
-        tokens: &[Token<'a>],
-    ) -> Result<Option<Declaration<'a>>, Error> {
+    pub(in crate::build) fn parse_decl(src: &'a str, tokens: &[Token<'a>]) -> Result<Option<Decl<'a>>, Error> {
         let mut curr = 0;
         let mut modifiers = Vec::new();
         let skip = |curr: &mut usize| {
@@ -53,16 +72,34 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             skip(&mut curr);
         }
 
-        let (ty, len) = Self::parse_type(src, &tokens[curr..]);
         let Some(token) = tokens.get(curr) else {
-            return Ok(None);
+            return if modifiers.is_empty() {
+                Ok(None)
+            } else {
+                Err(Error {
+                    offset: tokens.last().unwrap().span.ed,
+                    message: "missing declaration type",
+                })
+            };
         };
+
+        let (ty, len) = Self::parse_type(src, &tokens[curr..]);
+
+        if ty.is_none()
+            && modifiers.is_empty()
+            && !matches!(
+                token.kind,
+                TokenKind::Ident(_) | TokenKind::Keyword(_) | TokenKind::Vec | TokenKind::Mat
+            )
+        {
+            return Ok(None);
+        }
 
         let ty = ty.ok_or(Error {
             offset: token.span.st,
             message: "invalid declaration type",
         })?;
-        let mut declaration = Declaration {
+        let mut decl = Decl {
             ty,
             span: Span {
                 st: tokens[st].span.st,
@@ -73,7 +110,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         };
 
         let error = |curr: usize, message| Error {
-            offset: tokens.get(curr).map_or(declaration.span.ed, |token| token.span.st),
+            offset: tokens.get(curr).map_or(decl.span.ed, |token| token.span.st),
             message,
         };
 
@@ -92,7 +129,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             let mut dims = Vec::new();
 
             while tokens.get(curr).is_some_and(|token| token.kind == TokenKind::LBracket) {
-                let ed = Self::find_group(tokens, curr).ok_or_else(|| error(curr, "unclosed array dimension"))?;
+                let ed = find_pair(tokens, curr).ok_or_else(|| error(curr, "unclosed array dimension"))?;
                 let mut size = tokens[curr + 1..ed].iter().filter(|token| !token.kind.is_trivia());
                 dims.push(match (size.next().map(|token| &token.kind), size.next()) {
                     (Some(TokenKind::Number(text)), None) => text.parse::<usize>().ok(),
@@ -117,8 +154,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 skip(&mut curr);
 
                 let args = if tokens.get(curr).is_some_and(|token| token.kind == TokenKind::LParen) {
-                    let ed =
-                        Self::find_group(tokens, curr).ok_or_else(|| error(curr, "unclosed declaration annotation"))?;
+                    let ed = find_pair(tokens, curr).ok_or_else(|| error(curr, "unclosed declaration annotation"))?;
                     let args = &src[tokens[curr].span.ed..tokens[ed].span.st];
                     curr = ed + 1;
                     skip(&mut curr);
@@ -142,7 +178,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 while let Some(token) = tokens.get(curr).filter(|token| token.kind != TokenKind::Comma) {
                     match token.kind {
                         TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
-                            let ed = Self::find_group(tokens, curr)
+                            let ed = find_pair(tokens, curr)
                                 .ok_or_else(|| error(curr, "unclosed declaration initializer"))?;
                             curr = ed + 1;
                         }
@@ -154,7 +190,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 }
             }
 
-            declaration.members.push(Member {
+            decl.members.push(Member {
                 name,
                 span: member.span,
                 dims,
@@ -173,81 +209,300 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             skip(&mut curr);
         }
 
-        Ok(Some(declaration))
-    }
-
-    pub fn parse_stmt(&mut self, st: usize) -> Result<Span, Error> {
-        self.curr = self.tokens.partition_point(|token| token.span.st < st);
-        self.skip_trivia();
-        let st = self.curr;
-        self.read_stmt(0)?;
-        Ok(Span {
-            st: self.tokens[st].span.st,
-            ed: self.tokens[self.curr - 1].span.ed,
-        })
-    }
-
-    pub fn parse_expr(&mut self, st: usize) -> Result<Span, Error> {
-        self.curr = self.tokens.partition_point(|token| token.span.st < st);
-        self.read_expr(0, 0, false)
-    }
-
-    #[must_use]
-    pub(in crate::build) fn read_directive<'token>(token: &'token Token<'_>) -> Option<(&'token str, &'token str)> {
-        let TokenKind::Directive(text) = &token.kind else {
-            return None;
-        };
-
-        let text = text.strip_prefix('#')?.trim_start();
-        let ed = text
-            .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
-            .unwrap_or(text.len());
-
-        Some((&text[..ed], text[ed..].trim_start()))
-    }
-
-    #[must_use]
-    pub(in crate::build) fn find_group(tokens: &[Token<'_>], at: usize) -> Option<usize> {
-        let pair = |kind: &TokenKind<'_>| match kind {
-            TokenKind::LParen => Some((b'(', true)),
-            TokenKind::LBracket => Some((b'[', true)),
-            TokenKind::LBrace => Some((b'{', true)),
-            TokenKind::RParen => Some((b'(', false)),
-            TokenKind::RBracket => Some((b'[', false)),
-            TokenKind::RBrace => Some((b'{', false)),
-            _ => None,
-        };
-        let (mut group, is_open) = pair(&tokens.get(at)?.kind)?;
-        let mut expected = Vec::new();
-        let mut curr = at;
-        loop {
-            curr = if is_open {
-                curr.checked_add(1)?
-            } else {
-                curr.checked_sub(1)?
-            };
-            let token = tokens.get(curr)?;
-            if let Some((next_group, is_next_open)) = pair(&token.kind) {
-                if is_next_open == is_open {
-                    expected.push(group);
-                    group = next_group;
-                } else {
-                    if group != next_group {
-                        return None;
-                    }
-
-                    if let Some(prev) = expected.pop() {
-                        group = prev;
-                    } else {
-                        return Some(curr);
-                    }
-                }
-            }
-        }
+        Ok(Some(decl))
     }
 
     #[allow(clippy::too_many_lines)]
-    fn read_expr(&mut self, depth: usize, min_precedence: u8, should_stop_at_colon: bool) -> Result<Span, Error> {
+    fn parse_item(&mut self, output: &mut Analysis<'a, 'tokens>) -> Result<(), Error> {
+        self.skip_trivia();
+        let tokens = self.tokens;
+        let kind = |pos: usize| tokens.get(pos).map(|token| &token.kind);
+        let next = |pos: usize| pos + tokens[pos..].iter().take_while(|token| token.kind.is_trivia()).count();
+        let src = self.src;
+        let parse_decl = |tokens: &[Token<'a>]| {
+            let decl = Self::parse_decl(src, tokens)?;
+            if decl.is_none()
+                && let Some(token) = tokens.iter().find(|token| !token.kind.is_trivia())
+            {
+                return Err(Error {
+                    offset: token.span.st,
+                    message: "invalid declaration type",
+                });
+            }
+
+            Ok(decl)
+        };
+        let st = self.curr;
+
+        if tokens
+            .get(st)
+            .is_some_and(|token| token.kind == TokenKind::Keyword("typedef"))
+            && tokens
+                .get(next(st + 1))
+                .is_some_and(|token| token.kind == TokenKind::Keyword("struct"))
+        {
+            self.curr = next(st + 1);
+            self.parse_stmt(0)?;
+            return Ok(());
+        }
+
+        let mut is_initializer = false;
+        while let Some(token) = tokens.get(self.curr) {
+            let curr = self.curr;
+            if token.kind.is_trivia() {
+                self.curr += 1;
+                continue;
+            }
+
+            let prev = tokens[..curr].iter().rposition(|token| !token.kind.is_trivia());
+            if let Some((name, rest)) = split_directive(token) {
+                self.curr += 1;
+                output.directives.push(Directive {
+                    name,
+                    rest,
+                    span: token.span,
+                });
+                return Ok(());
+            }
+
+            if !is_initializer
+                && let TokenKind::Ident(name) = token.kind
+                && let Some(prev) = prev
+                && matches!(
+                    kind(prev),
+                    Some(
+                        TokenKind::Ident(_)
+                            | TokenKind::Type(_)
+                            | TokenKind::Vec
+                            | TokenKind::Mat
+                            | TokenKind::Keyword("void")
+                            | TokenKind::Other('>')
+                    )
+                )
+                && kind(next(curr + 1)) == Some(&TokenKind::LParen)
+                && let Some(args_ed) = find_pair(tokens, next(curr + 1))
+            {
+                let mut ed = next(args_ed + 1);
+                if kind(ed) == Some(&TokenKind::Colon) {
+                    ed = next(ed + 1);
+                    if matches!(kind(ed), Some(TokenKind::Ident(_))) {
+                        ed = next(ed + 1);
+                    }
+                }
+
+                if kind(ed) == Some(&TokenKind::LBrace)
+                    && let Some(body_ed) = find_pair(tokens, ed)
+                {
+                    self.curr = body_ed + 1;
+                    output.funcs.push(Func {
+                        name,
+                        span: token.span,
+                        is_void: kind(prev) == Some(&TokenKind::Keyword("void")),
+                        has_numthreads: Self::find_numthreads(tokens, prev).is_some(),
+                    });
+                    return Ok(());
+                }
+
+                if kind(ed) == Some(&TokenKind::Semicolon) {
+                    self.curr = ed + 1;
+                    return Ok(());
+                }
+            }
+
+            match token.kind {
+                TokenKind::LBrace if is_initializer => {
+                    self.curr = find_pair(tokens, curr).ok_or(Error {
+                        offset: token.span.st,
+                        message: "unclosed declaration initializer",
+                    })? + 1;
+                    continue;
+                }
+                TokenKind::LBrace => {
+                    let ed = find_pair(tokens, curr).ok_or(Error {
+                        offset: token.span.st,
+                        message: "unclosed declaration block",
+                    })?;
+                    self.curr = ed + 1;
+                    output.groups.push(Span {
+                        st: token.span.st,
+                        ed: tokens[ed].span.ed,
+                    });
+                    return Ok(());
+                }
+                TokenKind::LParen | TokenKind::LBracket => {
+                    self.curr = find_pair(tokens, curr).ok_or(Error {
+                        offset: token.span.st,
+                        message: if token.kind == TokenKind::LBracket {
+                            "unclosed array dimension"
+                        } else if tokens[st..curr].iter().any(|token| token.kind == TokenKind::Colon) {
+                            "unclosed declaration annotation"
+                        } else {
+                            "unclosed declaration group"
+                        },
+                    })? + 1;
+                    continue;
+                }
+                TokenKind::Assign => is_initializer = true,
+                TokenKind::Comment(_) if st == curr => {
+                    self.curr += 1;
+                    return Ok(());
+                }
+                TokenKind::Comment(_) => {
+                    self.curr += 1;
+                    continue;
+                }
+                TokenKind::Semicolon => {
+                    self.curr += 1;
+                    let is_alias = tokens[st].kind == TokenKind::Keyword("typedef");
+
+                    if let Some(decl) = parse_decl(&tokens[st + usize::from(is_alias)..curr])?
+                        && !is_alias
+                    {
+                        output.decls.push(decl);
+                    }
+
+                    return Ok(());
+                }
+                _ => {}
+            }
+
+            self.curr += 1;
+        }
+
+        if tokens
+            .get(st)
+            .is_some_and(|token| token.kind == TokenKind::Keyword("typedef"))
+        {
+            return Err(Error {
+                offset: tokens[st].span.st,
+                message: "missing semicolon after typedef",
+            });
+        }
+
+        if let Some(decl) = parse_decl(&tokens[st..])? {
+            output.decls.push(decl);
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn parse_stmt(&mut self, depth: usize) -> Result<(), Error> {
+        self.skip_trivia();
+        let tokens = self.tokens;
+        let src_ed = self.src.len();
+        let error = |curr: usize, message| Error {
+            offset: tokens.get(curr).map_or(src_ed, |token| token.span.st),
+            message,
+        };
+
+        if depth >= 200 {
+            return Err(error(self.curr, "statement has too many syntax levels"));
+        }
+
+        let mut kind = &tokens
+            .get(self.curr)
+            .ok_or_else(|| error(self.curr, "missing statement"))?
+            .kind;
+
+        while kind == &TokenKind::LBracket {
+            self.curr =
+                find_pair(tokens, self.curr).ok_or_else(|| error(self.curr, "unclosed statement attribute"))? + 1;
+            self.skip_trivia();
+            kind = &tokens
+                .get(self.curr)
+                .ok_or_else(|| error(self.curr, "missing statement after attribute"))?
+                .kind;
+        }
+
+        if matches!(kind, TokenKind::Keyword("if" | "for" | "while" | "switch" | "do")) {
+            let is_if = kind == &TokenKind::Keyword("if");
+            let is_do = kind == &TokenKind::Keyword("do");
+            self.curr += 1;
+
+            if !is_do {
+                self.skip_trivia();
+
+                if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::LParen) {
+                    return Err(error(self.curr, "missing control condition"));
+                }
+
+                self.curr =
+                    find_pair(tokens, self.curr).ok_or_else(|| error(self.curr, "unclosed control condition"))? + 1;
+            }
+
+            self.parse_stmt(depth + 1)?;
+            let body_ed = self.curr;
+            self.skip_trivia();
+
+            if is_if && tokens.get(self.curr).map(|token| &token.kind) == Some(&TokenKind::Keyword("else")) {
+                self.curr += 1;
+                self.parse_stmt(depth + 1)?;
+            } else if is_do {
+                if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::Keyword("while")) {
+                    return Err(error(self.curr, "missing while after do"));
+                }
+
+                self.curr += 1;
+                self.skip_trivia();
+
+                if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::LParen) {
+                    return Err(error(self.curr, "missing control condition"));
+                }
+
+                self.curr =
+                    find_pair(tokens, self.curr).ok_or_else(|| error(self.curr, "unclosed control condition"))? + 1;
+                self.skip_trivia();
+
+                if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::Semicolon) {
+                    return Err(error(self.curr, "missing semicolon after do"));
+                }
+
+                self.curr += 1;
+            } else {
+                self.curr = body_ed;
+            }
+
+            return Ok(());
+        }
+
+        let is_type = matches!(kind, TokenKind::Keyword("struct" | "class" | "interface"));
+        let mut is_initializer = false;
+
+        while let Some(token) = tokens.get(self.curr) {
+            match token.kind {
+                TokenKind::LParen | TokenKind::LBracket => {
+                    self.curr =
+                        find_pair(tokens, self.curr).ok_or_else(|| error(self.curr, "unclosed statement group"))? + 1;
+                }
+                TokenKind::LBrace => {
+                    self.curr =
+                        find_pair(tokens, self.curr).ok_or_else(|| error(self.curr, "unclosed statement block"))? + 1;
+
+                    if !is_type && !is_initializer {
+                        return Ok(());
+                    }
+                }
+                TokenKind::Semicolon => {
+                    self.curr += 1;
+                    return Ok(());
+                }
+                TokenKind::Assign => {
+                    is_initializer = true;
+                    self.curr += 1;
+                }
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Directive(_) => {
+                    return Err(error(self.curr, "invalid statement"));
+                }
+                _ => self.curr += 1,
+            }
+        }
+
+        Err(error(self.curr, "unclosed statement"))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn parse_expr(&mut self, depth: usize, min_prec: u8, should_stop_at_colon: bool) -> Result<Span, Error> {
         self.skip_trivia();
         let tokens = self.tokens;
         let src = self.src;
@@ -292,7 +547,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     match tokens[type_ed].kind {
                         TokenKind::Whitespace | TokenKind::Newline | TokenKind::Comment(_) => type_ed += 1,
                         TokenKind::LBracket => {
-                            type_ed = Self::find_group(tokens, type_ed)
+                            type_ed = find_pair(tokens, type_ed)
                                 .ok_or_else(|| error(type_ed, "unclosed cast array dimension"))?
                                 + 1;
                         }
@@ -305,8 +560,8 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                         token.kind,
                         TokenKind::Ident(_)
                             | TokenKind::Type(_)
-                            | TokenKind::Vector
-                            | TokenKind::Matrix
+                            | TokenKind::Vec
+                            | TokenKind::Mat
                             | TokenKind::Number(_)
                             | TokenKind::String
                             | TokenKind::LParen
@@ -331,14 +586,14 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
                 if !is_cast {
                     self.curr = group_st + 1;
-                    self.parse_expr_group(&TokenKind::RParen, depth, false)?;
+                    self.parse_group(&TokenKind::RParen, depth, false)?;
                 }
             }
             Some(TokenKind::LBrace) => {
                 self.curr += 1;
-                self.parse_expr_group(&TokenKind::RBrace, depth, true)?;
+                self.parse_group(&TokenKind::RBrace, depth, true)?;
             }
-            Some(TokenKind::Vector | TokenKind::Matrix) => {
+            Some(TokenKind::Vec | TokenKind::Mat) => {
                 let (ty, len) = Self::parse_type(src, &tokens[self.curr..]);
                 if ty.is_none() {
                     return Err(error(self.curr, "invalid vector or matrix type"));
@@ -353,7 +608,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 | TokenKind::Keyword("true" | "false" | "NULL"),
             ) => self.curr += 1,
             Some(TokenKind::Number(text)) => {
-                if !Lexer::is_number(text) {
+                if !is_number(text) {
                     return Err(error(self.curr, "invalid numeric literal"));
                 }
 
@@ -366,20 +621,21 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         self.skip_trivia();
 
         if is_cast {
-            ed = self.read_expr(depth + 1, 13, should_stop_at_colon)?.ed;
+            ed = self.parse_expr(depth + 1, 13, should_stop_at_colon)?.ed;
         }
+
         loop {
             self.skip_trivia();
 
             match tokens.get(self.curr).map(|token| &token.kind) {
                 Some(TokenKind::LParen) => {
                     self.curr += 1;
-                    self.parse_expr_group(&TokenKind::RParen, depth, true)?;
+                    self.parse_group(&TokenKind::RParen, depth, true)?;
                     ed = tokens[self.curr - 1].span.ed;
                 }
                 Some(TokenKind::LBracket) => {
                     self.curr += 1;
-                    self.parse_expr_group(&TokenKind::RBracket, depth, false)?;
+                    self.parse_group(&TokenKind::RBracket, depth, false)?;
                     ed = tokens[self.curr - 1].span.ed;
                 }
                 Some(TokenKind::Dot) => {
@@ -392,6 +648,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     ) {
                         return Err(error(self.curr, "missing member name"));
                     }
+
                     ed = tokens[self.curr].span.ed;
                     self.curr += 1;
                 }
@@ -402,9 +659,9 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     ed = tokens[self.curr].span.st + 2;
                     self.curr += 2;
                 }
-                Some(TokenKind::Other('?')) if min_precedence <= 2 => {
+                Some(TokenKind::Other('?')) if min_prec <= 2 => {
                     self.curr += 1;
-                    self.read_expr(depth + 1, 0, true)?;
+                    self.parse_expr(depth + 1, 0, true)?;
                     self.skip_trivia();
 
                     if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::Colon) {
@@ -412,7 +669,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     }
 
                     self.curr += 1;
-                    ed = self.read_expr(depth + 1, 2, should_stop_at_colon)?.ed;
+                    ed = self.parse_expr(depth + 1, 2, should_stop_at_colon)?.ed;
                 }
                 Some(TokenKind::Colon) if should_stop_at_colon => break,
                 Some(
@@ -427,7 +684,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     .into_iter()
                     .find(|op| src[token_st..].starts_with(op))
                     .ok_or_else(|| error(self.curr, "invalid expression operator"))?;
-                    let precedence = match op {
+                    let prec = match op {
                         "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => 1,
                         "||" => 3,
                         "&&" => 4,
@@ -441,16 +698,18 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                         _ => 12,
                     };
 
-                    if precedence < min_precedence {
+                    if prec < min_prec {
                         break;
                     }
 
                     let op_ed = token_st + op.len();
+
                     while tokens.get(self.curr).is_some_and(|token| token.span.st < op_ed) {
                         self.curr += 1;
                     }
+
                     ed = self
-                        .read_expr(depth + 1, precedence + u8::from(precedence != 1), should_stop_at_colon)?
+                        .parse_expr(depth + 1, prec + u8::from(prec != 1), should_stop_at_colon)?
                         .ed;
                 }
                 _ => break,
@@ -460,7 +719,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         Ok(Span { st, ed })
     }
 
-    fn parse_expr_group(&mut self, closing: &TokenKind<'a>, depth: usize, can_be_empty: bool) -> Result<(), Error> {
+    fn parse_group(&mut self, closing: &TokenKind<'a>, depth: usize, can_be_empty: bool) -> Result<(), Error> {
         self.skip_trivia();
         let tokens = self.tokens;
         let src_ed = self.src.len();
@@ -479,7 +738,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         }
 
         loop {
-            self.read_expr(depth + 1, 0, false)?;
+            self.parse_expr(depth + 1, 0, false)?;
             self.skip_trivia();
 
             if tokens.get(self.curr).map(|token| &token.kind) == Some(closing) {
@@ -499,291 +758,6 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                 return Ok(());
             }
         }
-    }
-
-    fn skip_trivia(&mut self) {
-        while self.tokens.get(self.curr).is_some_and(|token| token.kind.is_trivia()) {
-            self.curr += 1;
-        }
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn read_stmt(&mut self, depth: usize) -> Result<(), Error> {
-        self.skip_trivia();
-        let tokens = self.tokens;
-        let src_ed = self.src.len();
-        let error = |curr: usize, message| Error {
-            offset: tokens.get(curr).map_or(src_ed, |token| token.span.st),
-            message,
-        };
-
-        if depth >= 200 {
-            return Err(error(self.curr, "statement has too many syntax levels"));
-        }
-
-        let mut kind = &tokens
-            .get(self.curr)
-            .ok_or_else(|| error(self.curr, "missing statement"))?
-            .kind;
-
-        while kind == &TokenKind::LBracket {
-            self.curr = Self::find_group(tokens, self.curr)
-                .ok_or_else(|| error(self.curr, "unclosed statement attribute"))?
-                + 1;
-            self.skip_trivia();
-            kind = &tokens
-                .get(self.curr)
-                .ok_or_else(|| error(self.curr, "missing statement after attribute"))?
-                .kind;
-        }
-
-        if matches!(kind, TokenKind::Keyword("if" | "for" | "while" | "switch" | "do")) {
-            let is_if = kind == &TokenKind::Keyword("if");
-            let is_do = kind == &TokenKind::Keyword("do");
-            self.curr += 1;
-
-            if !is_do {
-                self.skip_trivia();
-
-                if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::LParen) {
-                    return Err(error(self.curr, "missing control condition"));
-                }
-
-                self.curr = Self::find_group(tokens, self.curr)
-                    .ok_or_else(|| error(self.curr, "unclosed control condition"))?
-                    + 1;
-            }
-
-            self.read_stmt(depth + 1)?;
-            let body_ed = self.curr;
-            self.skip_trivia();
-
-            if is_if && tokens.get(self.curr).map(|token| &token.kind) == Some(&TokenKind::Keyword("else")) {
-                self.curr += 1;
-                self.read_stmt(depth + 1)?;
-            } else if is_do {
-                if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::Keyword("while")) {
-                    return Err(error(self.curr, "missing while after do"));
-                }
-
-                self.curr += 1;
-                self.skip_trivia();
-
-                if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::LParen) {
-                    return Err(error(self.curr, "missing control condition"));
-                }
-
-                self.curr = Self::find_group(tokens, self.curr)
-                    .ok_or_else(|| error(self.curr, "unclosed control condition"))?
-                    + 1;
-                self.skip_trivia();
-
-                if tokens.get(self.curr).map(|token| &token.kind) != Some(&TokenKind::Semicolon) {
-                    return Err(error(self.curr, "missing semicolon after do"));
-                }
-
-                self.curr += 1;
-            } else {
-                self.curr = body_ed;
-            }
-
-            return Ok(());
-        }
-
-        let is_type = matches!(kind, TokenKind::Keyword("struct" | "class" | "interface"));
-        let mut is_initializer = false;
-        while let Some(token) = tokens.get(self.curr) {
-            match token.kind {
-                TokenKind::LParen | TokenKind::LBracket => {
-                    self.curr = Self::find_group(tokens, self.curr)
-                        .ok_or_else(|| error(self.curr, "unclosed statement group"))?
-                        + 1;
-                }
-                TokenKind::LBrace => {
-                    self.curr = Self::find_group(tokens, self.curr)
-                        .ok_or_else(|| error(self.curr, "unclosed statement block"))?
-                        + 1;
-                    if !is_type && !is_initializer {
-                        return Ok(());
-                    }
-                }
-                TokenKind::Semicolon => {
-                    self.curr += 1;
-                    return Ok(());
-                }
-                TokenKind::Assign => {
-                    is_initializer = true;
-                    self.curr += 1;
-                }
-                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Directive(_) => {
-                    return Err(error(self.curr, "invalid statement"));
-                }
-                _ => self.curr += 1,
-            }
-        }
-
-        Err(error(self.curr, "unclosed statement"))
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn parse_item(&mut self) -> Result<(), Error> {
-        self.skip_trivia();
-        let tokens = self.tokens;
-        let kind = |i: usize| tokens.get(i).map(|token| &token.kind);
-        let next = |i: usize| i + tokens[i..].iter().take_while(|token| token.kind.is_trivia()).count();
-        let st = self.curr;
-
-        if tokens
-            .get(st)
-            .is_some_and(|token| token.kind == TokenKind::Keyword("typedef"))
-            && tokens
-                .get(next(st + 1))
-                .is_some_and(|token| token.kind == TokenKind::Keyword("struct"))
-        {
-            self.curr = next(st + 1);
-            self.read_stmt(0)?;
-            return Ok(());
-        }
-
-        let mut is_initializer = false;
-        while let Some(token) = tokens.get(self.curr) {
-            let curr = self.curr;
-            if token.kind.is_trivia() {
-                self.curr += 1;
-                continue;
-            }
-
-            let prev = tokens[..curr].iter().rposition(|token| !token.kind.is_trivia());
-            if let Some((name, rest)) = Self::read_directive(token) {
-                self.curr += 1;
-                self.output.directives.push(Directive {
-                    name,
-                    rest,
-                    span: token.span,
-                });
-                return Ok(());
-            }
-
-            if !is_initializer
-                && let TokenKind::Ident(name) = token.kind
-                && let Some(prev) = prev
-                && matches!(
-                    kind(prev),
-                    Some(
-                        TokenKind::Ident(_)
-                            | TokenKind::Type(_)
-                            | TokenKind::Vector
-                            | TokenKind::Matrix
-                            | TokenKind::Keyword("void")
-                            | TokenKind::Other('>')
-                    )
-                )
-                && kind(next(curr + 1)) == Some(&TokenKind::LParen)
-                && let Some(args_ed) = Self::find_group(tokens, next(curr + 1))
-            {
-                let mut ed = next(args_ed + 1);
-                if kind(ed) == Some(&TokenKind::Colon) {
-                    ed = next(ed + 1);
-                    if matches!(kind(ed), Some(TokenKind::Ident(_))) {
-                        ed = next(ed + 1);
-                    }
-                }
-
-                if kind(ed) == Some(&TokenKind::LBrace)
-                    && let Some(body_ed) = Self::find_group(tokens, ed)
-                {
-                    self.curr = body_ed + 1;
-                    self.output.functions.push(Function {
-                        name,
-                        span: token.span,
-                        is_void: kind(prev) == Some(&TokenKind::Keyword("void")),
-                        has_numthreads: Self::find_numthreads(tokens, prev).is_some(),
-                    });
-                    return Ok(());
-                }
-
-                if kind(ed) == Some(&TokenKind::Semicolon) {
-                    self.curr = ed + 1;
-                    return Ok(());
-                }
-            }
-
-            match token.kind {
-                TokenKind::LBrace if is_initializer => {
-                    self.curr = Self::find_group(tokens, curr).ok_or(Error {
-                        offset: token.span.st,
-                        message: "unclosed declaration initializer",
-                    })? + 1;
-                    continue;
-                }
-                TokenKind::LBrace => {
-                    let ed = Self::find_group(tokens, curr).ok_or(Error {
-                        offset: token.span.st,
-                        message: "unclosed declaration block",
-                    })?;
-                    self.curr = ed + 1;
-                    self.output.groups.push(Span {
-                        st: token.span.st,
-                        ed: tokens[ed].span.ed,
-                    });
-                    return Ok(());
-                }
-                TokenKind::LParen | TokenKind::LBracket => {
-                    self.curr = Self::find_group(tokens, curr).ok_or(Error {
-                        offset: token.span.st,
-                        message: if token.kind == TokenKind::LBracket {
-                            "unclosed array dimension"
-                        } else if tokens[st..curr].iter().any(|token| token.kind == TokenKind::Colon) {
-                            "unclosed declaration annotation"
-                        } else {
-                            "unclosed declaration group"
-                        },
-                    })? + 1;
-                    continue;
-                }
-                TokenKind::Assign => is_initializer = true,
-                TokenKind::Comment(_) if st == curr => {
-                    self.curr += 1;
-                    return Ok(());
-                }
-                TokenKind::Comment(_) => {
-                    self.curr += 1;
-                    continue;
-                }
-                TokenKind::Semicolon => {
-                    self.curr += 1;
-                    let is_alias = tokens[st].kind == TokenKind::Keyword("typedef");
-
-                    if let Some(declaration) =
-                        Self::parse_declaration(self.src, &tokens[st + usize::from(is_alias)..curr])?
-                        && !is_alias
-                    {
-                        self.output.declarations.push(declaration);
-                    }
-
-                    return Ok(());
-                }
-                _ => {}
-            }
-
-            self.curr += 1;
-        }
-
-        if tokens
-            .get(st)
-            .is_some_and(|token| token.kind == TokenKind::Keyword("typedef"))
-        {
-            return Err(Error {
-                offset: tokens[st].span.st,
-                message: "missing semicolon after typedef",
-            });
-        }
-
-        if let Some(declaration) = Self::parse_declaration(self.src, &tokens[st..])? {
-            self.output.declarations.push(declaration);
-        }
-
-        Ok(())
     }
 
     #[must_use]
@@ -863,7 +837,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                         }
                     }
                     TokenKind::LParen | TokenKind::LBracket => {
-                        let Some(ed) = Self::find_group(tokens, curr) else {
+                        let Some(ed) = find_pair(tokens, curr) else {
                             return (None, 1);
                         };
                         curr = ed;
@@ -882,9 +856,9 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             return (None, 1);
         }
 
-        let is_matrix = match token.kind {
-            TokenKind::Vector => false,
-            TokenKind::Matrix => true,
+        let is_mat = match token.kind {
+            TokenKind::Vec => false,
+            TokenKind::Mat => true,
             _ => return (None, 1),
         };
 
@@ -907,20 +881,20 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
             let (name, size) = SCALARS[0];
             let scalar = Scalar { name, size };
             return (
-                Some(if is_matrix {
-                    Type::Matrix {
+                Some(if is_mat {
+                    Type::Mat {
                         scalar,
                         rows: 4,
                         cols: 4,
                     }
                 } else {
-                    Type::Vector { scalar, cols: 4 }
+                    Type::Vec { scalar, cols: 4 }
                 }),
                 1,
             );
         }
 
-        let len = if is_matrix { 8 } else { 6 };
+        let len = if is_mat { 8 } else { 6 };
 
         if count < len {
             return (None, 1);
@@ -932,7 +906,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
 
         if args[3].kind != TokenKind::Comma
             || args[len - 1].kind != TokenKind::Other('>')
-            || (is_matrix && args[5].kind != TokenKind::Comma)
+            || (is_mat && args[5].kind != TokenKind::Comma)
         {
             return (None, 1);
         }
@@ -945,13 +919,13 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         };
 
         (
-            (if is_matrix { parse(args[4]) } else { Some(1) })
-                .zip(parse(args[if is_matrix { 6 } else { 4 }]))
+            (if is_mat { parse(args[4]) } else { Some(1) })
+                .zip(parse(args[if is_mat { 6 } else { 4 }]))
                 .map(|(rows, cols)| {
-                    if is_matrix {
-                        Type::Matrix { scalar, rows, cols }
+                    if is_mat {
+                        Type::Mat { scalar, rows, cols }
                     } else {
-                        Type::Vector { scalar, cols }
+                        Type::Vec { scalar, cols }
                     }
                 }),
             indices[len - 1] + 1,
@@ -959,7 +933,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
     }
 
     fn find_numthreads(tokens: &[Token<'_>], mut curr: usize) -> Option<Span> {
-        let kind = |index: usize| tokens.get(index).map(|token| &token.kind);
+        let kind = |pos: usize| tokens.get(pos).map(|token| &token.kind);
 
         while curr > 0
             && tokens.get(curr - 1).is_some_and(|token| {
@@ -970,7 +944,7 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         }
 
         while curr > 0 && kind(curr - 1) == Some(&TokenKind::RBracket) {
-            let group_st = Self::find_group(tokens, curr - 1)?;
+            let group_st = find_pair(tokens, curr - 1)?;
 
             if let Some(token) = tokens[group_st + 1..curr - 1]
                 .iter()
@@ -987,6 +961,12 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
         }
 
         None
+    }
+
+    fn skip_trivia(&mut self) {
+        while self.tokens.get(self.curr).is_some_and(|token| token.kind.is_trivia()) {
+            self.curr += 1;
+        }
     }
 }
 
@@ -1009,7 +989,7 @@ impl Preprocessor {
 
     #[allow(clippy::too_many_lines)]
     pub(in crate::build) fn process(&mut self, token: &Token<'_>) -> Result<Option<Action>, Error> {
-        let Some((name, rest)) = Parser::read_directive(token) else {
+        let Some((name, rest)) = split_directive(token) else {
             return Ok(None);
         };
         let combine = |left, right| match (left, right) {
@@ -1028,7 +1008,7 @@ impl Preprocessor {
         match name {
             "if" | "ifdef" | "ifndef" => {
                 let is_parent_active = self.is_active();
-                let is_taken = if is_parent_active == Some(false) {
+                let has_matched = if is_parent_active == Some(false) {
                     Some(false)
                 } else {
                     is_met(self)
@@ -1036,12 +1016,12 @@ impl Preprocessor {
                 self.stack.push(Frame {
                     st: token.span.st,
                     is_parent_active,
-                    is_taken,
-                    is_active: combine(is_parent_active, is_taken),
+                    has_matched,
+                    is_active: combine(is_parent_active, has_matched),
                     has_else: false,
                 });
 
-                if is_parent_active != Some(false) && is_taken.is_none() {
+                if is_parent_active != Some(false) && has_matched.is_none() {
                     action = Action::Unknown;
                 }
             }
@@ -1057,7 +1037,7 @@ impl Preprocessor {
                     });
                 }
 
-                let is_taken = if frame.is_parent_active == Some(false) || frame.is_taken == Some(true) {
+                let has_matched = if frame.is_parent_active == Some(false) || frame.has_matched == Some(true) {
                     Some(false)
                 } else {
                     is_met(self)
@@ -1065,9 +1045,9 @@ impl Preprocessor {
                 let frame = self.stack.last_mut().unwrap();
                 frame.is_active = combine(
                     frame.is_parent_active,
-                    combine(frame.is_taken.map(|val| !val), is_taken),
+                    combine(frame.has_matched.map(|val| !val), has_matched),
                 );
-                frame.is_taken = match (frame.is_taken, is_taken) {
+                frame.has_matched = match (frame.has_matched, has_matched) {
                     (Some(true), _) | (_, Some(true)) => Some(true),
                     (Some(false), Some(false)) => Some(false),
                     _ => None,
@@ -1085,8 +1065,8 @@ impl Preprocessor {
                     });
                 }
 
-                frame.is_active = combine(frame.is_parent_active, frame.is_taken.map(|val| !val));
-                frame.is_taken = Some(true);
+                frame.is_active = combine(frame.is_parent_active, frame.has_matched.map(|val| !val));
+                frame.has_matched = Some(true);
                 frame.has_else = true;
             }
             "endif" => {
@@ -1101,20 +1081,15 @@ impl Preprocessor {
                     .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                     .unwrap_or(rest.len());
                 let key = &rest[..ed];
-                if key
-                    .bytes()
-                    .next()
-                    .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
-                    && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                {
+                if crate::vars::is_ident(key) {
                     let val = if self.is_active().is_none() {
                         Macro::Unknown
                     } else if name == "undef" {
                         Macro::Undefined
                     } else if rest[ed..].starts_with('(') {
-                        Macro::Function
+                        Macro::Func
                     } else {
-                        Macro::Value(rest[ed..].trim().to_owned())
+                        Macro::Object(rest[ed..].trim().to_owned())
                     };
 
                     self.macros.insert(key.to_owned(), val);
@@ -1145,7 +1120,7 @@ impl Preprocessor {
                         .first()
                         .is_some_and(|token| matches!(token.kind, TokenKind::Ident("pack_matrix")))
                     {
-                        action = Action::MatrixPacking;
+                        action = Action::MatPacking;
                         self.has_packing = true;
                         self.is_row_major = if self.is_active() == Some(true) {
                             match args.as_slice() {
@@ -1156,29 +1131,14 @@ impl Preprocessor {
                                         ..
                                     },
                                     Token {
-                                        kind: TokenKind::Modifier("row_major"),
+                                        kind: TokenKind::Modifier(major @ ("row_major" | "column_major")),
                                         ..
                                     },
                                     Token {
                                         kind: TokenKind::RParen,
                                         ..
                                     },
-                                ] => Some(true),
-                                [
-                                    _,
-                                    Token {
-                                        kind: TokenKind::LParen,
-                                        ..
-                                    },
-                                    Token {
-                                        kind: TokenKind::Modifier("column_major"),
-                                        ..
-                                    },
-                                    Token {
-                                        kind: TokenKind::RParen,
-                                        ..
-                                    },
-                                ] => Some(false),
+                                ] => Some(*major == "row_major"),
                                 _ => None,
                             }
                         } else {
@@ -1186,7 +1146,7 @@ impl Preprocessor {
                         };
                     }
                 } else {
-                    action = Action::MatrixPacking;
+                    action = Action::MatPacking;
                     self.is_row_major = None;
                 }
             }
@@ -1208,24 +1168,19 @@ impl Preprocessor {
             for token in Lexer::new(src) {
                 let token = token.ok()?;
                 let name = &src[token.span.st..token.span.ed];
-                if !name
-                    .bytes()
-                    .next()
-                    .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
-                    || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                {
+                if !crate::vars::is_ident(name) {
                     continue;
                 }
 
                 match preprocessor.macros.get(name) {
-                    Some(Macro::Value(val)) => {
+                    Some(Macro::Object(val)) => {
                         result.push_str(&src[curr..token.span.st]);
                         result.push(' ');
                         result.push_str(&expand(preprocessor, val, depth + 1)?);
                         result.push(' ');
                         curr = token.span.ed;
                     }
-                    Some(Macro::Function | Macro::Unknown) => return None,
+                    Some(Macro::Func | Macro::Unknown) => return None,
                     Some(Macro::Undefined) | None => {}
                 }
 
@@ -1244,13 +1199,7 @@ impl Preprocessor {
     #[allow(clippy::too_many_lines)]
     pub(in crate::build) fn evaluate(&self, src: &str) -> Option<i32> {
         #[allow(clippy::too_many_lines)]
-        fn parse_expr(
-            src: &str,
-            tokens: &[Token<'_>],
-            curr: &mut usize,
-            min_precedence: u8,
-            depth: usize,
-        ) -> Option<i32> {
+        fn parse_expr(src: &str, tokens: &[Token<'_>], curr: &mut usize, min_prec: u8, depth: usize) -> Option<i32> {
             if depth >= 200 {
                 return None;
             }
@@ -1263,7 +1212,7 @@ impl Preprocessor {
                         return None;
                     }
 
-                    let text = text.strip_suffix(['l', 'L']).unwrap_or(text);
+                    let text = text.trim_suffix(['l', 'L']);
                     if let Some(text) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
                         i32::from_str_radix(text, 16).ok()?
                     } else if text.len() > 1 && text.starts_with('0') {
@@ -1272,13 +1221,10 @@ impl Preprocessor {
                         text.parse().ok()?
                     }
                 }
-                TokenKind::String => {
-                    let text = &src[token.span.st..token.span.ed];
-                    match text.as_bytes() {
-                        [b'\'', val, b'\''] if val.is_ascii() => i32::from(*val),
-                        _ => return None,
-                    }
-                }
+                TokenKind::String => match &src.as_bytes()[token.span.st..token.span.ed] {
+                    [b'\'', val, b'\''] if val.is_ascii() => i32::from(*val),
+                    _ => return None,
+                },
                 TokenKind::LParen => {
                     let val = parse_expr(src, tokens, curr, 0, depth + 1)?;
                     if tokens.get(*curr)?.kind != TokenKind::RParen {
@@ -1305,7 +1251,7 @@ impl Preprocessor {
             };
 
             while let Some(token) = tokens.get(*curr) {
-                if token.kind == TokenKind::Other('?') && min_precedence <= 1 {
+                if token.kind == TokenKind::Other('?') && min_prec <= 1 {
                     *curr += 1;
                     let first = parse_expr(src, tokens, curr, 0, depth + 1)?;
                     if tokens.get(*curr)?.kind != TokenKind::Colon {
@@ -1318,13 +1264,14 @@ impl Preprocessor {
                     continue;
                 }
 
-                let op = [
+                let Some(op) = [
                     "||", "&&", "==", "!=", "<=", ">=", "<<", ">>", "|", "^", "&", "<", ">", "+", "-", "*", "/", "%",
                 ]
                 .into_iter()
-                .find(|op| src[token.span.st..].starts_with(op));
-                let Some(op) = op else { break };
-                let precedence = match op {
+                .find(|op| src[token.span.st..].starts_with(op)) else {
+                    break;
+                };
+                let prec = match op {
                     "||" => 2,
                     "&&" => 3,
                     "|" => 4,
@@ -1337,7 +1284,7 @@ impl Preprocessor {
                     _ => 11,
                 };
 
-                if precedence < min_precedence {
+                if prec < min_prec {
                     break;
                 }
 
@@ -1346,7 +1293,7 @@ impl Preprocessor {
                     *curr += 1;
                 }
 
-                let right = parse_expr(src, tokens, curr, precedence + 1, depth + 1)?;
+                let right = parse_expr(src, tokens, curr, prec + 1, depth + 1)?;
                 val = match op {
                     "+" => val.checked_add(right)?,
                     "-" => val.checked_sub(right)?,
@@ -1448,26 +1395,120 @@ impl Preprocessor {
 
     fn is_defined(&self, name: &str) -> Option<bool> {
         match self.macros.get(name) {
-            Some(Macro::Value(_) | Macro::Function) => Some(true),
+            Some(Macro::Object(_) | Macro::Func) => Some(true),
             Some(Macro::Undefined) => Some(false),
             Some(Macro::Unknown) | None => None,
         }
     }
 }
 
-enum Macro {
-    Value(String),
-    Function,
-    Undefined,
-    Unknown,
-}
-
 struct Frame {
     st: usize,
     is_parent_active: Option<bool>,
-    is_taken: Option<bool>,
+    has_matched: Option<bool>,
     is_active: Option<bool>,
     has_else: bool,
+}
+
+#[must_use]
+pub(in crate::build) fn find_pair(tokens: &[Token<'_>], pos: usize) -> Option<usize> {
+    let pair = |kind: &TokenKind<'_>| match kind {
+        TokenKind::LParen => Some((b'(', true)),
+        TokenKind::LBracket => Some((b'[', true)),
+        TokenKind::LBrace => Some((b'{', true)),
+        TokenKind::RParen => Some((b'(', false)),
+        TokenKind::RBracket => Some((b'[', false)),
+        TokenKind::RBrace => Some((b'{', false)),
+        _ => None,
+    };
+    let (mut group, is_open) = pair(&tokens.get(pos)?.kind)?;
+    let mut expected = Vec::new();
+    let mut curr = pos;
+    loop {
+        curr = if is_open {
+            curr.checked_add(1)?
+        } else {
+            curr.checked_sub(1)?
+        };
+        let token = tokens.get(curr)?;
+        if let Some((next_group, is_next_open)) = pair(&token.kind) {
+            if is_next_open == is_open {
+                expected.push(group);
+                group = next_group;
+            } else {
+                if group != next_group {
+                    return None;
+                }
+
+                if let Some(prev) = expected.pop() {
+                    group = prev;
+                } else {
+                    return Some(curr);
+                }
+            }
+        }
+    }
+}
+
+#[must_use]
+fn split_directive<'token>(token: &'token Token<'_>) -> Option<(&'token str, &'token str)> {
+    let TokenKind::Directive(text) = &token.kind else {
+        return None;
+    };
+
+    let text = text.strip_prefix('#')?.trim_start();
+    let ed = text
+        .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .unwrap_or(text.len());
+
+    Some((&text[..ed], text[ed..].trim_start()))
+}
+
+fn is_number(text: &str) -> bool {
+    let bytes = text.as_bytes();
+
+    if text.starts_with("0x") || text.starts_with("0X") {
+        let ed = 2 + bytes[2..].iter().take_while(|byte| byte.is_ascii_hexdigit()).count();
+        return ed > 2 && matches!(&text[ed..], "" | "u" | "U" | "l" | "L");
+    }
+
+    let digits_ed = bytes.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    let mut curr = digits_ed;
+    let mut is_float = false;
+
+    if bytes.get(curr) == Some(&b'.') {
+        is_float = true;
+        curr += 1;
+        let st = curr;
+        curr += bytes[curr..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+        if digits_ed == 0 && curr == st {
+            return false;
+        }
+    } else if digits_ed == 0 {
+        return false;
+    }
+
+    if bytes.get(curr).is_some_and(|byte| matches!(*byte, b'e' | b'E')) {
+        is_float = true;
+        curr += 1;
+        if bytes.get(curr).is_some_and(|byte| matches!(*byte, b'+' | b'-')) {
+            curr += 1;
+        }
+
+        let st = curr;
+        curr += bytes[curr..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+        if curr == st {
+            return false;
+        }
+    }
+
+    let suffix = &text[curr..];
+    if is_float || matches!(suffix, "f" | "F" | "h" | "H") {
+        matches!(suffix, "" | "f" | "F" | "h" | "H" | "l" | "L")
+    } else {
+        matches!(suffix, "" | "u" | "U" | "l" | "L")
+            && (digits_ed < 2 || bytes[0] != b'0' || bytes[..digits_ed].iter().all(|byte| *byte <= b'7'))
+    }
 }
 
 #[cfg(test)]
@@ -1499,9 +1540,9 @@ mod tests {
                 .filter(|token| token.kind != TokenKind::Whitespace)
                 .collect::<Vec<_>>();
             let output = Parser::new(&src, &tokens).parse().unwrap();
-            assert_eq!(output.declarations[0].ty, Type::Named(ty), "{src}");
-            assert_eq!(output.declarations[0].members[0].name, "value");
-            assert_eq!(output.declarations[0].members[0].annotation.unwrap().args, Some("u0"));
+            assert_eq!(output.decls[0].ty, Type::Named(ty), "{src}");
+            assert_eq!(output.decls[0].members[0].name, "value");
+            assert_eq!(output.decls[0].members[0].annotation.unwrap().args, Some("u0"));
         }
 
         let src = "typedef float Real; typedef float4 Color; typedef Real Array[2]; \
@@ -1511,9 +1552,9 @@ mod tests {
             .filter(|token| token.kind != TokenKind::Whitespace)
             .collect::<Vec<_>>();
         let output = Parser::new(src, &tokens).parse().unwrap();
-        assert_eq!(output.declarations.len(), 1);
-        assert_eq!(output.declarations[0].ty, Type::Named("Real"));
-        assert_eq!(output.functions[0].name, "main");
+        assert_eq!(output.decls.len(), 1);
+        assert_eq!(output.decls[0].ty, Type::Named("Real"));
+        assert_eq!(output.funcs[0].name, "main");
     }
 
     #[test]
@@ -1534,7 +1575,7 @@ mod tests {
         ] {
             let src = format!("{value}, retained");
             let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-            let span = Parser::new(&src, &tokens).parse_expr(0).unwrap();
+            let span = Parser::new(&src, &tokens).parse_expr_at(0).unwrap();
             assert_eq!(
                 &src[span.st..span.ed],
                 value.trim_end_matches(" /* retained */"),
@@ -1550,7 +1591,7 @@ mod tests {
         ] {
             let tokens = Lexer::new(value).collect::<Result<Vec<_>, _>>().unwrap();
             assert_eq!(
-                Parser::new(value, &tokens).parse_expr(0).unwrap().ed,
+                Parser::new(value, &tokens).parse_expr_at(0).unwrap().ed,
                 value.len(),
                 "{value}"
             );
@@ -1560,7 +1601,7 @@ mod tests {
             "1e+", "1e-", "0x", "0xGG", "1.2.3", "1_000", "08", "0x1p2", "1.0u", "1ff",
         ] {
             let tokens = Lexer::new(value).collect::<Result<Vec<_>, _>>().unwrap();
-            let err = Parser::new(value, &tokens).parse_expr(0).unwrap_err();
+            let err = Parser::new(value, &tokens).parse_expr_at(0).unwrap_err();
             assert_eq!(err.message, "invalid numeric literal", "{value}");
         }
         assert!(Lexer::new("#define MERGE(a,b) a##b\nMERGE(float, 4x4)").all(|token| token.is_ok()));
@@ -1602,13 +1643,13 @@ mod tests {
         ] {
             let src = format!("/* annotation */ {value}, retained");
             let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-            let span = Parser::new(&src, &tokens).parse_expr(0).unwrap();
+            let span = Parser::new(&src, &tokens).parse_expr_at(0).unwrap();
             assert_eq!(&src[span.st..span.ed], value);
         }
 
         let src = std::iter::repeat_n("1", 500).collect::<Vec<_>>().join("+");
         let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(Parser::new(&src, &tokens).parse_expr(0).unwrap().ed, src.len());
+        assert_eq!(Parser::new(&src, &tokens).parse_expr_at(0).unwrap().ed, src.len());
 
         for src in [
             "",
@@ -1621,7 +1662,7 @@ mod tests {
             "values[",
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(Parser::new(src, &tokens).parse_expr(0).is_err(), "{src}");
+            assert!(Parser::new(src, &tokens).parse_expr_at(0).is_err(), "{src}");
         }
     }
 
@@ -1640,7 +1681,7 @@ mod tests {
         ] {
             let src = format!("// annotation\n{statement}\nfloat retained;");
             let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-            let span = Parser::new(&src, &tokens).parse_stmt(0).unwrap();
+            let span = Parser::new(&src, &tokens).parse_stmt_at(0).unwrap();
             assert_eq!(&src[span.st..span.ed], statement);
         }
 
@@ -1655,20 +1696,20 @@ mod tests {
             "foo(1;",
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(Parser::new(src, &tokens).parse_stmt(0).is_err(), "{src}");
+            assert!(Parser::new(src, &tokens).parse_stmt_at(0).is_err(), "{src}");
         }
     }
 
     #[test]
-    fn find_groups() {
+    fn find_pairs() {
         let tokens = Lexer::new("({[]})").collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(Parser::find_group(&tokens, 0), Some(5));
-        assert_eq!(Parser::find_group(&tokens, 5), Some(0));
-        assert_eq!(Parser::find_group(&tokens, 1), Some(4));
-        assert_eq!(Parser::find_group(&tokens, 4), Some(1));
+        assert_eq!(find_pair(&tokens, 0), Some(5));
+        assert_eq!(find_pair(&tokens, 5), Some(0));
+        assert_eq!(find_pair(&tokens, 1), Some(4));
+        assert_eq!(find_pair(&tokens, 4), Some(1));
         let tokens = Lexer::new("([)]").collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(Parser::find_group(&tokens, 0), None);
-        assert_eq!(Parser::find_group(&tokens, 3), None);
+        assert_eq!(find_pair(&tokens, 0), None);
+        assert_eq!(find_pair(&tokens, 3), None);
     }
 
     fn tokenize(src: &str) -> Vec<Token<'_>> {
@@ -1685,14 +1726,14 @@ mod tests {
         assert_eq!(tokens[0].kind, TokenKind::Modifier("volatile"));
         assert_eq!(
             tokens[1].kind,
-            TokenKind::Type(Type::Vector {
+            TokenKind::Type(Type::Vec {
                 scalar: Scalar { name: "float", size: 4 },
                 cols: 4,
             })
         );
         assert_eq!(tokens[2].kind, TokenKind::Ident("value"));
-        assert_eq!(tokens[3].kind, TokenKind::Vector);
-        assert_eq!(tokens[4].kind, TokenKind::Matrix);
+        assert_eq!(tokens[3].kind, TokenKind::Vec);
+        assert_eq!(tokens[4].kind, TokenKind::Mat);
         assert_eq!(tokens[5].kind, TokenKind::Keyword("cbuffer"));
         assert_eq!(tokens[6].kind, TokenKind::Modifier("row_major"));
         assert_eq!(tokens[7].kind, TokenKind::Ident("Custom"));
@@ -1851,15 +1892,15 @@ mod tests {
             [numthreads(1,1,1)] void cs() {} void ps(out float4 color) {} float4 other() { return 0; }";
         let tokens = tokenize(src);
         let output = Parser::new(src, &tokens).parse().unwrap();
-        assert_eq!(output.declarations.len(), 1);
-        assert_eq!(output.declarations[0].members[0].name, "value");
+        assert_eq!(output.decls.len(), 1);
+        assert_eq!(output.decls[0].members[0].name, "value");
         assert_eq!(output.directives.len(), 1);
         assert_eq!(output.groups.len(), 1);
         let span = output.groups[0];
         assert_eq!(&src[span.st..span.ed], "{ float amount; }");
         assert_eq!(
             output
-                .functions
+                .funcs
                 .iter()
                 .map(|func| {
                     assert_eq!(&src[func.span.st..func.span.ed], func.name);
@@ -1875,28 +1916,28 @@ mod tests {
         let src = "row_major matrix<float, 2, 3> m[2], n;";
         let tokens = tokenize(src);
         let output = Parser::new(src, &tokens).parse().unwrap();
-        let declaration = &output.declarations[0];
+        let decl = &output.decls[0];
         assert_eq!(
-            declaration.ty,
-            Type::Matrix {
+            decl.ty,
+            Type::Mat {
                 scalar: Scalar { name: "float", size: 4 },
                 rows: 2,
                 cols: 3
             }
         );
-        assert_eq!(declaration.modifiers, ["row_major"]);
-        assert_eq!(declaration.members.len(), 2);
-        assert_eq!(declaration.members[0].name, "m");
-        assert_eq!(declaration.members[0].dims, [Some(2)]);
-        assert!(declaration.members[1].dims.is_empty());
+        assert_eq!(decl.modifiers, ["row_major"]);
+        assert_eq!(decl.members.len(), 2);
+        assert_eq!(decl.members[0].name, "m");
+        assert_eq!(decl.members[0].dims, [Some(2)]);
+        assert!(decl.members[1].dims.is_empty());
         let src = "float a : TEXCOORD0, b : packoffset(c1.y), c : register(c2) = 0;";
         let tokens = tokenize(src);
         let output = Parser::new(src, &tokens).parse().unwrap();
 
         for (member, name, args) in [
-            (&output.declarations[0].members[0], "TEXCOORD0", None),
-            (&output.declarations[0].members[1], "packoffset", Some("c1.y")),
-            (&output.declarations[0].members[2], "register", Some("c2")),
+            (&output.decls[0].members[0], "TEXCOORD0", None),
+            (&output.decls[0].members[1], "packoffset", Some("c1.y")),
+            (&output.decls[0].members[2], "register", Some("c2")),
         ] {
             assert_eq!(member.annotation, Some(Annotation { name, args }));
             assert_eq!(&src[member.span.st..member.span.ed], member.name);
@@ -1908,12 +1949,12 @@ mod tests {
         ] {
             let tokens = tokenize(src);
             let output = Parser::new(src, &tokens).parse().unwrap();
-            assert_eq!(output.declarations[0].members[0].dims, dims);
+            assert_eq!(output.decls[0].members[0].dims, dims);
         }
     }
 
     #[test]
-    fn reject_declarations() {
+    fn reject_decls() {
         for (src, offset, message) in [
             ("float good, broken[2", 18, "unclosed array dimension"),
             ("float value,", 12, "missing declaration member"),
@@ -1939,7 +1980,7 @@ mod tests {
             format!("{}1", "flag ? 0 : ".repeat(250)),
         ] {
             let tokens = Lexer::new(&src).collect::<Result<Vec<_>, _>>().unwrap();
-            let err = Parser::new(&src, &tokens).parse_expr(0).unwrap_err();
+            let err = Parser::new(&src, &tokens).parse_expr_at(0).unwrap_err();
             assert_eq!(err.message, "expression has too many syntax levels");
             assert!(err.offset < src.len());
         }
@@ -1968,7 +2009,7 @@ mod tests {
                 let src = format!("{name}{cols}");
                 assert_eq!(
                     Lexer::new(&src).next().unwrap().unwrap().kind,
-                    TokenKind::Type(Type::Vector {
+                    TokenKind::Type(Type::Vec {
                         scalar: Scalar { name, size },
                         cols
                     })
@@ -1978,7 +2019,7 @@ mod tests {
                     let src = format!("{name}{rows}x{cols}");
                     assert_eq!(
                         Lexer::new(&src).next().unwrap().unwrap().kind,
-                        TokenKind::Type(Type::Matrix {
+                        TokenKind::Type(Type::Mat {
                             scalar: Scalar { name, size },
                             rows,
                             cols
@@ -2150,7 +2191,7 @@ mod tests {
             ("float", None),
             ("#define VALUE 1", Some(Action::Drop)),
             ("#pragma message(\"value\")", Some(Action::Keep)),
-            ("#pragma pack_matrix(row_major)", Some(Action::MatrixPacking)),
+            ("#pragma pack_matrix(row_major)", Some(Action::MatPacking)),
             ("#include \"external.hlsl\"", Some(Action::Include)),
         ] {
             let token = Lexer::new(src).next().unwrap().unwrap();
@@ -2159,7 +2200,18 @@ mod tests {
     }
 
     #[test]
-    fn declaration_cases() {
+    fn distinguish_decls() {
+        for src in ["", " /* comment */ ", "1 + 2"] {
+            let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+            assert!(Parser::parse_decl(src, &tokens).unwrap().is_none(), "{src}");
+        }
+        let src = "const ";
+        let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
+        assert!(Parser::parse_decl(src, &tokens).is_err());
+    }
+
+    #[test]
+    fn parse_decl_cases() {
         for (name, src, members, dims) in [
             ("scalar", " float value ", 1, vec![]),
             ("matrix", "row_major matrix < float, 2, 3 > value", 1, vec![]),
@@ -2170,12 +2222,12 @@ mod tests {
             ("trivia", "/*type*/ float /*name*/ value /*tail*/", 1, vec![]),
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            let declaration = Parser::parse_declaration(src, &tokens)
+            let decl = Parser::parse_decl(src, &tokens)
                 .unwrap_or_else(|err| panic!("{name}: {src:?}: {err} at {}", err.offset))
                 .unwrap();
-            assert_eq!(declaration.members.len(), members, "{name}: members");
-            assert_eq!(declaration.members[0].dims, dims, "{name}: dimensions");
-            assert_eq!(declaration.members[0].name, "value", "{name}: name");
+            assert_eq!(decl.members.len(), members, "{name}: members");
+            assert_eq!(decl.members[0].dims, dims, "{name}: dimensions");
+            assert_eq!(decl.members[0].name, "value", "{name}: name");
         }
         for (name, src) in [
             ("name", "float"),
@@ -2188,12 +2240,12 @@ mod tests {
             ("type arguments", "matrix<float, 2> value"),
         ] {
             let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(Parser::parse_declaration(src, &tokens).is_err(), "{name}: {src:?}");
+            assert!(Parser::parse_decl(src, &tokens).is_err(), "{name}: {src:?}");
         }
     }
 
     #[test]
-    fn raw_tokens_and_fragments() {
+    fn parse_fragments() {
         let src = concat!(
             "cbuffer Params : register(b0) { float4 color : packoffset(c0); }; ",
             "[numthreads(1, 1, 1)] void main() { unused(); }"
@@ -2201,24 +2253,24 @@ mod tests {
         let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
         let output = Parser::new(src, &tokens).parse().unwrap();
         assert_eq!(output.groups.len(), 1, "cbuffer");
-        assert_eq!(output.functions.len(), 1, "function");
-        assert!(output.functions[0].is_void, "return type");
-        assert!(output.functions[0].has_numthreads, "attribute");
+        assert_eq!(output.funcs.len(), 1, "function");
+        assert!(output.funcs[0].is_void, "return type");
+        assert!(output.funcs[0].has_numthreads, "attribute");
 
         let src = " /* prefix */ float value = first + second; // tail";
         let tokens = Lexer::new(src).collect::<Result<Vec<_>, _>>().unwrap();
         let span = Parser::new(src, &tokens)
-            .parse_expr(src.find("first").unwrap())
+            .parse_expr_at(src.find("first").unwrap())
             .unwrap();
         assert_eq!(&src[span.st..span.ed], "first + second", "expression");
-        let span = Parser::new(src, &tokens).parse_stmt(0).unwrap();
+        let span = Parser::new(src, &tokens).parse_stmt_at(0).unwrap();
         assert_eq!(&src[span.st..span.ed], "float value = first + second;", "statement");
         assert!(
-            Parser::new(src, &tokens).parse_expr(src.len()).is_err(),
+            Parser::new(src, &tokens).parse_expr_at(src.len()).is_err(),
             "expression at end"
         );
         assert!(
-            Parser::new(src, &tokens).parse_stmt(src.len()).is_err(),
+            Parser::new(src, &tokens).parse_stmt_at(src.len()).is_err(),
             "statement at end"
         );
     }

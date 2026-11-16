@@ -175,7 +175,6 @@ static KEYWORDS: [&str; 168] = [
 #[derive(Clone)]
 pub struct Lexer<'a> {
     src: &'a str,
-    bytes: &'a [u8],
     curr: usize,
     can_read_directive: bool,
 }
@@ -185,15 +184,29 @@ impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Self {
         Self {
             src,
-            bytes: src.as_bytes(),
             curr: 0,
             can_read_directive: true,
         }
     }
 
+    pub(in crate::build) fn new_at(src: &'a str, st: usize) -> Result<Self, Error> {
+        if !src.is_char_boundary(st) {
+            return Err(Error {
+                offset: st.min(src.len()),
+                message: "invalid lexer offset",
+            });
+        }
+        Ok(Self {
+            src,
+            curr: st,
+            can_read_directive: true,
+        })
+    }
+
     #[allow(clippy::too_many_lines)]
     fn read_token(&mut self) -> Result<Token<'a>, Error> {
-        if self.can_read_directive && self.bytes[self.curr] == b'#' {
+        let bytes = self.src.as_bytes();
+        if self.can_read_directive && bytes[self.curr] == b'#' {
             let st = self.curr;
             let body_st = st + 1;
             let mut lexer = Self::new(&self.src[body_st..]);
@@ -211,7 +224,7 @@ impl<'a> Lexer<'a> {
 
                 if token.kind == TokenKind::Newline {
                     let newline = body_st + token.span.st;
-                    if self.bytes[newline - 1] == b'\\' {
+                    if bytes[newline - 1] == b'\\' {
                         continue;
                     }
 
@@ -227,7 +240,7 @@ impl<'a> Lexer<'a> {
 
             for (offset, _) in self.src[st..ed].match_indices('\n') {
                 let newline = st + offset;
-                if newline <= st || self.bytes[newline - 1] != b'\\' {
+                if newline <= st || bytes[newline - 1] != b'\\' {
                     continue;
                 }
 
@@ -277,8 +290,8 @@ impl<'a> Lexer<'a> {
             } else if self.src[st..].starts_with("//") {
                 self.curr += 2;
                 loop {
-                    let ed = self.curr + self.src[self.curr..].find('\n').unwrap_or(self.bytes.len() - self.curr);
-                    if ed < self.bytes.len() && self.bytes[ed - 1] == b'\\' {
+                    let ed = self.curr + self.src[self.curr..].find('\n').unwrap_or(bytes.len() - self.curr);
+                    if ed < bytes.len() && bytes[ed - 1] == b'\\' {
                         self.curr = ed + 1;
                     } else {
                         self.curr = ed;
@@ -291,41 +304,38 @@ impl<'a> Lexer<'a> {
                     content: &self.src[st + 2..self.curr],
                     bracket: None,
                 })
-            } else if self.bytes[st] == b'\n' {
+            } else if bytes[st] == b'\n' {
                 self.curr += 1;
                 self.can_read_directive = true;
                 TokenKind::Newline
-            } else if self.bytes[st].is_ascii_whitespace() {
-                while self.curr < self.bytes.len()
-                    && self.bytes[self.curr].is_ascii_whitespace()
-                    && self.bytes[self.curr] != b'\n'
-                {
+            } else if bytes[st].is_ascii_whitespace() {
+                while self.curr < bytes.len() && bytes[self.curr].is_ascii_whitespace() && bytes[self.curr] != b'\n' {
                     self.curr += 1;
                 }
 
                 TokenKind::Whitespace
-            } else if matches!(self.bytes[st], b'\'' | b'"') {
+            } else if matches!(bytes[st], b'\'' | b'"') {
                 self.can_read_directive = false;
                 self.curr += 1;
                 loop {
-                    if self.curr >= self.bytes.len() || self.bytes[self.curr] == b'\n' {
+                    if self.curr >= bytes.len() || bytes[self.curr] == b'\n' {
                         return Err(Error {
                             offset: st,
                             message: "unfinished HLSL string",
                         });
                     }
 
-                    if self.bytes[self.curr] == b'\\' {
-                        self.curr = (self.curr + 2).min(self.bytes.len());
-                    } else if self.bytes[self.curr] == self.bytes[st] {
+                    if bytes[self.curr] == b'\\' {
+                        self.curr = (self.curr + 2).min(bytes.len());
+                    } else if bytes[self.curr] == bytes[st] {
                         self.curr += 1;
                         break TokenKind::String;
                     } else {
                         self.curr += 1;
                     }
                 }
-            } else if self.bytes[st].is_ascii_digit()
-                || (self.bytes[st] == b'.' && self.bytes.get(st + 1).is_some_and(u8::is_ascii_digit))
+            } else if bytes[st].is_ascii_digit()
+                || (bytes[st] == b'.' && bytes.get(st + 1).is_some_and(u8::is_ascii_digit))
             {
                 self.can_read_directive = false;
                 let exponent = if self.src[st..].starts_with("0x") || self.src[st..].starts_with("0X") {
@@ -335,31 +345,31 @@ impl<'a> Lexer<'a> {
                 };
 
                 self.curr += 1;
-                while self.curr < self.bytes.len()
-                    && (self.bytes[self.curr].is_ascii_alphanumeric()
-                        || matches!(self.bytes[self.curr], b'_' | b'.')
-                        || (matches!(self.bytes[self.curr], b'+' | b'-')
-                            && self.bytes[self.curr - 1].to_ascii_lowercase() == exponent))
+                while self.curr < bytes.len()
+                    && (bytes[self.curr].is_ascii_alphanumeric()
+                        || matches!(bytes[self.curr], b'_' | b'.')
+                        || (matches!(bytes[self.curr], b'+' | b'-')
+                            && bytes[self.curr - 1].to_ascii_lowercase() == exponent))
                 {
                     self.curr += 1;
                 }
 
                 TokenKind::Number(&self.src[st..self.curr])
-            } else if self.bytes[st].is_ascii_alphabetic() || self.bytes[st] == b'_' || self.bytes[st] >= 0x80 {
+            } else if bytes[st].is_ascii_alphabetic() || bytes[st] == b'_' || bytes[st] >= 0x80 {
                 self.can_read_directive = false;
 
-                while self.curr < self.bytes.len()
-                    && (self.bytes[self.curr].is_ascii_alphanumeric()
-                        || self.bytes[self.curr] == b'_'
-                        || self.bytes[self.curr] >= 0x80)
+                while self.curr < bytes.len()
+                    && (bytes[self.curr].is_ascii_alphanumeric()
+                        || bytes[self.curr] == b'_'
+                        || bytes[self.curr] >= 0x80)
                 {
                     self.curr += 1;
                 }
 
                 let text = &self.src[st..self.curr];
                 match text {
-                    "vector" => TokenKind::Vector,
-                    "matrix" => TokenKind::Matrix,
+                    "vector" => TokenKind::Vec,
+                    "matrix" => TokenKind::Mat,
                     "row_major" | "column_major" | "static" | "groupshared" | "const" | "uniform" | "volatile"
                     | "precise" | "extern" | "shared" | "nointerpolation" | "linear" | "centroid" | "noperspective"
                     | "sample" | "snorm" | "unorm" | "globallycoherent" | "in" | "out" | "inout" | "inline" => {
@@ -373,19 +383,18 @@ impl<'a> Lexer<'a> {
                         let ty = SCALARS.iter().find_map(|&(name, size)| {
                             let suffix = text.strip_prefix(name)?;
                             let scalar = Scalar { name, size };
-                            let ty = match suffix.split_once('x') {
-                                Some((rows, cols)) => Type::Matrix {
+                            Some(match suffix.split_once('x') {
+                                Some((rows, cols)) => Type::Mat {
                                     scalar,
                                     rows: parse_dim(rows)?,
                                     cols: parse_dim(cols)?,
                                 },
                                 None if suffix.is_empty() => Type::Scalar(scalar),
-                                None => Type::Vector {
+                                None => Type::Vec {
                                     scalar,
                                     cols: parse_dim(suffix)?,
                                 },
-                            };
-                            Some(ty)
+                            })
                         });
 
                         if let Some(ty) = ty {
@@ -400,7 +409,7 @@ impl<'a> Lexer<'a> {
             } else {
                 self.can_read_directive = false;
                 self.curr += 1;
-                match self.bytes[st] {
+                match bytes[st] {
                     b'{' => TokenKind::LBrace,
                     b'}' => TokenKind::RBrace,
                     b'(' => TokenKind::LParen,
@@ -418,67 +427,20 @@ impl<'a> Lexer<'a> {
             span: Span { st, ed: self.curr },
         })
     }
-
-    pub(super) fn is_number(text: &str) -> bool {
-        let bytes = text.as_bytes();
-
-        if text.starts_with("0x") || text.starts_with("0X") {
-            let ed = 2 + bytes[2..].iter().take_while(|byte| byte.is_ascii_hexdigit()).count();
-            return ed > 2 && matches!(&text[ed..], "" | "u" | "U" | "l" | "L");
-        }
-
-        let digits_ed = bytes.iter().take_while(|byte| byte.is_ascii_digit()).count();
-        let mut curr = digits_ed;
-        let mut is_float = false;
-
-        if bytes.get(curr) == Some(&b'.') {
-            is_float = true;
-            curr += 1;
-            let st = curr;
-            curr += bytes[curr..].iter().take_while(|byte| byte.is_ascii_digit()).count();
-            if digits_ed == 0 && curr == st {
-                return false;
-            }
-        } else if digits_ed == 0 {
-            return false;
-        }
-
-        if bytes.get(curr).is_some_and(|byte| matches!(*byte, b'e' | b'E')) {
-            is_float = true;
-            curr += 1;
-            if bytes.get(curr).is_some_and(|byte| matches!(*byte, b'+' | b'-')) {
-                curr += 1;
-            }
-
-            let st = curr;
-            curr += bytes[curr..].iter().take_while(|byte| byte.is_ascii_digit()).count();
-            if curr == st {
-                return false;
-            }
-        }
-
-        let suffix = &text[curr..];
-        if is_float || matches!(suffix, "f" | "F" | "h" | "H") {
-            matches!(suffix, "" | "f" | "F" | "h" | "H" | "l" | "L")
-        } else {
-            matches!(suffix, "" | "u" | "U" | "l" | "L")
-                && (digits_ed < 2 || bytes[0] != b'0' || bytes[..digits_ed].iter().all(|byte| *byte <= b'7'))
-        }
-    }
 }
 
 impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.curr >= self.bytes.len() {
+        if self.curr >= self.src.len() {
             return None;
         }
 
         let token = self.read_token();
 
         if token.is_err() {
-            self.curr = self.bytes.len();
+            self.curr = self.src.len();
         }
 
         Some(token)
@@ -490,7 +452,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_and_errors() {
+    fn read_tokens() {
         for (src, expected) in [
             ("名前", TokenKind::Ident("名前")),
             ("cbuffer", TokenKind::Keyword("cbuffer")),

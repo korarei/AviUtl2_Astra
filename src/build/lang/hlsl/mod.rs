@@ -1,9 +1,9 @@
 mod lex;
-mod purse;
+mod parse;
 
 pub use lex::Lexer;
-pub use purse::Parser;
-pub(super) use purse::Preprocessor;
+pub use parse::Parser;
+pub(in crate::build) use parse::{Preprocessor, find_pair};
 
 use std::borrow::Cow;
 use std::fmt;
@@ -23,16 +23,78 @@ static SCALARS: [(&str, usize); 12] = [
     ("min16uint", 4),
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Type<'a> {
+    Scalar(Scalar),
+    Vec { scalar: Scalar, cols: usize },
+    Mat { scalar: Scalar, rows: usize, cols: usize },
+    Named(&'a str),
+}
+
+impl fmt::Display for Type<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Scalar(scalar) => f.write_str(scalar.name),
+            Self::Vec { scalar, cols } => write!(f, "{}{cols}", scalar.name),
+            Self::Mat { scalar, rows, cols } => write!(f, "{}{rows}x{cols}", scalar.name),
+            Self::Named(name) => f.write_str(name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenKind<'a> {
+    Ident(&'a str),
+    Keyword(&'a str),
+    Modifier(&'a str),
+    Type(Type<'a>),
+    Vec,
+    Mat,
+    Number(&'a str),
+    String,
+    Comment(Comment<'a>),
+    Directive(Cow<'a, str>),
+    Whitespace,
+    Newline,
+    LBrace,
+    RBrace,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    Assign,
+    Semicolon,
+    Colon,
+    Comma,
+    Dot,
+    Other(char),
+}
+
+impl TokenKind<'_> {
+    pub(in crate::build) fn is_trivia(&self) -> bool {
+        matches!(self, Self::Whitespace | Self::Newline | Self::Comment(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::build) enum Action {
+    Keep,
+    Drop,
+    Unknown,
+    Include,
+    MatPacking,
+}
+
 #[derive(Debug, Default)]
 pub struct Analysis<'a, 'tokens> {
-    pub declarations: Vec<Declaration<'a>>,
-    pub functions: Vec<Function<'a>>,
+    pub decls: Vec<Decl<'a>>,
+    pub funcs: Vec<Func<'a>>,
     pub directives: Vec<Directive<'tokens>>,
     pub groups: Vec<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Declaration<'a> {
+pub struct Decl<'a> {
     pub ty: Type<'a>,
     pub span: Span,
     pub modifiers: Vec<&'a str>,
@@ -40,7 +102,7 @@ pub struct Declaration<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Function<'a> {
+pub struct Func<'a> {
     pub name: &'a str,
     pub span: Span,
     pub is_void: bool,
@@ -52,25 +114,6 @@ pub struct Directive<'a> {
     pub name: &'a str,
     pub rest: &'a str,
     pub span: Span,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Type<'a> {
-    Scalar(Scalar),
-    Vector { scalar: Scalar, cols: usize },
-    Matrix { scalar: Scalar, rows: usize, cols: usize },
-    Named(&'a str),
-}
-
-impl fmt::Display for Type<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Scalar(scalar) => f.write_str(scalar.name),
-            Self::Vector { scalar, cols } => write!(f, "{}{cols}", scalar.name),
-            Self::Matrix { scalar, rows, cols } => write!(f, "{}{rows}x{cols}", scalar.name),
-            Self::Named(name) => f.write_str(name),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,53 +136,10 @@ pub struct Annotation<'a> {
     pub args: Option<&'a str>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Action {
-    Keep,
-    Drop,
-    Unknown,
-    Include,
-    MatrixPacking,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token<'a> {
     pub kind: TokenKind<'a>,
     pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenKind<'a> {
-    Ident(&'a str),
-    Keyword(&'a str),
-    Modifier(&'a str),
-    Type(Type<'a>),
-    Vector,
-    Matrix,
-    Number(&'a str),
-    String,
-    Comment(Comment<'a>),
-    Directive(Cow<'a, str>),
-    Whitespace,
-    Newline,
-    LBrace,
-    RBrace,
-    LParen,
-    RParen,
-    LBracket,
-    RBracket,
-    Assign,
-    Semicolon,
-    Colon,
-    Comma,
-    Dot,
-    Other(char),
-}
-
-impl TokenKind<'_> {
-    pub(super) fn is_trivia(&self) -> bool {
-        matches!(self, Self::Whitespace | Self::Newline | Self::Comment(_))
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

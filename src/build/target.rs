@@ -1,25 +1,63 @@
-use crate::build::{ini, script};
+use crate::build::{config::ini, exedit};
 use crate::config::{Build, BuildType};
 use anyhow::{Context, bail};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 pub(super) fn build(dir: &Path, build: &Build, build_type: BuildType) -> anyhow::Result<Vec<PathBuf>> {
-    let targets = build.targets();
-
-    if targets.len() == 0 {
+    if build.targets().len() == 0 {
         return Ok(Vec::new());
     }
 
-    let is_ini = build
-        .suffix()
-        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".aul2"));
-    let is_bundled = targets.len() > 1 && !is_ini;
+    let is_script = build.is_script();
+    let mut output = assemble(build)?;
+
+    if build.newline() == "\r\n" {
+        output.replace("\n", "\r\n");
+    }
+
+    let bytes = if is_script {
+        let (bytes, _, has_unmappable) = build.encoding().encode(&output.script);
+
+        if has_unmappable {
+            bail!(
+                "failed to encode build output in {}: contains unmappable characters",
+                build.encoding().name()
+            );
+        }
+
+        bytes
+    } else {
+        Cow::Owned(output.script.into_bytes())
+    };
+
+    let dir = dir.join(build_type.as_lowercase());
+    let file = dir.join(format!(
+        "{}{}{}",
+        if build.is_bundled() { "@" } else { "" },
+        build.name(),
+        build.suffix().unwrap_or_default()
+    ));
+
+    tracing::info!("Writing build output to '{}'", file.display());
+    crate::fs::write_file(&file, &bytes)?;
+
+    if is_script && build.suffix().is_some_and(|suffix| suffix.ends_with('2')) {
+        let file = dir.join(format!("Default.{}.aul2", build.name()));
+        tracing::info!("Writing localization template to '{}'", file.display());
+        crate::fs::write_file(&file, output.l10n.as_bytes())?;
+    }
+
+    Ok(vec![std::path::absolute(&file)?])
+}
+
+fn assemble(build: &Build) -> anyhow::Result<exedit::Output> {
+    let is_script = build.is_script();
     let include_dirs: Vec<PathBuf> = build.include_dirs().iter().map(PathBuf::from).collect();
 
-    let mut output = script::Output::default();
+    let mut output = exedit::Output::default();
 
-    for target in targets {
+    for target in build.targets() {
         let target = target?;
         let file = Path::new(target.path());
 
@@ -38,11 +76,7 @@ pub(super) fn build(dir: &Path, build: &Build, build_type: BuildType) -> anyhow:
             );
         }
 
-        let src: Cow<'_, str> = if src.contains('\r') {
-            Cow::Owned(src.replace("\r\n", "\n").replace('\r', "\n"))
-        } else {
-            src
-        };
+        let src = crate::text::normalize_newlines(src);
 
         let include_dirs: Cow<'_, [PathBuf]> = if target.include_dirs().is_empty() {
             Cow::Borrowed(&include_dirs)
@@ -57,65 +91,27 @@ pub(super) fn build(dir: &Path, build: &Build, build_type: BuildType) -> anyhow:
             )
         };
 
-        if is_ini {
-            output
-                .script
-                .push_str(&ini::build(&src, &target, &include_dirs, target.vars())?);
-        } else {
-            output.push_str(&script::build(
+        if is_script {
+            output.append(&exedit::build(
                 &src,
                 &target,
                 &include_dirs,
                 target.vars(),
-                is_bundled,
+                build.is_bundled(),
                 build.suffix().unwrap_or_default(),
             )?);
+        } else {
+            output
+                .script
+                .push_str(&ini::build(&src, &target, &include_dirs, target.vars())?.text());
+        }
 
-            if is_bundled && !output.script.is_empty() && !output.script.ends_with("\n\n") {
-                output.script.push('\n');
-            }
+        if !output.script.ends_with("\n\n") {
+            output.script.push('\n');
         }
     }
 
-    if build.newline() == "\r\n" {
-        output.replace("\n", "\r\n");
-    }
-
-    let bytes = if is_ini {
-        Cow::Owned(output.script.into_bytes())
-    } else {
-        let (bytes, _, has_unmappable) = build.encoding().encode(&output.script);
-
-        if has_unmappable {
-            bail!(
-                "failed to encode build output in {}: contains unmappable characters",
-                build.encoding().name()
-            );
-        }
-
-        bytes
-    };
-
-    let name = format!(
-        "{}{}{}",
-        if is_bundled { "@" } else { "" },
-        build.name(),
-        build.suffix().unwrap_or_default()
-    );
-
-    let output_dir = dir.join(build_type.as_lowercase());
-    let output_file = output_dir.join(&name);
-
-    tracing::info!("Writing build output to '{}'", output_file.display());
-    crate::fs::write_file(&output_file, &bytes)?;
-
-    if !is_ini && build.suffix().is_some_and(|suffix| suffix.ends_with('2')) {
-        let file = output_dir.join(format!("Default.{}.aul2", build.name()));
-        tracing::info!("Writing localization template to '{}'", file.display());
-        crate::fs::write_file(&file, output.l10n.as_bytes())?;
-    }
-
-    Ok(vec![std::path::absolute(&output_file)?])
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -144,7 +140,7 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(
             fs::read_to_string(&files[0]).with_context(|| format!("failed to read '{}'", files[0].display()))?,
-            "return 1\r\n"
+            "return 1\r\n\r\n"
         );
         assert_eq!(
             fs::read_to_string(files[0].parent().unwrap().join("Default.demo.aul2")).with_context(|| {

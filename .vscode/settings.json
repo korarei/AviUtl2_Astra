@@ -2,5 +2,8 @@
   "files.autoGuessEncoding": true,
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tombi-toml.tombi"
   }
 }

@@ -63,11 +63,7 @@ pub(crate) fn read_file(file: &Path, encoding: &'static encoding_rs::Encoding) -
             .into_owned()
     };
 
-    Ok(if text.contains('\r') {
-        text.replace("\r\n", "\n").replace('\r', "\n")
-    } else {
-        text
-    })
+    Ok(crate::text::normalize_newlines(text).into_owned())
 }
 
 pub(crate) fn write_file(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -77,14 +73,19 @@ pub(crate) fn write_file(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .parent()
         .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+
     std::fs::create_dir_all(dir).with_context(|| format!("failed to create directory '{}'", dir.display()))?;
+
     let mut temp = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("failed to create temporary file in '{}'", dir.display()))?;
+
     temp.write_all(bytes)
         .with_context(|| format!("failed to write '{}'", file.display()))?;
+
     let _ = temp
         .persist(file)
         .with_context(|| format!("failed to persist '{}'", file.display()))?;
+
     Ok(())
 }
 

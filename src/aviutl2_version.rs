@@ -13,7 +13,7 @@ pub(crate) fn resolve(ver: &str) -> anyhow::Result<u32> {
         return resolve_latest();
     }
 
-    let ver = ver.strip_prefix(['v', 'V']).unwrap_or(ver);
+    let ver = ver.trim_prefix(['v', 'V']);
 
     parse(ver).ok_or_else(|| anyhow::anyhow!("invalid AviUtl ExEdit2 version '{ver}'"))
 }
@@ -30,7 +30,7 @@ fn resolve_latest() -> anyhow::Result<u32> {
         .ok_or_else(|| anyhow::anyhow!("latest version for package '{AVIUTL2_PACKAGE_ID}' not found in catalog"))?;
 
     let latest = latest.trim();
-    let latest = latest.strip_prefix(['v', 'V']).unwrap_or(latest);
+    let latest = latest.trim_prefix(['v', 'V']);
 
     parse(latest).ok_or_else(|| anyhow::anyhow!("failed to parse latest version '{latest}' from catalog"))
 }
@@ -55,6 +55,7 @@ fn parse(ver: &str) -> Option<u32> {
         } else {
             (s, 0)
         };
+
         patch.parse::<u32>().ok()?.checked_mul(100)?.checked_add(build)
     };
 
@@ -67,6 +68,7 @@ fn parse(ver: &str) -> Option<u32> {
     }
 
     let mut parts = ver.split('.').map(str::trim);
+
     if let (Some(major), Some(minor), Some(patch), None) = (parts.next(), parts.next(), parts.next(), parts.next()) {
         let ver = major
             .parse::<u32>()

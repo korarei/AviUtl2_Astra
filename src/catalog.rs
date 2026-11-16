@@ -15,11 +15,6 @@ pub(crate) fn get(id: &str) -> anyhow::Result<Value> {
 
     serde_json::from_slice::<Vec<Value>>(&bytes)?
         .into_iter()
-        .find(|package| {
-            package
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|package_id| package_id == id)
-        })
+        .find(|package| package.get("id").and_then(Value::as_str) == Some(id))
         .ok_or_else(|| anyhow::anyhow!("package '{id}' not found in catalog"))
 }

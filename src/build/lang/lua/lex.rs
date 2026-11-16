@@ -4,28 +4,35 @@ use std::borrow::Cow;
 #[derive(Clone)]
 pub struct Lexer<'a> {
     src: &'a str,
-    bytes: &'a [u8],
-    pub(in crate::build) curr: usize,
+    curr: usize,
 }
 
 impl<'a> Lexer<'a> {
     #[must_use]
     pub fn new(src: &'a str) -> Self {
-        Self {
-            src,
-            bytes: src.as_bytes(),
-            curr: 0,
+        Self { src, curr: 0 }
+    }
+
+    pub(in crate::build) fn new_at(src: &'a str, st: usize) -> Result<Self, Error> {
+        if !src.is_char_boundary(st) {
+            return Err(Error {
+                offset: st.min(src.len()),
+                message: "invalid lexer offset",
+            });
         }
+
+        Ok(Self { src, curr: st })
     }
 
     #[allow(clippy::too_many_lines)]
     fn read_token(&mut self) -> Result<Token<'a>, Error> {
+        let bytes = self.src.as_bytes();
         let st = self.curr;
-        let byte = self.bytes[self.curr];
+        let byte = bytes[self.curr];
 
         Ok(Token {
             kind: if matches!(byte, b' ' | b'\t' | 0x0b | 0x0c) {
-                while self.curr < self.bytes.len() && matches!(self.bytes[self.curr], b' ' | b'\t' | 0x0b | 0x0c) {
+                while self.curr < bytes.len() && matches!(bytes[self.curr], b' ' | b'\t' | 0x0b | 0x0c) {
                     self.curr += 1;
                 }
                 TokenKind::Whitespace
@@ -44,7 +51,7 @@ impl<'a> Lexer<'a> {
                         bracket: Some(bracket),
                     })
                 } else {
-                    self.curr += self.src[self.curr..].find('\n').unwrap_or(self.bytes.len() - self.curr);
+                    self.curr += self.src[self.curr..].find('\n').unwrap_or(bytes.len() - self.curr);
                     TokenKind::Comment(Comment {
                         content: &self.src[st + 2..self.curr],
                         bracket: None,
@@ -54,13 +61,13 @@ impl<'a> Lexer<'a> {
                 TokenKind::String(self.read_string()?)
             } else if byte == b'[' {
                 if let Some(bracket) = self.read_bracket()? {
-                    let st = bracket.span.st + usize::from(self.bytes.get(bracket.span.st) == Some(&b'\n'));
+                    let st = bracket.span.st + usize::from(bytes.get(bracket.span.st) == Some(&b'\n'));
                     TokenKind::String(Literal {
-                        val: Cow::Borrowed(&self.bytes[st..bracket.span.ed]),
+                        val: Cow::Borrowed(&bytes[st..bracket.span.ed]),
                         bracket: Some(bracket),
                     })
                 } else {
-                    if self.bytes.get(st + 1) == Some(&b'=') {
+                    if bytes.get(st + 1) == Some(&b'=') {
                         return Err(Error {
                             offset: st,
                             message: "invalid long string delimiter",
@@ -71,10 +78,10 @@ impl<'a> Lexer<'a> {
                     TokenKind::LBracket
                 }
             } else if byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80 {
-                while self.curr < self.bytes.len()
-                    && (self.bytes[self.curr].is_ascii_alphanumeric()
-                        || self.bytes[self.curr] == b'_'
-                        || self.bytes[self.curr] >= 0x80)
+                while self.curr < bytes.len()
+                    && (bytes[self.curr].is_ascii_alphanumeric()
+                        || bytes[self.curr] == b'_'
+                        || bytes[self.curr] >= 0x80)
                 {
                     self.curr += 1;
                 }
@@ -93,7 +100,7 @@ impl<'a> Lexer<'a> {
                 self.curr += op.len();
                 TokenKind::Operator(op)
             } else if byte.is_ascii_digit()
-                || (byte == b'.' && self.bytes.get(self.curr + 1).is_some_and(u8::is_ascii_digit))
+                || (byte == b'.' && bytes.get(self.curr + 1).is_some_and(u8::is_ascii_digit))
             {
                 TokenKind::Number(self.read_number()?)
             } else {
@@ -107,32 +114,32 @@ impl<'a> Lexer<'a> {
                         });
                     }
                     b'=' => {
-                        if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' {
+                        if self.curr < bytes.len() && bytes[self.curr] == b'=' {
                             self.curr += 1;
                             TokenKind::Eq
                         } else {
                             TokenKind::Assign
                         }
                     }
-                    b'~' if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' => {
+                    b'~' if self.curr < bytes.len() && bytes[self.curr] == b'=' => {
                         self.curr += 1;
                         TokenKind::Ne
                     }
-                    b'<' if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' => {
+                    b'<' if self.curr < bytes.len() && bytes[self.curr] == b'=' => {
                         self.curr += 1;
                         TokenKind::Le
                     }
-                    b'>' if self.curr < self.bytes.len() && self.bytes[self.curr] == b'=' => {
+                    b'>' if self.curr < bytes.len() && bytes[self.curr] == b'=' => {
                         self.curr += 1;
                         TokenKind::Ge
                     }
                     b',' => TokenKind::Comma,
                     b'.' => {
-                        if self.curr < self.bytes.len() && self.bytes[self.curr] == b'.' {
+                        if self.curr < bytes.len() && bytes[self.curr] == b'.' {
                             self.curr += 1;
-                            if self.curr < self.bytes.len() && self.bytes[self.curr] == b'.' {
+                            if self.curr < bytes.len() && bytes[self.curr] == b'.' {
                                 self.curr += 1;
-                                TokenKind::Dots
+                                TokenKind::Ellipsis
                             } else {
                                 TokenKind::Concat
                             }
@@ -161,6 +168,7 @@ impl<'a> Lexer<'a> {
 
     #[allow(clippy::too_many_lines)]
     fn read_number(&mut self) -> Result<&'a str, Error> {
+        let bytes = self.src.as_bytes();
         let st = self.curr;
         let mut prefix = self.src[st..].bytes().filter(|&byte| byte != b'_');
         let base = match (prefix.next(), prefix.next()) {
@@ -169,11 +177,11 @@ impl<'a> Lexer<'a> {
             _ => 10,
         };
         let exponent = if base == 16 { b'p' } else { b'e' };
-        let mut prev = self.bytes[self.curr];
+        let mut prev = bytes[self.curr];
         self.curr += 1;
 
-        while self.curr < self.bytes.len() {
-            let byte = self.bytes[self.curr];
+        while self.curr < bytes.len() {
+            let byte = bytes[self.curr];
             if byte.is_ascii_alphanumeric()
                 || matches!(byte, b'_' | b'.')
                 || byte >= 0x80
@@ -285,23 +293,24 @@ impl<'a> Lexer<'a> {
 
     #[allow(clippy::too_many_lines)]
     fn read_string(&mut self) -> Result<Literal<'a>, Error> {
+        let bytes = self.src.as_bytes();
         let st = self.curr;
-        let quote = self.bytes[st];
+        let quote = bytes[st];
         self.curr += 1;
         let content_st = self.curr;
         let mut val = None;
         let mut copy_st = content_st;
         let mut is_valid = true;
         let mut is_closed = false;
-        let decode_hex = |digit| match digit {
-            b'0'..=b'9' => Some(digit - b'0'),
-            b'a'..=b'f' => Some(digit - b'a' + 10),
-            b'A'..=b'F' => Some(digit - b'A' + 10),
+        let decode_hex = |byte| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
             _ => None,
         };
 
-        while self.curr < self.bytes.len() {
-            let byte = self.bytes[self.curr];
+        while self.curr < bytes.len() {
+            let byte = bytes[self.curr];
             if byte == quote {
                 self.curr += 1;
                 is_closed = true;
@@ -315,15 +324,15 @@ impl<'a> Lexer<'a> {
 
             if byte == b'\\' {
                 let val = val.get_or_insert_with(|| Vec::with_capacity(self.curr - content_st + 8));
-                val.extend_from_slice(&self.bytes[copy_st..self.curr]);
+                val.extend_from_slice(&bytes[copy_st..self.curr]);
                 self.curr += 1;
 
-                if self.curr >= self.bytes.len() {
+                if self.curr >= bytes.len() {
                     is_valid = false;
                     break;
                 }
 
-                let escape = self.bytes[self.curr];
+                let escape = bytes[self.curr];
                 self.curr += 1;
 
                 match escape {
@@ -336,12 +345,12 @@ impl<'a> Lexer<'a> {
                     b'v' => val.push(b'\x0B'),
                     b'\\' | b'"' | b'\'' | b'\n' => val.push(escape),
                     b'x' => {
-                        let Some(high) = self.bytes.get(self.curr).copied().and_then(decode_hex) else {
+                        let Some(high) = bytes.get(self.curr).copied().and_then(decode_hex) else {
                             is_valid = false;
                             continue;
                         };
                         self.curr += 1;
-                        let Some(low) = self.bytes.get(self.curr).copied().and_then(decode_hex) else {
+                        let Some(low) = bytes.get(self.curr).copied().and_then(decode_hex) else {
                             is_valid = false;
                             continue;
                         };
@@ -349,7 +358,7 @@ impl<'a> Lexer<'a> {
                         val.push((high << 4) | low);
                     }
                     b'u' => {
-                        if self.bytes.get(self.curr) != Some(&b'{') {
+                        if bytes.get(self.curr) != Some(&b'{') {
                             is_valid = false;
                             continue;
                         }
@@ -358,7 +367,7 @@ impl<'a> Lexer<'a> {
                         let mut code = 0u32;
                         let mut digits = 0;
 
-                        while let Some(digit) = self.bytes.get(self.curr).copied().and_then(decode_hex) {
+                        while let Some(digit) = bytes.get(self.curr).copied().and_then(decode_hex) {
                             if let Some(next) = code.checked_mul(16).and_then(|v| v.checked_add(u32::from(digit))) {
                                 code = next;
                             } else {
@@ -369,7 +378,7 @@ impl<'a> Lexer<'a> {
                             self.curr += 1;
                         }
 
-                        if self.bytes.get(self.curr) == Some(&b'}') {
+                        if bytes.get(self.curr) == Some(&b'}') {
                             self.curr += 1;
                         } else {
                             is_valid = false;
@@ -387,8 +396,7 @@ impl<'a> Lexer<'a> {
                         }
                     }
                     b'z' => {
-                        while self.curr < self.bytes.len()
-                            && matches!(self.bytes[self.curr], b' ' | b'\t' | b'\n' | 0x0b | 0x0c)
+                        while self.curr < bytes.len() && matches!(bytes[self.curr], b' ' | b'\t' | b'\n' | 0x0b | 0x0c)
                         {
                             self.curr += 1;
                         }
@@ -397,8 +405,8 @@ impl<'a> Lexer<'a> {
                         let mut code = u32::from(digit - b'0');
 
                         for _ in 0..2 {
-                            if self.curr < self.bytes.len() && self.bytes[self.curr].is_ascii_digit() {
-                                code = code * 10 + u32::from(self.bytes[self.curr] - b'0');
+                            if self.curr < bytes.len() && bytes[self.curr].is_ascii_digit() {
+                                code = code * 10 + u32::from(bytes[self.curr] - b'0');
                                 self.curr += 1;
                             } else {
                                 break;
@@ -413,7 +421,7 @@ impl<'a> Lexer<'a> {
                     }
                     _ => {
                         is_valid = false;
-                        while self.bytes.get(self.curr).is_some_and(|byte| byte & 0xC0 == 0x80) {
+                        while bytes.get(self.curr).is_some_and(|byte| byte & 0xC0 == 0x80) {
                             self.curr += 1;
                         }
                     }
@@ -429,10 +437,10 @@ impl<'a> Lexer<'a> {
             Ok(Literal {
                 val: match val {
                     Some(mut val) => {
-                        val.extend_from_slice(&self.bytes[copy_st..self.curr - 1]);
+                        val.extend_from_slice(&bytes[copy_st..self.curr - 1]);
                         Cow::Owned(val)
                     }
-                    None => Cow::Borrowed(&self.bytes[content_st..self.curr - 1]),
+                    None => Cow::Borrowed(&bytes[content_st..self.curr - 1]),
                 },
                 bracket: None,
             })
@@ -449,34 +457,35 @@ impl<'a> Lexer<'a> {
     }
 
     fn read_bracket(&mut self) -> Result<Option<Bracket>, Error> {
+        let bytes = self.src.as_bytes();
         let st = self.curr;
 
-        if self.bytes.get(st) != Some(&b'[') {
+        if bytes.get(st) != Some(&b'[') {
             return Ok(None);
         }
 
         let mut curr = st + 1;
 
-        while self.bytes.get(curr) == Some(&b'=') {
+        while bytes.get(curr) == Some(&b'=') {
             curr += 1;
         }
 
-        if self.bytes.get(curr) != Some(&b'[') {
+        if bytes.get(curr) != Some(&b'[') {
             return Ok(None);
         }
 
         let level = curr - st - 1;
         let content_st = curr + 1;
         let mut ed = content_st;
-        while ed < self.bytes.len() {
-            if self.bytes[ed] == b']' {
+        while ed < bytes.len() {
+            if bytes[ed] == b']' {
                 let mut curr = ed + 1;
 
-                while self.bytes.get(curr) == Some(&b'=') {
+                while bytes.get(curr) == Some(&b'=') {
                     curr += 1;
                 }
 
-                if curr - ed - 1 == level && self.bytes.get(curr) == Some(&b']') {
+                if curr - ed - 1 == level && bytes.get(curr) == Some(&b']') {
                     self.curr = curr + 1;
                     return Ok(Some(Bracket {
                         span: Span { st: content_st, ed },
@@ -499,14 +508,14 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.curr >= self.bytes.len() {
+        if self.curr >= self.src.len() {
             return None;
         }
 
         let token = self.read_token();
 
         if token.is_err() {
-            self.curr = self.bytes.len();
+            self.curr = self.src.len();
         }
 
         Some(token)
@@ -518,7 +527,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens() {
+    fn start_at_offset() {
+        let src = "--\u{3042}\ncall()";
+        let st = src.find("call").unwrap();
+        let token = Lexer::new_at(src, st).unwrap().next().unwrap().unwrap();
+        assert_eq!(token.span, Span { st, ed: st + 4 });
+        assert!(matches!(token.kind, TokenKind::Ident("call")));
+        assert!(Lexer::new_at(src, 3).is_err());
+        assert!(Lexer::new_at(src, src.len() + 1).is_err());
+        assert!(Lexer::new_at(src, src.len()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn read_tokens() {
         for (src, expected) in [
             ("local", TokenKind::Local),
             ("const", TokenKind::Keyword("const")),
@@ -530,7 +551,7 @@ mod tests {
             ("\n", TokenKind::Newline),
             (" \t", TokenKind::Whitespace),
             ("..", TokenKind::Concat),
-            ("...", TokenKind::Dots),
+            ("...", TokenKind::Ellipsis),
             ("~=", TokenKind::Ne),
         ] {
             let mut lexer = Lexer::new(src);
@@ -552,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn literals_and_errors() {
+    fn read_literals() {
         for (src, expected) in [(r#""\x41\u{42}\067""#, "ABC"), ("[=[\n名前]=]", "名前")] {
             let token = Lexer::new(src).next().unwrap().unwrap();
             let TokenKind::String(literal) = token.kind else {
