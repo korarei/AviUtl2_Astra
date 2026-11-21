@@ -204,7 +204,7 @@ finally = ["task:finish"]
 
 [variables]
 PARENT = "parent"
-BUILD_NAME = "main"
+CUSTOM_BUILD_NAME = "main"
 TARGET_NAME = "named"
 TARGET_DIR = "include"
 ENCODING = "shift_jis"
@@ -215,7 +215,7 @@ MODE = "debug"
 build-dir = "out"
 
 [build.main]
-name = "${{ BUILD_NAME }}"
+name = "${{ CUSTOM_BUILD_NAME }}"
 suffix = " anm2 "
 enabled = " all "
 newline = " LF "
@@ -300,6 +300,38 @@ newline = "\n"
 [build.literal_crlf]
 suffix = ".anm2"
 newline = "\r\n"
+
+[build.enable_alias]
+suffix = ".anm2"
+enable = false
+
+[build.bundled_single]
+name = "bundled_single"
+suffix = ".anm2"
+bundled = true
+target = { name = "only", path = "scripts/only.lua" }
+
+[build.bundle_alias_single]
+name = "bundle_alias_single"
+suffix = ".anm2"
+bundle = true
+target = { name = "only", path = "scripts/only.lua" }
+
+[build.unbundled_single]
+name = "unbundled_single"
+suffix = ".anm2"
+bundled = false
+target = { name = "only", path = "scripts/only.lua" }
+
+[build.aul2_bundled_true]
+suffix = ".aul2"
+bundled = true
+targets = [{ path = "lang/a.ini" }, { path = "lang/b.ini" }]
+
+[build.aul2_bundled_false]
+suffix = ".aul2"
+bundled = false
+targets = [{ path = "lang/a.ini" }, { path = "lang/b.ini" }]
 "#,
     );
 
@@ -404,11 +436,21 @@ newline = "\r\n"
         targets[0].vars().get("SCRIPT_NAME").map(String::as_str),
         Some("named@main")
     );
+    assert_eq!(targets[0].vars().get("BUILD_ID").map(String::as_str), Some("main"));
+    assert_eq!(targets[0].vars().get("BUILD_NAME").map(String::as_str), Some("main"));
+    assert_eq!(
+        targets[0].vars().get("BUILD_TARGET_NAME").map(String::as_str),
+        Some("named")
+    );
     assert_eq!(targets[0].encoding(), encoding_rs::SHIFT_JIS);
     assert_eq!(targets[1].name(), "secondary");
     assert_eq!(
         targets[1].vars().get("SCRIPT_NAME").map(String::as_str),
         Some("secondary@main")
+    );
+    assert_eq!(
+        targets[1].vars().get("BUILD_TARGET_NAME").map(String::as_str),
+        Some("secondary")
     );
     assert_eq!(targets[1].encoding(), encoding_rs::UTF_8);
 
@@ -444,6 +486,7 @@ newline = "\r\n"
     assert_eq!(default.targets().count(), 0);
 
     let single = config.build(&BuildCall::new("single"), BuildType::Debug)?;
+    assert!(!single.is_bundled());
     assert!(matches!(&single.depends()[0], TaskCall::Detailed { task, .. } if task == "prepare"));
     assert_eq!(single.depends()[0].id(), "prepare");
     assert_eq!(single.finally()[0].id(), "finish");
@@ -451,6 +494,39 @@ newline = "\r\n"
     assert_eq!(single.artifacts(), &["single.bin".to_owned()]);
     let target = single.targets().next().unwrap()?;
     assert_eq!(target.vars().get("SCRIPT_NAME").map(String::as_str), Some("single"));
+
+    assert!(
+        !config
+            .build(&BuildCall::new("enable_alias"), BuildType::Debug)?
+            .is_enabled(BuildType::Debug)
+    );
+
+    for (id, expected_script_name) in [
+        ("bundled_single", "only@bundled_single"),
+        ("bundle_alias_single", "only@bundle_alias_single"),
+    ] {
+        let bundled = config.build(&BuildCall::new(id), BuildType::Debug)?;
+        assert!(bundled.is_bundled(), "{id}");
+        let target = bundled.targets().next().unwrap()?;
+        assert_eq!(
+            target.vars().get("SCRIPT_NAME").map(String::as_str),
+            Some(expected_script_name),
+            "{id}"
+        );
+    }
+
+    let unbundled = config.build(&BuildCall::new("unbundled_single"), BuildType::Debug)?;
+    assert!(!unbundled.is_bundled());
+    let target = unbundled.targets().next().unwrap()?;
+    assert_eq!(
+        target.vars().get("SCRIPT_NAME").map(String::as_str),
+        Some("unbundled_single")
+    );
+
+    for id in ["aul2_bundled_true", "aul2_bundled_false"] {
+        let aul2 = config.build(&BuildCall::new(id), BuildType::Debug)?;
+        assert!(!aul2.is_bundled(), "{id}");
+    }
 
     let task = config.task(&TaskCall::Simple("single".to_owned()))?;
     assert!(matches!(&task.depends()[0], TaskCall::Simple(id) if id == "prepare"));
@@ -496,6 +572,10 @@ run = "echo explicit"
 
 [tasks."build:main"]
 run = "echo build"
+
+[tasks.hidden_alias]
+hide = true
+run = "echo hidden"
 "#,
     )?;
 
@@ -511,9 +591,11 @@ run = "echo build"
             ("OVERRIDE".to_owned(), "call".to_owned()),
         ]),
     };
+
     let task = config.task(&call)?;
     assert_eq!(task.id(), "hello");
     assert!(task.is_hidden());
+    assert!(config.task(&TaskCall::Simple("hidden_alias".to_owned()))?.is_hidden());
     assert_eq!(task.shell(), Some("default-shell"));
     assert_eq!(
         task.run(),
@@ -554,7 +636,7 @@ version = 2
 
 [variables]
 ROOT = "root"
-BUILD_ID = "core"
+DEP_BUILD_ID = "core"
 WORKER = "worker"
 URL = "https://example.com/archive.zip"
 HOST = "example.com"
@@ -574,9 +656,9 @@ variables = { LOCAL = "${{ ROOT }}" }
 dependencies = [
     "clean",
     "task:setup",
-    "build:${{ BUILD_ID }}",
+    "build:${{ DEP_BUILD_ID }}",
     { task = "${{ WORKER }}", environment = { FOO = "${{ LOCAL }}" }, variables = { BAR = "${{ LOCAL }}" } },
-    { build = "${{ BUILD_ID }}", variables = { BAZ = "${{ LOCAL }}" } }
+    { build = "${{ DEP_BUILD_ID }}", variables = { BAZ = "${{ LOCAL }}" } }
 ]
 finally = ["task:finish"]
 
@@ -594,7 +676,7 @@ report-issue = "https://${{ HOST }}/issues"
 
 [[release.publish.package.content]]
 dir = "Plugin/${{ LOCAL }}"
-source = ["build:${{ BUILD_ID }}", "build:main", { build = "build:main" }]
+source = ["build:${{ DEP_BUILD_ID }}", "build:main", { build = "build:main" }]
 
 [[release.publish.package.content]]
 dir = "Script/${{ LOCAL }}"
@@ -610,7 +692,7 @@ source = "custom/${{ PATH_VALUE }}"
 
 [[release.publish.package.content]]
 dir = "Figure/${{ LOCAL }}"
-source = { build = "${{ BUILD_ID }}" }
+source = { build = "${{ DEP_BUILD_ID }}" }
 
 [[release.publish.package.content]]
 dir = "Transition/${{ LOCAL }}"
@@ -676,12 +758,19 @@ changelog = "changes"
     assert_eq!(task, "worker");
     assert_eq!(env.get("FOO").map(String::as_str), Some("root"));
     assert_eq!(vars.get("BAR").map(String::as_str), Some("root"));
+
     let ReleaseDependency::Build(build) = &release.depends()[4] else {
         panic!("detailed release build expected");
     };
     assert_eq!(build.id(), "core");
     assert_eq!(build.vars().get("BAZ").map(String::as_str), Some("root"));
     assert_eq!(release.finally()[0].id(), "finish");
+    assert_eq!(
+        release.finally()[0].vars().get("RELEASE_ID").map(String::as_str),
+        Some("publish")
+    );
+    assert!(release.finally()[0].vars().contains_key("RELEASE_DIR"));
+    assert!(release.finally()[0].vars().contains_key("RELEASE_DIRECTORY"));
 
     let package = release.package().unwrap();
     assert_eq!(package.filename(), "demo.AU2PKG.ZIP");
@@ -721,11 +810,13 @@ changelog = "changes"
     };
     assert_eq!(url.should_extract(), Some(true));
     assert_eq!(url.picks(), &["*.txt"]);
+
     let PackageSource::Url(url) = &contents[1].sources()[0] else {
         panic!("URL source expected");
     };
     assert_eq!(url.should_extract(), None);
     assert_eq!(url.picks(), &[] as &[String]);
+
     let PackageSource::File(file) = &contents[7].sources()[0] else {
         panic!("file source expected");
     };
@@ -1115,6 +1206,11 @@ newline = "lf"
 suffix = ".anm2"
 enabled = "other"
 
+[build.bad_bundled]
+suffix = ".anm2"
+bundled = false
+targets = [{ path = "a.lua" }, { path = "b.lua" }]
+
 [build.bad_include]
 suffix = ".anm2"
 include-dirs = [""]
@@ -1166,6 +1262,7 @@ variables = { BUILD_DIR = "other" }
         "bad_newline",
         "bad_legacy_newline",
         "bad_mode",
+        "bad_bundled",
         "bad_include",
         "bad_artifact",
         "bad_vars",

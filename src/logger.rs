@@ -115,13 +115,14 @@ fn parse_info_message(msg: &str) -> (&str, &str, &str) {
     }
 
     if let Some((first_word, rest)) = msg.split_once(' ')
-        && let Some(&status) = KNOWN_STATUSES.iter().find(|&&s| s == first_word)
+        && KNOWN_STATUSES.binary_search(&first_word).is_ok()
     {
-        let color = match status {
+        let color = match first_word {
             "Building" | "Compiling" | "Blocking" | "Releasing" | "Reloading" | "Stopping" => "1;36",
             _ => "1;32",
         };
-        return (status, color, rest);
+
+        return (first_word, color, rest);
     }
 
     ("", "", msg)

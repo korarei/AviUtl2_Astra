@@ -48,9 +48,10 @@ pub(super) fn setup(ver: u32, config: &Config) -> anyhow::Result<()> {
     } else {
         None
     };
-    let backup_dir = backup.as_ref().map(|dir| dir.path().join("aviutl2"));
 
+    let backup_dir = backup.as_ref().map(|dir| dir.path().join("aviutl2"));
     let mut rollbacks: Vec<(PathBuf, PathBuf)> = Vec::new();
+
     if let Err(err) = (|| -> anyhow::Result<()> {
         if let Some(dir) = &backup_dir {
             std::fs::rename(&aviutl2_dir, dir)
@@ -93,6 +94,7 @@ pub(super) fn setup(ver: u32, config: &Config) -> anyhow::Result<()> {
                     .with_context(|| format!("failed to restore '{}' to '{}'", from.display(), to.display()))
             })
             .err();
+
         if let Some(restore) = restore_err {
             return Err(err.context(format!(
                 "failed to restore environment: {restore:#}; files retained at '{}', '{}' and '{}'",

@@ -1,4 +1,4 @@
-use astra::build::{lua, script};
+use astra::build::{exedit, lang::lua};
 use astra::config::BuildTarget;
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ fn build_script(
     let target: BuildTarget = serde_json::from_value(serde_json::json!({
         "path": file.to_string_lossy().into_owned(),
     }))?;
-    script::build(src, &target, dirs, vars, is_bundled, ".anm2").map(|output| output.script)
+    exedit::build(src, &target, dirs, vars, is_bundled, ".anm2").map(|output| output.script)
 }
 
 fn capture_warnings() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard) {
@@ -51,7 +51,7 @@ fn build_shader(src: &str, dirs: &[PathBuf]) -> anyhow::Result<String> {
     let prefix = "--[[pixelshader@main:\n";
     let suffix = "\nfloat4 main() : SV_Target { return 0; }\n]]\n";
     build_script(
-        &format!("{prefix}{src}{suffix}"),
+        &format!("--#verbatim\n{prefix}{src}{suffix}--#endverbatim\n"),
         Path::new("test.anm2"),
         dirs,
         &IndexMap::new(),
@@ -97,6 +97,7 @@ fn replaces_inline_lua_values_and_preserves_separators() -> anyhow::Result<()> {
     ] {
         assert_eq!(build_script(src, Path::new("test.anm2"), &[], &vars, false)?, expected);
     }
+
     Ok(())
 }
 
@@ -104,8 +105,8 @@ fn replaces_inline_lua_values_and_preserves_separators() -> anyhow::Result<()> {
 fn expose_outputs() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "input.anm2" }))?;
     let src = "--value@value:名前, 1\nreturn value";
-    let output = script::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
-    assert_eq!(output.script, format!("{src}\n"));
+    let output = exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
+    assert_eq!(output.script, format!("{}\n", src.replace("名前, 1", "名前,1")));
     assert!(output.l10n.contains("名前=\n"), "{}", output.l10n);
     Ok(())
 }
@@ -145,6 +146,7 @@ fn replaces_lua_statement_values_and_preserves_comments() -> anyhow::Result<()> 
     ] {
         assert_eq!(build_script(src, Path::new("test.anm2"), &[], &vars, false)?, expected);
     }
+
     for src in [
         "--#replace AAA",
         "--#replace AAA\nlocal a",
@@ -161,6 +163,7 @@ fn replaces_lua_statement_values_and_preserves_comments() -> anyhow::Result<()> 
             "{src}"
         );
     }
+
     Ok(())
 }
 
@@ -187,10 +190,13 @@ fn replaces_hlsl_statement_values_and_rejects_multiple_members() -> anyhow::Resu
         ),
     ] {
         assert_eq!(
-            astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?.text,
+            build_hlsl(src, Path::new("test.hlsl"), &target, &[], &vars)?
+                .text()
+                .into_owned(),
             expected
         );
     }
+
     for src in [
         "//#replace AAA",
         "//#replace AAA\nfloat a;",
@@ -204,10 +210,11 @@ fn replaces_hlsl_statement_values_and_rejects_multiple_members() -> anyhow::Resu
         "//#replace AAA\nfloat a = /*#replace AAA*/0;",
     ] {
         assert!(
-            astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars).is_err(),
+            build_hlsl(src, Path::new("test.hlsl"), &target, &[], &vars).is_err(),
             "{src}"
         );
     }
+
     Ok(())
 }
 
@@ -241,8 +248,8 @@ fn keeps_token_boundaries_when_removing_replacement_comments() -> anyhow::Result
     );
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
     let src = "float main() { return/*#replace AAA*/0; }";
-    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
-    assert_eq!(output.text, "float main() { return get_values(); }\n");
+    let output = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &vars)?;
+    assert_eq!(output.text(), "float main() { return get_values(); }\n");
 
     let vars = IndexMap::from([("AAA".to_owned(), "1 -- retained".to_owned())]);
     assert!(
@@ -257,7 +264,7 @@ fn keeps_token_boundaries_when_removing_replacement_comments() -> anyhow::Result
     );
     let vars = IndexMap::from([("AAA".to_owned(), "1 // retained".to_owned())]);
     assert!(
-        astra::build::shader::build(
+        build_hlsl(
             "float a = /*#replace AAA*/0;",
             Path::new("test.hlsl"),
             &target,
@@ -312,9 +319,10 @@ fn replaces_inline_hlsl_initializers_and_individual_members() -> anyhow::Result<
             "float values[2] = {  first + second, 1 };\n",
         ),
     ] {
-        let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
-        assert_eq!(output.text, expected);
+        let output = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &vars)?;
+        assert_eq!(output.text(), expected);
     }
+
     Ok(())
 }
 
@@ -335,7 +343,7 @@ fn rejects_replacements_that_are_not_one_expression() -> anyhow::Result<()> {
             "{value}"
         );
         assert!(
-            astra::build::shader::build(
+            build_hlsl(
                 "float a = /*#replace AAA*/0;",
                 Path::new("test.hlsl"),
                 &target,
@@ -346,6 +354,7 @@ fn rejects_replacements_that_are_not_one_expression() -> anyhow::Result<()> {
             "{value}"
         );
     }
+
     let vars = IndexMap::from([("AAA".to_owned(), "1".to_owned())]);
     for src in [
         "--#replace AAA\nlocal a, b = 0, 0",
@@ -358,6 +367,7 @@ fn rejects_replacements_that_are_not_one_expression() -> anyhow::Result<()> {
             "{src}"
         );
     }
+
     Ok(())
 }
 
@@ -367,9 +377,10 @@ fn replaces_hlsl_values_with_casts_and_parenthesized_postfix_expressions() -> an
     for value in ["(value)++", "(vector<float, 2>)value", "(float4)(value + other)"] {
         let vars = IndexMap::from([("VALUE".to_owned(), value.to_owned())]);
         let src = "float2 result = /*#replace VALUE*/0;\n";
-        let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
-        assert_eq!(output.text, format!("float2 result = {value};\n"));
+        let output = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &vars)?;
+        assert_eq!(output.text(), format!("float2 result = {value};\n"));
     }
+
     Ok(())
 }
 
@@ -384,6 +395,7 @@ fn rejects_unclosed_shader_blocks_during_analysis() -> anyhow::Result<()> {
         let error = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).unwrap_err();
         assert!(error.to_string().contains("unclosed declaration block"), "{error}");
     }
+
     Ok(())
 }
 
@@ -434,6 +446,7 @@ fn rejects_omit_without_a_complete_target() -> anyhow::Result<()> {
             "{src}"
         );
     }
+
     let src = "--#if false\n--#omit\n--#endif\nlocal retained = 1";
     let output = build_script(src, Path::new("test.anm2"), &[], &IndexMap::new(), false)?;
     assert!(output.contains("local retained = 1"), "{output}");
@@ -441,10 +454,11 @@ fn rejects_omit_without_a_complete_target() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.ini" }))?;
     for src in [";#omit", ";#omit\n; annotation", ";#omit\n;#endif"] {
         assert!(
-            astra::build::ini::build(src, &target, &[], &IndexMap::new()).is_err(),
+            astra::build::config::ini::build(src, &target, &[], &IndexMap::new()).is_err(),
             "{src}"
         );
     }
+
     Ok(())
 }
 
@@ -454,7 +468,8 @@ fn preserves_cols_after_trimming_leading_whitespace() {
         let src = format!("{prefix}local value = @");
         let err = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).unwrap_err();
         assert!(
-            err.to_string().contains(&format!("test.anm2:{line}:{}: unexpected '@'", col + 14)),
+            err.to_string()
+                .contains(&format!("test.anm2:{line}:{}: unexpected '@'", col + 14)),
             "{err}"
         );
     }
@@ -516,6 +531,7 @@ fn ignores_indented_shader_blocks_with_whitespace_before_at() -> anyhow::Result<
             assert_eq!(output, format!("{src}\n"));
         }
     }
+
     Ok(())
 }
 
@@ -538,22 +554,41 @@ fn warns_on_invalid_shader_comments() -> anyhow::Result<()> {
             assert!(warnings.contains(message), "{warnings}");
             assert_eq!(warnings.lines().count(), 1, "{warnings}");
         }
+
+        for src in [
+            format!("--{kind}@main:\n"),
+            format!("-- {kind}@main\n"),
+            format!("local x = 1 --{kind}@main:\n"),
+        ] {
+            bytes.lock().unwrap().clear();
+            let output = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false)?;
+            assert_eq!(output, src);
+            let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+            assert!(warnings.contains("shader block must use '--[[...]]'"), "{warnings}");
+            assert_eq!(warnings.lines().count(), 1, "{warnings}");
+        }
     }
 
     Ok(())
 }
 
 #[test]
-fn rejects_shader_blocks_after_code() {
+fn skips_shader_blocks_after_code() -> anyhow::Result<()> {
     for kind in ["pixelshader", "computeshader"] {
-        for prefix in ["local shader = ", "local value = 1; "] {
-            let src = format!("{prefix}--[[{kind} @main:\n--#include \"missing.hlsl\"\n]]");
-            assert!(
-                build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).is_err(),
-                "{src}"
-            );
-        }
+        let src = format!("local value = 1; --[[{kind} @main:\n--#include \"missing.hlsl\"\n]]");
+        let (bytes, _guard) = capture_warnings();
+        let output = build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false)?;
+        assert_eq!(output, format!("{src}\n"));
+        let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+        assert!(
+            warnings.contains("shader block must start on its own line"),
+            "{warnings}"
+        );
+
+        let src = format!("local shader = --[[{kind} @main:\n]]");
+        assert!(build_script(&src, Path::new("test.anm2"), &[], &IndexMap::new(), false).is_err());
     }
+    Ok(())
 }
 
 #[test]
@@ -575,13 +610,18 @@ fn expand_multiline_literals() -> anyhow::Result<()> {
     for src in [
         "local text = [[${{ VALUE }}\nnext]]",
         "local text = [=[${{ VALUE }}\n\"${{ VALUE }}]=]",
-        "--[[${{ VALUE }}\n\"${{ VALUE }}\n]]\nlocal value = 1",
         "local text = \"${{ VALUE }}\\\nnext\"",
         "local text = [[first\n\"${{ VALUE }}\nlast]]",
     ] {
         let output = build_script(src, Path::new("test.anm2"), &[], &vars, false)?;
         assert_eq!(output, format!("{}\n", src.replace("${{ VALUE }}", "value")), "{src}");
     }
+
+    let comment = "--[[${{ VALUE }}\n\"${{ VALUE }}\n]]\nlocal value = 1";
+    assert_eq!(
+        build_script(comment, Path::new("test.anm2"), &[], &vars, false)?,
+        format!("{comment}\n")
+    );
 
     let src = "local text = [[first\n${{ MISSING }}\nlast]]";
     let err = build_script(src, Path::new("test.anm2"), &[], &vars, false).unwrap_err();
@@ -597,16 +637,17 @@ fn expand_shader_names() -> anyhow::Result<()> {
         ("pixelshader", "float4 main() : SV_Target { return 0; }"),
         ("computeshader", "[numthreads(1, 1, 1)] void main() {}"),
     ] {
-        let src = format!("--[[{kind}@${{{{ NAME }}}}:\n--#define NAME changed\n{entry}\n]]");
+        let src =
+            format!("--#verbatim\n--[[{kind}@${{{{ NAME }}}}:\n//#define NAME changed\n{entry}\n]]\n--#endverbatim");
         let output = build_script(&src, Path::new("test.anm2"), &[], &vars, false)?;
         assert!(output.contains(&format!("--[[{kind}@main:")), "{output}");
         assert!(output.contains(entry), "{output}");
 
-        let src = format!("--[[{kind}@${{{{ MISSING }}}}:\n{entry}\n]]");
+        let src = format!("--#verbatim\n--[[{kind}@${{{{ MISSING }}}}:\n{entry}\n]]\n--#endverbatim");
         let err = build_script(&src, Path::new("test.anm2"), &[], &vars, false).unwrap_err();
         assert_eq!(
             err.to_string(),
-            format!("test.anm2:1:{}: variable 'MISSING' not found", kind.len() + 6)
+            format!("test.anm2:2:{}: variable 'MISSING' not found", kind.len() + 6)
         );
     }
 
@@ -726,34 +767,37 @@ after_line = "undefined"
 --#ifdef INLINE
 inline_define_leaked = true
 --#endif
-value = 10 --track@_:val,0,100,_,1
-global = true --check@global:glob,true
-primary = 0xffffff --color@primary:col,0xffffff
+local value = 10 --track@_:val,0,100,_,1
+local global = true --check@global:glob,true
+local primary = 0xffffff --color@primary:col,0xffffff
 local no_init --track@_:no_init,0,50,0,1
-spaced = 20 --track@ _ : spaced_val, 0, 100, _ , 1
-spaced_chk = true --check@ _ : chk, _
-spaced_sel = 2 --select@ _ : sel = _ , item1=1, item2=2
-sample_file = "test.png" --file@ _ : file_prop
-bracket_str = [[bracket]] --string@ _ : str_prop, _
-single_str = 'single' --text@ _ : txt_prop, _
-matched_str = "matched" --text@ _ : matched_prop, matched
-win_path = "C:\\Windows\\System32" --file@ _ : path_prop
-quote_str = "aaa\"bbb\"" --string@ _ : quote_prop, _
-newline_str = "aaa\nbbb" --text@ _ : nl_prop, _
-newline_matched = "first\nsecond" --text@ _ : nl_match_prop, first\nsecond
-sample_color = 0xff0000 --color@ _ : col_prop, _
-hex_color = 0xFF0000 --color@ _ : hex_prop, 0xff0000
-nil_color = nil --color@_:nil_prop,nil
-sample_nil_color = nil --color@ _ : sample_nil_prop, _
+local spaced = 20 --track@ _ : spaced_val, 0, 100, _ , 1
+local spaced_chk = true --check@ _ : chk, _
+local spaced_sel = 2 --select@ _ : sel = _ , item1 = 1, item2 = 2
+local sample_file = "test.png" --file@ _ : file_prop
+local bracket_str = [[bracket]] --string@ _ : str_prop, _
+local single_str = 'single' --text@ _ : txt_prop, _
+local matched_str = "matched" --text@ _ : matched_prop,matched
+local win_path = "C:\\Windows\\System32" --file@ _ : path_prop
+local quote_str = "aaa\"bbb\"" --string@ _ : quote_prop, _
+local strict_str = "plain" --string@ _ : strict_prop,"_"
+local newline_str = "aaa\nbbb" --text@ _ : nl_prop, _
+local newline_matched = "first\nsecond" --text@ _ : nl_match_prop,first\nsecond
+local sample_color = 0xff0000 --color@ _ : col_prop, _
+local dec_color = 255 --color@ _ : dec_prop, _
+local hex_color = 0xFF0000 --color@ _ : hex_prop, 0xff0000
+local upper_color = 0X00FF00 --color@ _ : upper_prop, 0X00FF00
+local nil_color = nil --color@_:nil_prop,nil
+local sample_nil_color = nil --color@ _ : sample_nil_prop, _
 --color@default_nil_color:default_nil_prop,nil
 --color:nil
-val_num = 1.5 --value@ _ : val_num_prop, _
-val_str = "hello" --value@ _ : val_str_prop, _
-val_tbl = { 1, 2 } --value@ _ : val_tbl_prop, _
-val_tbl_spaced = { 1, 2 } --value@ _ : val_tbl_spaced_prop, {1,2}
+local val_num = 1.5 --value@ _ : val_num_prop, _
+local val_str = "hello" --value@ _ : val_str_prop, _
+local val_tbl = { 1, 2 } --value@ _ : val_tbl_prop, _
+local val_tbl_spaced = { 1, 2 } --value@ _ : val_tbl_spaced_prop, {1,2}
 ignored_hyphens = 1 ---track@ignored_hyphens:0,100,1
-ignored_kind_space = 2 -- track@ignored_kind_space:0,100,1
-at_space = 3 --track @at_space:at_space_prop,0,100,3,1
+local ignored_kind_space = 2 -- track@ignored_kind_space:Label,0,100,_,1
+local at_space = 3 --track @at_space:at_space_prop,0,100,3,1
 "#;
     let result = build_script(src, Path::new("test.lua"), &[], &vars, false)?;
 
@@ -787,29 +831,32 @@ at_space = 3 --track @at_space:at_space_prop,0,100,3,1
         "--check@global:glob,true",
         "--color@primary:col,0xffffff",
         "--track@no_init:no_init,0,50,0,1",
-        "--track@ spaced : spaced_val, 0, 100, 20 , 1",
-        "--check@ spaced_chk : chk, true",
-        "--select@ spaced_sel : sel = 2 , item1=1, item2=2",
-        "--file@ sample_file : file_prop",
-        "--string@ bracket_str : str_prop, bracket",
-        "--text@ single_str : txt_prop, single",
-        "--text@ matched_str : matched_prop, matched",
-        "--file@ win_path : path_prop",
-        "--string@ quote_str : quote_prop, aaa\"bbb\"",
-        "--text@ newline_str : nl_prop, aaa\\nbbb",
-        "--text@ newline_matched : nl_match_prop, first\\nsecond",
-        "--color@ sample_color : col_prop, 0xff0000",
-        "--color@ hex_color : hex_prop, 0xff0000",
+        "--track@spaced:spaced_val,0,100,20,1",
+        "--check@spaced_chk:chk,true",
+        "--select@spaced_sel:sel=2,item1=1,item2=2",
+        "--file@sample_file:file_prop",
+        "--string@bracket_str:str_prop,bracket",
+        "--text@single_str:txt_prop,single",
+        "--text@matched_str:matched_prop,matched",
+        "--file@win_path:path_prop",
+        "--string@quote_str:quote_prop,\"aaa\\\"bbb\\\"\"",
+        "--string@strict_str:strict_prop,\"plain\"",
+        "--text@newline_str:nl_prop,aaa\\nbbb",
+        "--text@newline_matched:nl_match_prop,first\\nsecond",
+        "--color@sample_color:col_prop,0xff0000",
+        "--color@dec_color:dec_prop,0x0000ff",
+        "--color@hex_color:hex_prop,0xff0000",
+        "--color@upper_color:upper_prop,0x00ff00",
         "--color@nil_color:nil_prop,nil",
-        "--color@ sample_nil_color : sample_nil_prop, nil",
+        "--color@sample_nil_color:sample_nil_prop,nil",
         "--color@default_nil_color:default_nil_prop,nil",
         "--color:nil",
-        "--value@ val_num : val_num_prop, 1.5",
-        "--value@ val_str : val_str_prop, \"hello\"",
-        "--value@ val_tbl : val_tbl_prop, { 1, 2 }",
-        "--value@ val_tbl_spaced : val_tbl_spaced_prop, {1,2}",
+        "--value@val_num:val_num_prop,1.5",
+        "--value@val_str:val_str_prop,\"hello\"",
+        "--value@val_tbl:val_tbl_prop,{ 1, 2 }",
+        "--value@val_tbl_spaced:val_tbl_spaced_prop,{1,2}",
         "ignored_hyphens = 1 ---track@ignored_hyphens:0,100,1",
-        "ignored_kind_space = 2 -- track@ignored_kind_space:0,100,1",
+        "local ignored_kind_space = 2 -- track@ignored_kind_space:Label,0,100,_,1",
         "--track@at_space:at_space_prop,0,100,3,1",
         "--#define HIDDEN hidden",
     ] {
@@ -836,9 +883,16 @@ at_space = 3 --track @at_space:at_space_prop,0,100,3,1
 fn normalize_headers() -> anyhow::Result<()> {
     for (src, is_bundled, expected) in [
         ("", false, ""),
+        ("@custom", true, "@custom\n"),
+        ("--@ custom", true, "@custom\n"),
         ("@custom\nlocal value = 1", true, "@custom\nlocal value = 1\n"),
         ("--@ custom\nlocal value = 1", true, "@custom\nlocal value = 1\n"),
         ("--@ custom\nlocal value = 1", false, "--@ custom\nlocal value = 1\n"),
+        (
+            "--#define VALUE custom\n--@${VALUE}\nlocal value = 1",
+            true,
+            "@test\n--@${VALUE}\nlocal value = 1\n",
+        ),
         ("local value = 1", true, "@test\nlocal value = 1\n"),
         (
             "--color:0xffffff\nlocal value = 1",
@@ -874,73 +928,71 @@ fn normalize_headers() -> anyhow::Result<()> {
 #[test]
 fn reject_properties() -> anyhow::Result<()> {
     for (src, message) in [
-        ("t.prop = 10 --track@_:0,100,1", "table field assignment"),
-        (r#"t["prop"] = 10 --track@_:0,100,1"#, "table field assignment"),
+        ("t.prop = 10 --track@_:0,100,1", "requires at least 3 arguments"),
+        (r#"t["prop"] = 10 --track@_:0,100,1"#, "requires at least 3 arguments"),
         (
-            "local value = 10 --track@other:0,100,1",
-            "does not match assignment target",
+            "local value = 10 --track@other:A,0,100,1",
+            "variable name 'other' conflicts with 'value'",
         ),
         (
-            "local value = 10 --track@ other : 0,100,1",
-            "does not match assignment target",
-        ),
-        ("local value --track@other:0,100,1", "does not match assignment target"),
-        (
-            "local value = 10 --data@_:0",
-            "'data' definition cannot be attached to variable declaration",
+            "local value = 10 --track@ other : A,0,100,1",
+            "variable name 'other' conflicts with 'value'",
         ),
         (
-            "local value = 10 --hide@_:0",
-            "'hide' definition cannot be attached to variable declaration",
+            "local value --track@other:A,0,100,1",
+            "variable name 'other' conflicts with 'value'",
         ),
         (
             "local value = 10 --track@_:A,0,100,20,1",
-            "default value '20' does not match assignment value '10'",
+            "default value '20' conflicts with '10'",
         ),
         (
             "local value = 10 --track@ _ : A, 0, 100, 20, 1",
-            "default value '20' does not match assignment value '10'",
+            "default value '20' conflicts with '10'",
         ),
         (
             "local value = false --check@_:B,true",
-            "default value 'true' does not match assignment value 'false'",
+            "default value 'true' conflicts with 'false'",
         ),
         (
             "local value = 0 --check@_:B,false",
-            "default value 'false' does not match assignment value '0'",
+            "default value 'false' conflicts with '0'",
         ),
         (
             "local value = false --checksection@_:B,true",
-            "default value 'true' does not match assignment value 'false'",
+            "default value 'true' conflicts with 'false'",
         ),
         (
             "local value = 0xffffff --color@_:A,0x000000",
-            "default value '0x000000' does not match assignment value '0xffffff'",
+            "default value '0x000000' conflicts with '0xffffff'",
         ),
         (
             "local value = nil --color@_:A,0xffffff",
-            "default value '0xffffff' does not match assignment value 'nil'",
+            "default value '0xffffff' conflicts with 'nil'",
         ),
         (
             "local value = 0xffffff --color@_:A,nil",
-            "default value 'nil' does not match assignment value '0xffffff'",
+            "default value 'nil' conflicts with '0xffffff'",
         ),
         (
             "local value = nil --color@_:A,invalid",
-            "default value 'invalid' does not match assignment value 'nil'",
+            "must be 'nil' or a hexadecimal integer",
         ),
         (
-            "--color@_:A,0x1000000\n",
-            "must be 'nil' or an integer between 0x000000 and 0xffffff",
+            "local value = nil --color@_:A,255",
+            "must be 'nil' or a hexadecimal integer",
         ),
         (
-            "--color:0x1000000\n",
-            "must be 'nil' or an integer between 0x000000 and 0xffffff",
+            "local value = nil --color@_:A,0xFF0000",
+            "must be 'nil' or a hexadecimal integer",
         ),
-        ("--color:invalid\n", "must be 'nil' or an integer"),
+        ("--color@_:A,0x1000000\n", "must be between 0x000000 and 0xffffff"),
+        ("--color:0x1000000\n", "must be between 0x000000 and 0xffffff"),
+        ("--color:invalid\n", "must be 'nil' or a hexadecimal integer"),
+        ("--color:255\n", "must be 'nil' or a hexadecimal integer"),
         (
             "local value = 1 --select@_:C=2,item1=1,item2=2",
-            "default value '2' does not match assignment value '1'",
+            "default value '2' conflicts with '1'",
         ),
         ("local value = 'str' --track@_:A,0,100,0,1", "must be a number"),
         (
@@ -954,17 +1006,26 @@ fn reject_properties() -> anyhow::Result<()> {
             "must be 'nil' or an integer",
         ),
         ("local value = raw_ident --file@_:A", "must be a string"),
-        (
-            "local value = 1 --value@_:A,2",
-            "default value '2' does not match assignment value '1'",
-        ),
+        ("local value = 1 --value@_:A,2", "default value '2' conflicts with '1'"),
         (
             "local value = 'bar' --text@_:A,baz",
-            "default value 'baz' does not match assignment value ''bar''",
+            "default value 'baz' conflicts with ''bar''",
         ),
         (
-            "local value = \"aaa\\tbbb\" --text@_:A,aaa",
-            "cannot contain control characters",
+            "local value = \"aaa\\rbbb\" --text@_:A,_",
+            "cannot contain control characters other than '\\n' and '\\t'",
+        ),
+        (
+            "local value = \"aaa\\nbbb\" --string@_:A,_",
+            "cannot contain control characters other than '\\t'",
+        ),
+        (
+            "local value = 'matched' --text@_:A, matched",
+            "default value ' matched' conflicts with ''matched''",
+        ),
+        (
+            "local value = 'plain' --string@_:A, \"_\"",
+            "default value ' \"_\"' conflicts with ''plain''",
         ),
         ("--track0:A,0,\t100,0,1", "cannot contain control characters"),
         ("--value@value:A\n", "'value' requires at least 1 argument"),
@@ -1231,139 +1292,61 @@ fn resolves_directives_in_shader_blocks() -> anyhow::Result<()> {
         dir.path().join("shader.hlsl"),
         "//#define FACTOR 2\nfloat factor = ${FACTOR};\n",
     )?;
-
     for kind in ["pixelshader", "computeshader"] {
-        let open = "--[[";
-        let close = "]]";
         let entry = entry_point(kind, "main");
         let src = format!(
-            "{open}{kind}@main:\n\
-             --#define ENABLED 1\n\
-             --#if ${{ENABLED}} == 1\n\
-             --#include \"shader.hlsl\"\n\
-             --#else\n\
-             --#include \"missing.hlsl\"\n\
-             --#endif\n\
-             --#undef ENABLED\n\
-             {entry}\n\
-             {close} local tail = 1\n\
-             return tail\n"
+            "--#verbatim\n--[[{kind}@main:\n//#define ENABLED 1\n//#if ${{ENABLED}} == 1\n//#include \"shader.hlsl\"\n//#else\n//#include \"missing.hlsl\"\n//#endif\n{entry}\n]] local tail = 1\n--#endverbatim\nreturn tail\n"
         );
-        let result = build_script(&src, &file, &[], &IndexMap::new(), false)?;
         assert_eq!(
-            result,
-            format!("{open}{kind}@main:\nfloat factor = 2;\n{entry}\n{close} local tail = 1\nreturn tail\n")
+            build_script(&src, &file, &[], &IndexMap::new(), false)?,
+            format!("--[[{kind}@main:\nfloat factor = 2;\n{entry}\n]] local tail = 1\nreturn tail\n")
         );
     }
-
-    let src =
-        "--[[pixelshader@main:\n--#if 0\nskipped\n--#endif\nfloat4 main() : SV_Target { return 0; }\n]]\nreturn 1\n";
-    assert_eq!(
-        build_script(src, &file, &[], &IndexMap::new(), false)?,
-        "--[[pixelshader@main:\nfloat4 main() : SV_Target { return 0; }\n]]\nreturn 1\n"
-    );
-    assert_eq!(
-        build_script(
-            "--[[computeshader@main:[numthreads(1, 1, 1)] void main() {}]]\nreturn 1\n",
-            &file,
-            &[],
-            &IndexMap::new(),
-            false
-        )?,
-        "--[[computeshader@main:[numthreads(1, 1, 1)] void main() {}]]\nreturn 1\n"
-    );
-    assert_eq!(
-        build_script(
-            "--#if 0\n--[[pixelshader@main:\n--#include \"missing.hlsl\"\n]]\n--#endif\nreturn 1\n",
-            &file,
-            &[],
-            &IndexMap::new(),
-            false,
-        )?,
-        "return 1\n"
-    );
-
+    let src = "--#if false\n--#verbatim\n--[[pixelshader@main:\n//#include \"missing.hlsl\"\n]]\n--#endverbatim\n--#endif\nreturn 1\n";
+    assert_eq!(build_script(src, &file, &[], &IndexMap::new(), false)?, "return 1\n");
     Ok(())
 }
 
 #[test]
-fn processes_only_level_zero_shader_comments_as_hlsl() -> anyhow::Result<()> {
+fn isolates_lua_and_shader_state() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("main.lua");
     std::fs::write(
         dir.path().join("value.hlsl"),
-        "/*#define VALUE\n2\n*/\nfloat value = ${VALUE};\n",
+        "//#pragma once\nfloat included = ${VALUE};\n",
     )?;
-
-    for kind in ["pixelshader", "computeshader"] {
-        let entry = entry_point(kind, "main");
-
-        for prefix in ["--", "//"] {
-            let src = format!(
-                "--[[{kind}@main:\n\
-                 // Lua's quotes ' are HLSL comments\n\
-                 {prefix}#include \"value.hlsl\"\n\
-                 {entry}\n\
-                 ]]\n\
-                 local value = ${{VALUE}}\n"
-            );
-            let result = build_script(&src, &file, &[], &IndexMap::new(), false)?;
-            assert!(result.contains("// Lua's quotes ' are HLSL comments"));
-            assert!(result.contains("float value = 2;"));
-            assert!(result.contains("local value = 2"));
-            assert!(!result.contains("#include"));
-        }
-
-        let src = format!("--[[{kind}@main:\n/*#define VALUE\n3\n*/\n{entry}\n]]\nlocal value = ${{VALUE}}\n");
-        let result = build_script(&src, &file, &[], &IndexMap::new(), false)?;
-        assert!(result.contains("local value = 3"));
-        assert!(!result.contains("/*#define"));
-
-        let src = format!("--[[{kind}@main:\n--[=[#define VALUE\n4\n]=]\n{entry}\n]]\nlocal value = ${{VALUE}}\n");
-        let result = build_script(&src, &file, &[], &IndexMap::new(), false)?;
-        assert!(result.contains("local value = 4"));
-        assert!(!result.contains("--[=[#define"));
-
-        let src = format!(
-            "--[[{kind}@main:\n// --#include \"missing.hlsl\"\n/*\n--#include \"missing.hlsl\"\n*/\n{entry}\n]]\n"
-        );
-        assert_eq!(build_script(&src, &file, &[], &IndexMap::new(), false)?, src);
-
-        for src in [
-            format!("--[=[{kind}@main:\n--#include \"missing.hlsl\"\n]=]\n"),
-            format!("--[[{kind}@main\n--#include \"missing.hlsl\"\n]]\n"),
-        ] {
-            assert_eq!(build_script(&src, &file, &[], &IndexMap::new(), false)?, src);
-        }
+    let vars = IndexMap::from([("VALUE".to_owned(), "1".to_owned())]);
+    let src = "--#define VALUE 2\nlocal before = ${VALUE}\n--#verbatim\n--[[pixelshader@first:\n//#undef VALUE\n//#define VALUE 3\n//#include \"value.hlsl\"\nfloat4 first() : SV_Target { return ${VALUE}; }\n]]\n--[[pixelshader@second:\n//#include \"value.hlsl\"\nfloat4 second() : SV_Target { return ${VALUE}; }\n]]\n--#endverbatim\n-- ${VALUE}\nlocal after = ${VALUE}\n";
+    let result = build_script(src, &file, &[], &vars, false)?;
+    for expected in [
+        "local before = 2",
+        "float included = 3;",
+        "return 3;",
+        "float included = 1;",
+        "return 1;",
+        "-- ${VALUE}",
+        "local after = 2",
+    ] {
+        assert!(result.contains(expected), "{expected}: {result}");
     }
-
+    assert_eq!(vars["VALUE"], "1");
     Ok(())
 }
 
 #[test]
-fn shares_include_stack_between_lua_and_shader_blocks() -> anyhow::Result<()> {
+fn isolates_lua_and_shader_include_stacks() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let file = dir.path().join("main.hlsl");
-    let src = "--#include \"child.lua\"\n";
-    std::fs::write(&file, src)?;
+    let file = dir.path().join("main.lua");
+    std::fs::write(dir.path().join("value.hlsl"), "//#pragma once\nfloat value;\n")?;
     std::fs::write(
         dir.path().join("child.lua"),
-        "--[[pixelshader@main:\n//#include \"main.hlsl\"\n]]\n",
+        "--#verbatim\n--[[pixelshader@main:\n//#include \"value.hlsl\"\n//#include \"value.hlsl\"\nfloat4 main() : SV_Target { return 0; }\n]]\n--#endverbatim\n",
     )?;
-    let err = build_script(src, &file, &[], &IndexMap::new(), false).unwrap_err();
-    assert!(err.to_string().contains("circular include detected"), "{err}");
-
-    std::fs::write(dir.path().join("value.hlsl"), "float value;\n")?;
-    std::fs::write(
-        dir.path().join("child.lua"),
-        "--[[pixelshader@main:\n\
-         //#include \"value.hlsl\"\n\
-         //#include \"value.hlsl\"\n\
-         float4 main() : SV_Target { return 0; }\n\
-         ]]\n",
-    )?;
-    let result = build_script(src, &file, &[], &IndexMap::new(), false)?;
-    assert_eq!(result.matches("float value;").count(), 2);
+    let result = build_script("--#include \"child.lua\"\n", &file, &[], &IndexMap::new(), false)?;
+    assert_eq!(result.matches("float value;").count(), 1);
+    std::fs::write(dir.path().join("value.hlsl"), "//#include \"value.hlsl\"\n")?;
+    let error = build_script("--#include \"child.lua\"\n", &file, &[], &IndexMap::new(), false).unwrap_err();
+    assert!(error.to_string().contains("circular include detected"), "{error}");
     Ok(())
 }
 
@@ -1381,15 +1364,17 @@ fn preserves_ordinary_comments_and_strings_with_directives() -> anyhow::Result<(
 #[test]
 fn reports_original_positions_in_shader_blocks() -> anyhow::Result<()> {
     for kind in ["pixelshader", "computeshader"] {
-        let src = format!("local value = 1\n--[[{kind}@main:\n  --#define VALUE ${{MISSING}}\n]]\n");
+        let src = format!(
+            "local value = 1\n--#verbatim\n--[[{kind}@main:\n  //#define VALUE ${{MISSING}}\n]]\n--#endverbatim\n"
+        );
         let error = build_script(&src, Path::new("test.lua"), &[], &IndexMap::new(), false).unwrap_err();
-        assert_eq!(error.to_string(), "test.lua:3:19: variable 'MISSING' not found");
+        assert_eq!(error.to_string(), "test.lua:4:19: variable 'MISSING' not found");
 
-        let src = format!("local value = 1\n--[[{kind}@main:\n--#if 1\nvalue\n]]\n");
+        let src = format!("local value = 1\n--#verbatim\n--[[{kind}@main:\n//#if 1\nvalue\n]]\n--#endverbatim\n");
         let error = build_script(&src, Path::new("test.lua"), &[], &IndexMap::new(), false).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "test.lua:3:3: unclosed conditional directive at end of file"
+            "test.lua:4:3: unclosed conditional directive at end of file"
         );
     }
 
@@ -1905,6 +1890,7 @@ fn pairs_includes_with_the_next_statement_without_blank_lines() -> anyhow::Resul
         assert!(result.contains("return 'included'"), "{gap:?}: {result}");
         assert!(!result.contains("(function()"), "{gap:?}: {result}");
     }
+
     Ok(())
 }
 
@@ -2019,8 +2005,8 @@ fn reject_include_depth() -> anyhow::Result<()> {
         let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
         let err = match suffix {
             "lua" => build_script(&src, &file, &[], &IndexMap::new(), false).map(|_| ()),
-            "hlsl" => astra::build::shader::build(&src, &file, &target, &[], &IndexMap::new()).map(|_| ()),
-            _ => astra::build::ini::build(&src, &target, &[], &IndexMap::new()).map(|_| ()),
+            "hlsl" => build_hlsl(&src, &file, &target, &[], &IndexMap::new()).map(|_| ()),
+            _ => astra::build::config::ini::build(&src, &target, &[], &IndexMap::new()).map(|_| ()),
         }
         .unwrap_err();
 
@@ -2109,11 +2095,9 @@ fn normalizes_only_complete_assignments_before_real_property_comments() -> anyho
         "--[[\nlocal x = 1 ]] --value@x:Label,_",
         "local x = 1 --[[ annotation ]] --value@x:Label,_",
     ] {
-        let err = build_script(src, Path::new("test.anm2"), &[], &vars, false).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("must follow a single variable declaration or assignment"),
-            "{src}: {err}"
+        assert_eq!(
+            build_script(src, Path::new("test.anm2"), &[], &vars, false)?,
+            format!("{src}\n")
         );
     }
 
@@ -2122,19 +2106,20 @@ fn normalizes_only_complete_assignments_before_real_property_comments() -> anyho
         "obj['value'] = 1; --value@_:Label,_",
         "obj[index()].value = 1; --value@_:Label,_",
     ] {
-        let err = build_script(src, Path::new("test.anm2"), &[], &vars, false).unwrap_err();
-        assert!(err.to_string().contains("table field assignment"), "{src}: {err}");
+        assert_eq!(
+            build_script(src, Path::new("test.anm2"), &[], &vars, false)?,
+            format!("{src}\n")
+        );
     }
 
-    let err = build_script(
+    let output = build_script(
         "local x = 1 --trak@x:Label,0,10,1",
         Path::new("test.anm2"),
         &[],
         &vars,
         false,
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("unsupported property 'trak'"));
+    )?;
+    assert_eq!(output, "local x = 1 --trak@x:Label,0,10,1\n");
     Ok(())
 }
 
@@ -2213,6 +2198,7 @@ fn validates_only_calls_resolved_to_shader_apis() -> anyhow::Result<()> {
             assert!(err.to_string().contains("first argument"), "{argument}: {err}");
         }
     }
+
     Ok(())
 }
 
@@ -2221,7 +2207,7 @@ fn rejects_non_finite_tra_parameter_defaults() -> anyhow::Result<()> {
     for (suffix, prefix) in [(".tra", "--param:"), (".tra2", "--param:Label,")] {
         let target: BuildTarget = serde_json::from_value(serde_json::json!({"path": format!("test{suffix}")}))?;
         for value in ["NaN", "inf", "-inf", "1e999"] {
-            let err = script::build(
+            let err = exedit::build(
                 &format!("{prefix}{value}"),
                 &target,
                 &[],
@@ -2230,19 +2216,33 @@ fn rejects_non_finite_tra_parameter_defaults() -> anyhow::Result<()> {
                 suffix,
             )
             .unwrap_err();
-            assert!(err.to_string().contains("must be a number"), "{suffix}: {value}: {err}");
+            let expected = if suffix == ".tra" {
+                "must be an integer"
+            } else {
+                "must be a number"
+            };
+            assert!(err.to_string().contains(expected), "{suffix}: {value}: {err}");
         }
-        for value in ["0", "-1.5", "1e3"] {
-            script::build(
+
+        for value in ["0", "-2147483648", "2147483647", "-1.5", "1.0", "1e3"] {
+            let result = exedit::build(
                 &format!("{prefix}{value}"),
                 &target,
                 &[],
                 &IndexMap::new(),
                 false,
                 suffix,
-            )?;
+            );
+
+            if suffix == ".tra" && matches!(value, "-1.5" | "1.0" | "1e3") {
+                let err = result.unwrap_err();
+                assert!(err.to_string().contains("must be an integer"), "{value}: {err}");
+            } else {
+                result?;
+            }
         }
     }
+
     Ok(())
 }
 
@@ -2322,19 +2322,24 @@ fn errors_on_undefined_variable_in_script_ini_and_shader() -> anyhow::Result<()>
         ("x = \"${UNDEFINED}\"", "1:6"),
         ("\n  x = ${UNDEFINED} -- note", "2:7"),
         ("text = \"あ${UNDEFINED}\"", "1:10"),
-        ("-- ${UNDEFINED}", "1:4"),
+        ("--track@x:Label,0,${UNDEFINED},0", "1:19"),
         ("--#define VALUE ${UNDEFINED}", "1:17"),
         ("--[[#define VALUE\n    ${UNDEFINED}\n]]", "2:5"),
         ("--#include \"${UNDEFINED}.lua\"", "1:13"),
         ("--#include <${UNDEFINED}.lua>", "1:13"),
         (r#"--#include "dir\\${UNDEFINED}.lua""#, "1:18"),
     ] {
-        let err = script::build(src, &target, &[], &IndexMap::new(), false, ".anm2").unwrap_err();
+        let err = exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2").unwrap_err();
         assert_eq!(
             err.to_string(),
             format!("test.anm2:{pos}: variable 'UNDEFINED' not found"),
             "{src}"
         );
+    }
+
+    for src in ["-- ${UNDEFINED}\n", "--[[${UNDEFINED}]]\n"] {
+        let output = exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
+        assert_eq!(output.script, src, "{src}");
     }
 
     let ini_target: BuildTarget = serde_json::from_value(serde_json::json!({
@@ -2348,12 +2353,17 @@ fn errors_on_undefined_variable_in_script_ini_and_shader() -> anyhow::Result<()>
         (";#include \"${MISSING}.ini\"", "1:12"),
         (r#";#include "dir\\${MISSING}.ini""#, "1:17"),
     ] {
-        let err = astra::build::ini::build(src, &ini_target, &[], &IndexMap::new()).unwrap_err();
+        let err = astra::build::config::ini::build(src, &ini_target, &[], &IndexMap::new()).unwrap_err();
         assert_eq!(
             err.to_string(),
             format!("test.ini:{pos}: variable 'MISSING' not found"),
             "{src}"
         );
+    }
+
+    for src in ["; ${MISSING}\n", "[section] ; ${MISSING}\n"] {
+        let output = astra::build::config::ini::build(src, &ini_target, &[], &IndexMap::new())?;
+        assert_eq!(output.text(), src, "{src}");
     }
 
     let shader_target: BuildTarget = serde_json::from_value(serde_json::json!({
@@ -2367,13 +2377,17 @@ fn errors_on_undefined_variable_in_script_ini_and_shader() -> anyhow::Result<()>
         ("//#include \"${NOT_DEFINED}.hlsl\"", "1:13"),
         (r#"//#include "dir\\${NOT_DEFINED}.hlsl""#, "1:18"),
     ] {
-        let err = astra::build::shader::build(src, Path::new("test.hlsl"), &shader_target, &[], &IndexMap::new())
-            .unwrap_err();
+        let err = build_hlsl(src, Path::new("test.hlsl"), &shader_target, &[], &IndexMap::new()).unwrap_err();
         assert_eq!(
             err.to_string(),
             format!("test.hlsl:{pos}: variable 'NOT_DEFINED' not found"),
             "{src}"
         );
+    }
+
+    for src in ["// ${NOT_DEFINED}\n", "/* ${NOT_DEFINED} */\n"] {
+        let output = build_hlsl(src, Path::new("test.hlsl"), &shader_target, &[], &IndexMap::new())?;
+        assert_eq!(output.text(), src, "{src}");
     }
 
     Ok(())
@@ -2390,8 +2404,8 @@ fn reports_byte_offset_errors_as_src_positions() -> anyhow::Result<()> {
         ("--#if \"あ\" == ${MISSING}\n--#endif", "1:14"),
         ("--#ifdef ${MISSING}\n--#endif", "1:10"),
         (
-            "\n--[[pixelshader@main:\n// あ${MISSING}\nfloat4 main() : SV_Target { return 0; }\n]]",
-            "3:5",
+            "\n--[[pixelshader@main:\n/* あ */ float x = ${MISSING};\nfloat4 main() : SV_Target { return 0; }\n]]",
+            "3:19",
         ),
     ] {
         let err = build_script(src, Path::new("test.anm2"), &[], &vars, false).unwrap_err();
@@ -2407,12 +2421,20 @@ fn reports_byte_offset_errors_as_src_positions() -> anyhow::Result<()> {
     assert_eq!(err.to_string(), "test.anm2:1:15: unclosed string");
     let vars = IndexMap::new();
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.ini" }))?;
-    let err = astra::build::ini::build("\n項目=${MISSING}", &target, &[], &vars).unwrap_err();
+    let err = astra::build::config::ini::build("\n項目=${MISSING}", &target, &[], &vars).unwrap_err();
     assert_eq!(err.to_string(), "test.ini:2:4: variable 'MISSING' not found");
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let err =
-        astra::build::shader::build("\n// あ${MISSING}", Path::new("test.hlsl"), &target, &[], &vars).unwrap_err();
-    assert_eq!(err.to_string(), "test.hlsl:2:5: variable 'MISSING' not found");
+    let err = build_hlsl("\n\"あ${MISSING}\"", Path::new("test.hlsl"), &target, &[], &vars).unwrap_err();
+    assert_eq!(err.to_string(), "test.hlsl:2:3: variable 'MISSING' not found");
+    let err = build_hlsl(
+        "\n/* あ */ float x = ${MISSING};",
+        Path::new("test.hlsl"),
+        &target,
+        &[],
+        &vars,
+    )
+    .unwrap_err();
+    assert_eq!(err.to_string(), "test.hlsl:2:19: variable 'MISSING' not found");
     Ok(())
 }
 
@@ -2433,8 +2455,8 @@ fn reports_include_cycle_positions() -> anyhow::Result<()> {
         let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": root }))?;
         let err = match name.rsplit('.').next().unwrap() {
             "lua" => build_script(directive, &root, &[], &vars, false).unwrap_err(),
-            "ini" => astra::build::ini::build(directive, &target, &[], &vars).unwrap_err(),
-            _ => astra::build::shader::build(directive, &root, &target, &[], &vars).unwrap_err(),
+            "ini" => astra::build::config::ini::build(directive, &target, &[], &vars).unwrap_err(),
+            _ => build_hlsl(directive, &root, &target, &[], &vars).unwrap_err(),
         };
         assert_eq!(
             err.to_string(),
@@ -2463,7 +2485,7 @@ local d = ${X}
 "#;
     let expected = r#"local a = "${{MISSING}}"
 local b = [=[${MISSING}]=]
--- ${{MISSING}} 42
+-- $${{MISSING}} ${X}
 local c = "${{MISSING}}"
 local d = 42
 "#;
@@ -2480,14 +2502,19 @@ f=$${}
 g=$$${X}
 "#;
     assert_eq!(
-        astra::build::ini::build(src, &target, &[], &vars)?,
+        astra::build::config::ini::build(src, &target, &[], &vars)?
+            .text()
+            .into_owned(),
         "a=${{MISSING}}\nb=${MISSING}\nc=42\nd=\\42\ne=$$\nf=${}\ng=$${X}\n"
     );
 
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.hlsl" }))?;
-    let src = "// $${{MISSING}} $${MISSING}\nfloat x = ${X};\n";
-    let output = astra::build::shader::build(src, Path::new("test.hlsl"), &target, &[], &vars)?;
-    assert_eq!(output.text, "// ${{MISSING}} ${MISSING}\nfloat x = 42;\n");
+    let src = "// $${{MISSING}} $${MISSING}\nstring s = \"$${{MISSING}} $${MISSING}\";\nfloat x = ${X};\n";
+    let output = build_hlsl(src, Path::new("test.hlsl"), &target, &[], &vars)?;
+    assert_eq!(
+        output.text(),
+        "// $${{MISSING}} $${MISSING}\nstring s = \"${{MISSING}} ${MISSING}\";\nfloat x = 42;\n"
+    );
     Ok(())
 }
 
@@ -2513,20 +2540,32 @@ fn errors_on_invalid_or_unclosed_placeholders_in_script_ini_and_shader() -> anyh
     }))?;
 
     for (src, expected) in [
-        ("--${{}}", "empty variable name in placeholder"),
-        ("--${}", "empty variable name in placeholder"),
-        ("-- ${{   }}", "empty variable name in placeholder"),
-        ("--${{ 123 }}", "invalid variable name '123' in placeholder"),
-        ("--${{ NAME", "unclosed placeholder"),
-        ("--${ NAME", "unclosed placeholder"),
         ("x = \"${{}}\"", "empty variable name in placeholder"),
         ("x = ${{}}", "empty variable name in placeholder"),
+        ("x = ${}", "empty variable name in placeholder"),
+        ("x = \"${{   }}\"", "empty variable name in placeholder"),
+        ("x = [[${{ 123 }}]]", "invalid variable name '123' in placeholder"),
+        ("x = \"${{ NAME\"", "unclosed placeholder"),
+        ("x = \"${ NAME\"", "unclosed placeholder"),
+        ("--track@x:Label,0,${{}},0", "empty variable name in placeholder"),
     ] {
-        let err = script::build(src, &target, &[], &IndexMap::new(), false, ".anm2").unwrap_err();
+        let err = exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2").unwrap_err();
         assert!(
             err.to_string().contains(expected),
             "expected '{expected}' for '{src}', got: {err}"
         );
+    }
+
+    for src in [
+        "--${{}}",
+        "--${}",
+        "-- ${{   }}",
+        "--${{ 123 }}",
+        "--${{ NAME",
+        "--${ NAME",
+    ] {
+        let output = exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
+        assert_eq!(output.script, format!("{src}\n"), "{src}");
     }
 
     let ini_target: BuildTarget = serde_json::from_value(serde_json::json!({
@@ -2538,7 +2577,7 @@ fn errors_on_invalid_or_unclosed_placeholders_in_script_ini_and_shader() -> anyh
         ("val = ${{ 123 }}", "invalid variable name '123' in placeholder"),
         ("val = ${{ NAME", "unclosed placeholder"),
     ] {
-        let err = astra::build::ini::build(src, &ini_target, &[], &IndexMap::new()).unwrap_err();
+        let err = astra::build::config::ini::build(src, &ini_target, &[], &IndexMap::new()).unwrap_err();
         assert!(
             err.to_string().contains(expected),
             "expected '{expected}' for '{src}', got: {err}"
@@ -2554,8 +2593,7 @@ fn errors_on_invalid_or_unclosed_placeholders_in_script_ini_and_shader() -> anyh
         ("float x = ${{ 123 }};", "invalid variable name '123' in placeholder"),
         ("float x = ${{ NAME;", "unclosed placeholder"),
     ] {
-        let err = astra::build::shader::build(src, Path::new("test.hlsl"), &shader_target, &[], &IndexMap::new())
-            .unwrap_err();
+        let err = build_hlsl(src, Path::new("test.hlsl"), &shader_target, &[], &IndexMap::new()).unwrap_err();
         assert!(
             err.to_string().contains(expected),
             "expected '{expected}' for '{src}', got: {err}"
@@ -2569,12 +2607,12 @@ fn errors_on_invalid_or_unclosed_placeholders_in_script_ini_and_shader() -> anyh
 fn warns_on_non_float_types_without_warning_on_padding() -> anyhow::Result<()> {
     let (bytes, _guard) = capture_warnings();
     build_shader(
-        "--#define TYPE float4\ncbuffer Params {\n float a;\n ${TYPE} b;\n int c;\n float2x2 m;\n};\n",
+        "//#define TYPE float4\ncbuffer Params {\n float a;\n ${TYPE} b;\n int c;\n float2x2 m;\n};\n",
         &[],
     )?;
     let logs = String::from_utf8(bytes.lock().unwrap().clone())?;
     assert!(
-        logs.contains("test.anm2:6:2: cbuffer 'Params' uses non-float"),
+        logs.contains("test.anm2:7:2: cbuffer 'Params' uses non-float"),
         "{logs}"
     );
     assert!(!logs.contains("padding(number)"), "{logs}");
@@ -2589,14 +2627,14 @@ fn reports_original_positions_for_included_cbuffers_and_pragmas() -> anyhow::Res
     let include = dir.path().join("members.hlsl");
     std::fs::write(&include, " float4 b;\n bool c;\n")?;
     let output = build_shader(
-        "cbuffer Included { float a;\n--#include <members.hlsl>\n};",
+        "cbuffer Included { float a;\n//#include <members.hlsl>\n};",
         &[std::fs::canonicalize(dir.path())?],
     )?;
     assert!(output.contains(" bool c;"), "{output}");
     let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
     let canonical = std::fs::canonicalize(include)?;
     assert!(
-        warnings.contains("test.anm2:2:1: cbuffer 'Included' layout"),
+        warnings.contains("test.anm2:3:1: cbuffer 'Included' layout"),
         "{warnings}"
     );
     assert!(
@@ -2607,12 +2645,12 @@ fn reports_original_positions_for_included_cbuffers_and_pragmas() -> anyhow::Res
 
     bytes.lock().unwrap().clear();
     std::fs::write(dir.path().join("packing.hlsl"), "#pragma pack_matrix(row_major)\n")?;
-    let src = "#pragma pack_matrix(column_major)\n--#include <packing.hlsl>\ncbuffer IncludedPacking { float2x3 a; };";
+    let src = "#pragma pack_matrix(column_major)\n//#include <packing.hlsl>\ncbuffer IncludedPacking { float2x3 a; };";
     let output = build_shader(src, &[std::fs::canonicalize(dir.path())?])?;
     assert!(output.contains("#pragma pack_matrix(row_major)"), "{output}");
     let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
     assert!(
-        warnings.contains("test.anm2:4:1: cbuffer 'IncludedPacking' layout"),
+        warnings.contains("test.anm2:5:1: cbuffer 'IncludedPacking' layout"),
         "{warnings}"
     );
     assert_eq!(warnings.lines().count(), 1, "{warnings}");
@@ -2635,7 +2673,7 @@ fn reports_original_positions_through_nested_hlsl_includes() -> anyhow::Result<(
     )?;
     std::fs::write(dir.path().join("sub/c.hlsl"), " float2x2 m;\n")?;
 
-    let output = build_shader("    --#include <a.hlsl>", &[std::fs::canonicalize(dir.path())?])?;
+    let output = build_shader("    //#include <a.hlsl>", &[std::fs::canonicalize(dir.path())?])?;
     assert!(!output.contains("ignored"), "{output}");
     assert!(output.contains("float4 b;"), "{output}");
     let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
@@ -2665,7 +2703,7 @@ fn reports_placeholder_positions_for_multiline_hlsl_values() -> anyhow::Result<(
     let file = dir.path().join("values.hlsl");
     std::fs::write(&file, "cbuffer Values { float a; ${MEMBERS} float4 tail; };\n")?;
     let output = build_script(
-        "--[[pixelshader@main:\n--#include <values.hlsl>\nfloat4 main() : SV_Target { return 0; }\n]]\n",
+        "--[[pixelshader@main:\n//#include <values.hlsl>\nfloat4 main() : SV_Target { return 0; }\n]]\n",
         Path::new("test.anm2"),
         &[std::fs::canonicalize(dir.path())?],
         &IndexMap::from([("MEMBERS".to_owned(), "float4 b;\nbool c;".to_owned())]),
@@ -2730,8 +2768,9 @@ fn accept_directive_spaces() -> anyhow::Result<()> {
             "{prefix}: {output}"
         );
 
+        let shader_prefix = prefix.replacen("--", "//", 1);
         let shader = build_shader(
-            &format!("{prefix}define VALUE 7\n{prefix}replace VALUE\nfloat value = 0;\n"),
+            &format!("{shader_prefix}define VALUE 7\n{shader_prefix}replace VALUE\nfloat value = 0;\n"),
             &[],
         )?;
         assert!(shader.contains("float value = 7;"), "{prefix}: {shader}");
@@ -2753,32 +2792,27 @@ fn warns_on_spaces_before_properties() -> anyhow::Result<()> {
         (".tra", "param:0"),
         (".tra2", "param:Value,0"),
     ] {
-        let baseline = script::build("--ordinary comment\n", &target, &[], &IndexMap::new(), false, suffix)?;
+        let baseline = exedit::build("--ordinary comment\n", &target, &[], &IndexMap::new(), false, suffix)?;
         for ws in [" ", "  ", "\t", "\x0b", "\x0c", "\u{a0}", "\u{2003}", "\u{3000}"] {
-            for prefix in ["", "local value = 0 "] {
-                bytes.lock().unwrap().clear();
-                let src = format!("{prefix}--{ws}{property}\n");
-                let output = script::build(&src, &target, &[], &IndexMap::new(), false, suffix)?;
-                assert_eq!(output.script, src);
-                assert_eq!(output.l10n, baseline.l10n);
+            bytes.lock().unwrap().clear();
+            let src = format!("--{ws}{property}\n");
+            let output = exedit::build(&src, &target, &[], &IndexMap::new(), false, suffix)?;
+            assert_eq!(output.script, src);
+            assert_eq!(output.l10n, baseline.l10n);
 
-                let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
-                assert!(
-                    warnings.contains(&format!(
-                        "test.lua:1:{}: whitespace between '--' and property",
-                        prefix.len() + 1
-                    )),
-                    "{warnings}"
-                );
-                assert_eq!(warnings.lines().count(), 1, "{warnings}");
-            }
+            let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+            assert!(
+                warnings.contains("test.lua:1:1: whitespace between '--' and property"),
+                "{warnings}"
+            );
+            assert_eq!(warnings.lines().count(), 1, "{warnings}");
         }
     }
 
     bytes.lock().unwrap().clear();
     let src = "-- note: ordinary comment\n--[[ -- track@ignored:Value,0,100,0,1 ]]\n\
                --#define VALUE 0\n--track@value:Value,0,100,${VALUE},1\n";
-    let output = script::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
+    let output = exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
     assert!(output.script.contains("--track@value:Value,0,100,0,1"));
     assert!(bytes.lock().unwrap().is_empty());
     Ok(())
@@ -2789,21 +2823,27 @@ fn warns_on_indented_properties() -> anyhow::Result<()> {
     let (bytes, _guard) = capture_warnings();
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.lua" }))?;
 
-    for suffix in [".anm2", ".anm", ".tra", ".tra2"] {
-        let baseline = script::build("--ordinary comment\n", &target, &[], &IndexMap::new(), false, suffix)?;
+    for (suffix, property) in [
+        (".anm2", "track0:Value,0,100,0,1"),
+        (".anm", "track0:Value,0,100,0,1"),
+        (".tra", "param:0"),
+        (".tra2", "param:Value,0"),
+    ] {
+        let kind = property.split_once(':').unwrap().0;
+        let baseline = exedit::build("--ordinary comment\n", &target, &[], &IndexMap::new(), false, suffix)?;
         for indent in [" ", "\t", "\x0b", "\x0c"] {
             for prefix in ["", "\n", "return 0\n"] {
                 for is_bundled in [false, true] {
                     bytes.lock().unwrap().clear();
-                    let src = format!("{prefix}{indent}--track0:Value,0,100,0,1\n");
-                    let output = script::build(&src, &target, &[], &IndexMap::new(), is_bundled, suffix)?;
-                    assert!(output.script.contains(&format!("{indent}--track0:")));
+                    let src = format!("{prefix}{indent}--{property}\n");
+                    let output = exedit::build(&src, &target, &[], &IndexMap::new(), is_bundled, suffix)?;
+                    assert!(output.script.contains(&format!("{indent}--{property}")));
                     assert_eq!(output.l10n, baseline.l10n);
 
                     let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
                     assert!(
                         warnings.contains(&format!(
-                            "test.lua:{}:{}: whitespace before '--' for property 'track0'",
+                            "test.lua:{}:{}: whitespace before '--' for property '{kind}'",
                             prefix.lines().count() + 1,
                             indent.chars().count() + 1
                         )),
@@ -2814,13 +2854,14 @@ fn warns_on_indented_properties() -> anyhow::Result<()> {
             }
         }
     }
+
     Ok(())
 }
 
 #[test]
 fn validates_group_and_separator_ids() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.anm2" }))?;
-    let build = |src: &str| script::build(src, &target, &[], &IndexMap::new(), false, ".anm2");
+    let build = |src: &str| exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2");
 
     for kind in ["group", "separator"] {
         for rest in ["", ",true", ",false"] {
@@ -2832,7 +2873,7 @@ fn validates_group_and_separator_ids() -> anyhow::Result<()> {
 
         for id in ["", "local", "a.b"] {
             let err = build(&format!("--{kind}@{id}:Label\n")).unwrap_err();
-            assert!(err.to_string().contains("must be a valid Lua identifier"), "{err}");
+            assert!(err.to_string().contains("must be a Lua identifier"), "{err}");
         }
 
         let err = build(&format!("--{kind}@1section:Label\n")).unwrap_err();
@@ -2855,5 +2896,518 @@ fn validates_group_and_separator_ids() -> anyhow::Result<()> {
 
     let err = build("--group@shared:First\n--separator@shared:Second\n").unwrap_err();
     assert!(err.to_string().contains("duplicate variable name 'shared'"), "{err}");
+    Ok(())
+}
+
+#[test]
+fn reports_shader_positions_after_lua_include_and_expansion() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let child = dir.path().join("child.lua");
+    std::fs::write(
+        &child,
+        "--#define TEXT a_longer_lua_comment\n-- ${TEXT}\n--#verbatim\n--[[pixelshader@${NAME}:\n//#define VALUE ${MISSING}\nfloat4 main() : SV_Target { return 0; }\n]]\n--#endverbatim\n",
+    )?;
+    let vars = IndexMap::from([("NAME".to_owned(), "main".to_owned())]);
+    let error = build_script(
+        "--#include \"child.lua\"\n",
+        &dir.path().join("main.lua"),
+        &[],
+        &vars,
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("{}:5:17: variable 'MISSING' not found", child.display())
+    );
+    Ok(())
+}
+
+fn build_hlsl(
+    src: &str,
+    file: &std::path::Path,
+    target: &astra::config::BuildTarget,
+    dirs: &[std::path::PathBuf],
+    vars: &indexmap::IndexMap<String, String>,
+) -> anyhow::Result<astra::build::Map> {
+    let map = astra::build::Map::new(
+        src,
+        astra::build::Pos {
+            file: file.into(),
+            line: 1,
+            col: 1,
+        },
+    );
+    astra::build::shader::hlsl::build(&map, target, dirs, vars)
+}
+
+#[test]
+fn warns_on_incomplete_shader_headers() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    for (src, message) in [
+        (
+            "--[[pixleshader@main:ignored]]",
+            Some("unknown shader kind 'pixleshader'"),
+        ),
+        (
+            "--[[PixelShader@main:ignored]]",
+            Some("unknown shader kind 'PixelShader'"),
+        ),
+        ("--[[pixelshader@main]]", Some("missing ':' after 'pixelshader' name")),
+        (
+            "--[[computeshader@main]]",
+            Some("missing ':' after 'computeshader' name"),
+        ),
+        ("--[[ordinary@name:comment]]", None),
+        ("--[[ordinary@name]]", None),
+    ] {
+        bytes.lock().unwrap().clear();
+        assert_eq!(
+            build_script(src, Path::new("test.anm2"), &[], &IndexMap::new(), false)?,
+            format!("{src}\n")
+        );
+        let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+        if let Some(message) = message {
+            assert!(warnings.contains(&format!("test.anm2:1:1: {message}")), "{warnings}");
+            assert_eq!(warnings.lines().count(), 1, "{warnings}");
+        } else {
+            assert!(warnings.is_empty(), "{warnings}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn reports_call_positions_after_shader_processing() -> anyhow::Result<()> {
+    let src = "--#verbatim\n--[[pixelshader@${NAME}:\nfloat4 expanded_name() : SV_Target { return ${VALUE}; }\n]]\n--#endverbatim\nobj.pixelshader(\"missing\")\n";
+    let vars = IndexMap::from([
+        ("NAME".to_owned(), "expanded_name".to_owned()),
+        ("VALUE".to_owned(), "123456".to_owned()),
+    ]);
+    let error = build_script(src, Path::new("input.anm2"), &[], &vars, false).unwrap_err();
+    assert_eq!(error.to_string(), "input.anm2:6:1: undefined pixelshader 'missing'");
+    Ok(())
+}
+
+#[test]
+fn property_kinds_must_be_lowercase() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    for kind in ["Track", "trAck", "TRACK"] {
+        for prefix in ["", "local value = 1 "] {
+            bytes.lock().unwrap().clear();
+            let src = format!("{prefix}--{kind}@value:Label,0,10,1,1\n");
+            assert_eq!(
+                build_script(&src, Path::new("input.anm2"), &[], &IndexMap::new(), false)?,
+                src
+            );
+            let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+            assert!(warnings.contains("property kind must be lowercase"), "{warnings}");
+            assert_eq!(warnings.lines().count(), 1, "{warnings}");
+        }
+    }
+    bytes.lock().unwrap().clear();
+    let output = build_script(
+        "local value = 1 --track@value:Label,0,10,_,1\n",
+        Path::new("input.anm2"),
+        &[],
+        &IndexMap::new(),
+        false,
+    )?;
+    assert_eq!(output, "--track@value:Label,0,10,1,1\n");
+    assert!(bytes.lock().unwrap().is_empty());
+    Ok(())
+}
+
+#[test]
+fn properties_require_local_declarations() -> anyhow::Result<()> {
+    for src in [
+        "value = 1 --value@_:Label,_",
+        "locality = 1 --value@_:Label,_",
+        "const value = 1 --value@_:Label,_",
+        "local value = 0\nvalue = 1 --value@_:Label,_",
+        "obj.value = 1 --value@_:Label,_",
+    ] {
+        let (bytes, _guard) = capture_warnings();
+        let output = build_script(src, Path::new("input.anm2"), &[], &IndexMap::new(), false)?;
+        assert_eq!(output, format!("{src}\n"));
+        let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+        assert!(
+            warnings.contains("must follow a single local variable declaration"),
+            "{warnings}"
+        );
+    }
+    assert_eq!(
+        build_script(
+            "local --[[note]] value = 1 --value@_:Label,_",
+            Path::new("input.anm2"),
+            &[],
+            &IndexMap::new(),
+            false
+        )?,
+        "--value@value:Label,1\n"
+    );
+    assert_eq!(
+        build_script("value = 1\n", Path::new("input.anm2"), &[], &IndexMap::new(), false)?,
+        "value = 1\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn warns_on_unsupported_attached_properties() -> anyhow::Result<()> {
+    let (bytes, _guard) = capture_warnings();
+    for kind in ["trak", "unknown"] {
+        bytes.lock().unwrap().clear();
+        let src = format!("local value = 1 --{kind}@value:Label,0,10,1\n");
+        assert_eq!(
+            build_script(&src, Path::new("input.anm2"), &[], &IndexMap::new(), false)?,
+            src
+        );
+        let warnings = String::from_utf8(bytes.lock().unwrap().clone())?;
+        assert!(
+            warnings.contains(&format!("input.anm2:1:17: unsupported property '{kind}'")),
+            "{warnings}"
+        );
+        assert_eq!(warnings.lines().count(), 1, "{warnings}");
+    }
+    Ok(())
+}
+
+#[test]
+fn normalizes_select_equals_spacing() -> anyhow::Result<()> {
+    for src in [
+        "local value = 0 --select@_: Label = 0 , first = 0 , second = 1",
+        "local value = 0 --select@_: Label = _ , first = 0 , second = 1",
+        "local value --select@_: Label = 0 , first = 0 , second = 1",
+    ] {
+        assert_eq!(
+            build_script(src, Path::new("input.anm2"), &[], &IndexMap::new(), false)?,
+            "--select@value:Label=0,first=0,second=1\n"
+        );
+    }
+    let error = build_script(
+        "local value --select@_: Label = _ , first = 0",
+        Path::new("input.anm2"),
+        &[],
+        &IndexMap::new(),
+        false,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("requires an initializer"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn rejects_comments_for_other_file_formats() {
+    for (suffix, comment) in [
+        (".anm2", "speed:${MISSING},0"),
+        (".anm2", "twopoint:${MISSING}"),
+        (".tra2", "track0:${MISSING},0,100,50,1"),
+        (".tra2", "group:${MISSING}"),
+        (".scn", "track2:${MISSING},0,100,50,1"),
+    ] {
+        let target: BuildTarget = serde_json::from_value(serde_json::json!({
+            "path": format!("input{suffix}"),
+        }))
+        .unwrap();
+        let error = exedit::build(
+            &format!("local value = 0\n--{comment}\n"),
+            &target,
+            &[],
+            &IndexMap::new(),
+            false,
+            suffix,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("input{suffix}:2:1: failed to classify comment")
+        );
+        assert!(
+            error
+                .root_cause()
+                .to_string()
+                .contains(&format!("is not supported in '{suffix}'")),
+            "{error:#}"
+        );
+    }
+}
+
+#[test]
+fn respects_property_and_item_name_scopes() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "input.lua" }))?;
+    let vars = IndexMap::new();
+
+    for (suffix, src, is_valid) in [
+        (".anm2", "--select@a:First=0,A=0\n--select@b:Second=1,A=1\n", true),
+        (".anm2", "--select@a:Choice=0,A=0,A=1\n", false),
+        (".anm2", "--select@a:Choice=0,=0,=1\n", false),
+        (".anm2", "--select@a:Choice=0,A=0,B=0\n", false),
+        (".anm2", "--select@a:=0,A=0\n--select@b:=1,B=1\n", false),
+        (".tra2", "--param:Mode/select/A=0/A=1,0\n--param:Mode/check,1\n", true),
+        (".tra2", "--param:/select/=0/=1,0\n--param:/check,1\n", true),
+        (".tra2", "--param:Mode/select/A=0/B=0,0\n", false),
+    ] {
+        let output = exedit::build(src, &target, &[], &vars, false, suffix);
+        assert_eq!(output.is_ok(), is_valid, "{suffix}: {src}: {output:?}");
+    }
+
+    let tra = exedit::build(
+        "--param:Group::Name,0\n--param:Group::Name/check,1\n--param:Group::Name/select/Group::A=0/Group::A=1,0\n",
+        &target,
+        &[],
+        &vars,
+        false,
+        ".tra2",
+    )?;
+    assert!(tra.l10n.contains("\nGroup::Name=\n"), "{}", tra.l10n);
+    assert!(tra.l10n.contains("\nGroup::A=\n"), "{}", tra.l10n);
+    assert!(!tra.l10n.contains("\nName=\n"), "{}", tra.l10n);
+
+    let effect = exedit::build(
+        "--select@mode:Choice=0,Group::A=0,Other::A=1,dialog::A=2\n",
+        &target,
+        &[],
+        &vars,
+        false,
+        ".anm2",
+    )?;
+    for item in ["Group::A", "Other::A", "dialog::A"] {
+        assert!(effect.l10n.contains(&format!("\n{item}=\n")), "{}", effect.l10n);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn expands_comments_for_the_file_format() {
+    let vars = IndexMap::from([("VALUE".to_owned(), "extra".to_owned())]);
+
+    for suffix in [
+        ".anm2", ".obj2", ".cam2", ".scn2", ".tra2", ".ANM2", ".anm", ".scn", ".tra",
+    ] {
+        let target: BuildTarget = serde_json::from_value(serde_json::json!({
+            "path": format!("input{suffix}"),
+        }))
+        .unwrap();
+
+        for (kind, should_expand) in [
+            ("filter", suffix.eq_ignore_ascii_case(".anm2")),
+            ("timecontrol", suffix.eq_ignore_ascii_case(".tra2")),
+            ("hidemenu", suffix.ends_with('2')),
+            ("information", suffix.ends_with('2')),
+            ("ordinary", false),
+        ] {
+            let src = format!("--{kind}:${{VALUE}}\n");
+            let output = exedit::build(&src, &target, &[], &vars, false, suffix);
+
+            if should_expand {
+                assert_eq!(output.unwrap().script, format!("--{kind}:extra\n"), "{suffix}: {kind}");
+            } else if kind == "ordinary" {
+                assert_eq!(output.unwrap().script, src);
+            } else {
+                let error = output.unwrap_err();
+                assert!(error.to_string().starts_with(&format!("input{suffix}:1:1:")), "{error}");
+                assert!(
+                    error
+                        .root_cause()
+                        .to_string()
+                        .contains(&format!("is not supported in '{suffix}'")),
+                    "{error:#}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn skipped_definitions_do_not_register_or_collect_metadata() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "input.anm2" }))?;
+    for (skipped, applied, normalized, label) in [
+        (
+            " --track0:Ignored,0,10,0",
+            "--track0:Actual,0,10,0",
+            "--track0:Actual,0,10,0",
+            "Actual",
+        ),
+        (
+            "obj.value = 0 --value@value:Actual,_",
+            "--value@value:Actual, 0",
+            "--value@value:Actual,0",
+            "Actual",
+        ),
+        (
+            "local value = 0 --data@Actual:4",
+            "--value@value:Actual, 0",
+            "--value@value:Actual,0",
+            "Actual",
+        ),
+        (
+            "local value = 0 --group@value:Actual",
+            "--group@value:Actual",
+            "--group@value:Actual",
+            "Actual",
+        ),
+        (
+            "local value = 0 --hide@target:condition==0",
+            "--value@value:Actual, 0",
+            "--value@value:Actual,0",
+            "Actual",
+        ),
+        (
+            "aaa = 0 --string@_:Ignored,${{AA}}",
+            "--value@value:Actual, 0",
+            "--value@value:Actual,0",
+            "Actual",
+        ),
+        (
+            "obj.aaa = 0 --string@_:Ignored,${{AA}}",
+            "--value@value:Actual, 0",
+            "--value@value:Actual,0",
+            "Actual",
+        ),
+        (
+            "local a, b = 0, 0 --string@_:Ignored,${{AA}}",
+            "--value@value:Actual, 0",
+            "--value@value:Actual,0",
+            "Actual",
+        ),
+        (
+            "  --track@_:Ignored,0,${{AA}},_",
+            "--value@value:Actual, 0",
+            "--value@value:Actual,0",
+            "Actual",
+        ),
+        (
+            "local value = 0 --group:Ignored_${{AA}}",
+            "--value@value:Actual, 0",
+            "--value@value:Actual,0",
+            "Actual",
+        ),
+    ] {
+        let src = format!("{skipped}\n{applied}\n");
+        let output = exedit::build(&src, &target, &[], &IndexMap::new(), false, ".anm2")?;
+        assert_eq!(output.script, format!("{skipped}\n{normalized}\n"));
+        assert!(output.l10n.contains(&format!("{label}=\n")));
+        assert!(!output.l10n.contains("Ignored"));
+    }
+    Ok(())
+}
+
+#[test]
+fn validates_unbound_placeholders_before_display() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "input.anm2" }))?;
+    for declaration in [
+        "track@_:Scale,0,10,_",
+        "check@_:Flag,_",
+        "checksection@_:Section,_",
+        "color@_:Color,_",
+        "colorlist@_:Color,_,1",
+        "select@_:Mode=_,A=0",
+    ] {
+        let err = exedit::build(
+            &format!("--{declaration}\n"),
+            &target,
+            &[],
+            &IndexMap::new(),
+            false,
+            ".anm2",
+        )
+        .unwrap_err();
+        assert!(!err.to_string().contains("initializer"), "{declaration}: {err}");
+        assert!(err.to_string().starts_with("input.anm2:1:1:"), "{err}");
+    }
+    let output = exedit::build("--value@_:Value,_\n", &target, &[], &IndexMap::new(), false, ".anm2")?;
+    assert_eq!(output.script, "--value@_:Value,_\n");
+    Ok(())
+}
+
+#[test]
+fn collects_metadata_from_validated_definitions() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "effect.anm2" }))?;
+    let output = exedit::build(
+        "--data@buffer:4\n--dialog:Group::Name,a=0;Group::Name,b=1\n--select@mode:Choice=0,Group::A=0,Group::B=1\n",
+        &target,
+        &[],
+        &IndexMap::new(),
+        false,
+        ".anm2",
+    )?;
+    assert_eq!(
+        output.script,
+        "--data@buffer:4\n--dialog:Group::Name,a=0;Group::Name,b=1;\n--select@mode:Choice=0,Group::A=0,Group::B=1\n"
+    );
+    assert!(output.l10n.contains("Name=\n"));
+    assert!(output.l10n.contains("dialog::Group::Name=\nGroup::Name=\nChoice=\n"));
+    assert!(output.l10n.contains("Group::A=\n"));
+    assert!(!output.l10n.contains("buffer="));
+
+    let src = "--param:Group::Mode/select/Group::A=0/Group::A=1,0\n--param:Group::Mode,1\n";
+    let output = exedit::build(src, &target, &[], &IndexMap::new(), false, ".tra2")?;
+    assert_eq!(output.script, src);
+    assert!(output.l10n.contains("Group::A=\n"));
+    assert!(!output.l10n.contains("[Tips."));
+    for src in [
+        "--param:Mode/select/A=0/B=0,0\n",
+        "--select@mode:Choice=0,A=0,A=1\n",
+        "--value@first:,0\n--value@second:,0\n",
+        "--data@buffer:4\n--value@value:buffer,0\n",
+    ] {
+        let suffix = if src.starts_with("--param:") { ".tra2" } else { ".anm2" };
+        assert!(
+            exedit::build(src, &target, &[], &IndexMap::new(), false, suffix).is_err(),
+            "{src}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn builds_colorlist_properties() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "effect.anm2" }))?;
+    let src = concat!(
+        "local list = {\n",
+        "    { pos = 0, col = 0xffffff },\n",
+        "    { pos = 1, col = 0x888888 },\n",
+        "} --colorlist@list:Group::基準色|中間色,_,4,undefined|position\n",
+        "local list2 --colorlist@list2:図形色,0xffffffff,1,alpha|fixed\n",
+        "local list3 = {} --colorlist@list3:補助色|補助色,0x123456,2\n",
+        "local num = #list\n",
+    );
+    let output = exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
+    assert_eq!(
+        output.script,
+        concat!(
+            "--colorlist@list:Group::基準色|中間色,0xffffff|0x888888,4,undefined|position\n",
+            "--colorlist@list2:図形色,0xffffffff,1,alpha|fixed\n",
+            "--colorlist@list3:補助色|補助色,0x123456,2\n",
+            "local num = #list\n",
+        )
+    );
+    let (labels, tips) = output.l10n.split_once("[Tips.").unwrap();
+    for key in ["\n基準色=\n", "\n中間色=\n", "\n図形色=\n", "\n補助色=\n"] {
+        assert!(labels.contains(key), "{labels}");
+    }
+    assert!(tips.contains("\nGroup::基準色=\n"), "{tips}");
+    assert!(!tips.contains("\n中間色=\n"), "{tips}");
+
+    for (suffix, src) in [
+        (".tra2", "--colorlist@list:色,0xffffff,1\n"),
+        (".anm", "--colorlist@list:色,0xffffff,1\n"),
+        (".anm2", "--colorlist:色,0xffffff,1\n"),
+        (".anm2", "local list = { a = 1 } --colorlist@list:色,0xffffff,1\n"),
+        (".anm2", "local list = {} --colorlist@list:色,_,1\n"),
+        (".anm2", "local list = { { col = nil } } --colorlist@list:色,_,1\n"),
+        (
+            ".anm2",
+            "local list = { { col = 0xffffffff } } --colorlist@list:色,_,1\n",
+        ),
+    ] {
+        assert!(
+            exedit::build(src, &target, &[], &IndexMap::new(), false, suffix).is_err(),
+            "{suffix}: {src}"
+        );
+    }
+
     Ok(())
 }

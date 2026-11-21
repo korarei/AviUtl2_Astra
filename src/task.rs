@@ -192,18 +192,16 @@ fn dispatch(call: &TaskCall, config: &Config, is_root: bool, active_tasks: &mut 
 
         let mut err = None;
 
-        if !task.run().is_empty() {
-            for cmd in task.run() {
-                let result = if let Some(shell) = task.shell() {
-                    exec_script(cmd, shell, task.env())
-                } else {
-                    exec_default(cmd, task.env())
-                };
+        for cmd in task.run() {
+            let result = if let Some(shell) = task.shell() {
+                exec_script(cmd, shell, task.env())
+            } else {
+                exec_default(cmd, task.env())
+            };
 
-                if let Err(e) = result {
-                    err = Some(e);
-                    break;
-                }
+            if let Err(e) = result {
+                err = Some(e);
+                break;
             }
         }
 
@@ -274,6 +272,7 @@ fn exec_script(cmd: &str, shell: &str, env: &IndexMap<String, String>) -> anyhow
         .ok_or_else(|| anyhow::anyhow!("failed to determine shell name from '{}'", shell_exe.display()))?
         .to_string_lossy()
         .to_lowercase();
+
     let runner = Runner::from_name(&name).ok_or_else(|| anyhow::anyhow!("shell '{shell}' is not supported"))?;
 
     let script = runner.render(cmd);
@@ -357,6 +356,7 @@ fn encode_oemcp(text: &str) -> std::io::Result<Vec<u8>> {
     }
 
     let wide: Vec<u16> = text.encode_utf16().collect();
+
     if wide.is_empty() {
         return Ok(Vec::new());
     }

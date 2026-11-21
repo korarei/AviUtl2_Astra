@@ -49,12 +49,7 @@ pub(super) fn deploy(
                 path.to_string_lossy().into_owned()
             };
 
-            (
-                dst.clone(),
-                target
-                    .strip_prefix(cache.root())
-                    .map_or_else(|_| encode(target), encode),
-            )
+            (dst.clone(), encode(target.trim_prefix(cache.root())))
         })
         .collect();
     manifest.config = None;
@@ -78,6 +73,7 @@ pub(super) fn deploy(
 
     for (dst, target) in &links {
         let path = data_dir.join(dst);
+
         if !is_same_link(&path, target)? {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)

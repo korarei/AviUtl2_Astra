@@ -1,48 +1,31 @@
 use anyhow::Context;
 use std::path::{Path, PathBuf};
 
-pub(crate) struct Lock {
-    name: &'static str,
-    file: PathBuf,
-    inner: fd_lock::RwLock<std::fs::File>,
-}
+pub(crate) fn lock(dst: &Path, name: &'static str) -> anyhow::Result<impl Drop> {
+    let path = dst.join(".astra-lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open '{}'", path.display()))?;
 
-impl Lock {
-    pub(crate) fn new(dst: &Path, name: &'static str) -> anyhow::Result<Self> {
-        let file = dst.join(".astra-lock");
-        let lock = fd_lock::RwLock::new(
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&file)
-                .with_context(|| format!("failed to open '{}'", file.display()))?,
-        );
-
-        Ok(Self {
-            name,
-            file,
-            inner: lock,
-        })
-    }
-
-    pub(crate) fn write(&mut self) -> anyhow::Result<impl Drop + '_> {
-        let lock = &raw mut self.inner;
-
-        match unsafe { (*lock).try_write() } {
-            Ok(guard) => Ok(guard),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                tracing::info!(
-                    "Blocking waiting for file lock on {} (press Ctrl+C to cancel)",
-                    self.name
-                );
-
-                unsafe { (*lock).write() }.with_context(|| format!("failed to lock '{}'", self.file.display()))
-            }
-            Err(err) => Err(err).with_context(|| format!("failed to lock '{}'", self.file.display())),
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            tracing::info!("Blocking waiting for file lock on {name} (press Ctrl+C to cancel)");
+            file.lock()
+                .with_context(|| format!("failed to lock '{}'", path.display()))?;
+        }
+        Err(std::fs::TryLockError::Error(err)) => {
+            return Err(err).with_context(|| format!("failed to lock '{}'", path.display()));
         }
     }
+
+    Ok(std::mem::DropGuard::new(file, |file| {
+        let _ = file.unlock();
+    }))
 }
 
 pub(crate) fn read_file(file: &Path, encoding: &'static encoding_rs::Encoding) -> anyhow::Result<String> {
@@ -63,11 +46,7 @@ pub(crate) fn read_file(file: &Path, encoding: &'static encoding_rs::Encoding) -
             .into_owned()
     };
 
-    Ok(if text.contains('\r') {
-        text.replace("\r\n", "\n").replace('\r', "\n")
-    } else {
-        text
-    })
+    Ok(crate::text::normalize_newlines(text).into_owned())
 }
 
 pub(crate) fn write_file(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -77,14 +56,19 @@ pub(crate) fn write_file(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .parent()
         .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+
     std::fs::create_dir_all(dir).with_context(|| format!("failed to create directory '{}'", dir.display()))?;
+
     let mut temp = tempfile::NamedTempFile::new_in(dir)
         .with_context(|| format!("failed to create temporary file in '{}'", dir.display()))?;
+
     temp.write_all(bytes)
         .with_context(|| format!("failed to write '{}'", file.display()))?;
+
     let _ = temp
         .persist(file)
         .with_context(|| format!("failed to persist '{}'", file.display()))?;
+
     Ok(())
 }
 
@@ -332,5 +316,21 @@ mod tests {
             assert!(target_dir.exists());
             assert!(target_dir.join("file").is_file());
         }
+    }
+
+    #[test]
+    fn locks_exclusively_until_dropped() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard = lock(temp.path(), "test").unwrap();
+        let probe = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp.path().join(".astra-lock"))
+            .unwrap();
+        assert!(matches!(probe.try_lock(), Err(fs::TryLockError::WouldBlock)));
+        drop(probe);
+        drop(guard);
+
+        let _guard = lock(temp.path(), "test").unwrap();
     }
 }

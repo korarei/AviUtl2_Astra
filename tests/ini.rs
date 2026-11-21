@@ -7,19 +7,28 @@ fn replace_values() -> anyhow::Result<()> {
     let vars = IndexMap::from([("AAA".to_owned(), "new value".to_owned())]);
     let src = "[section]\n;#replace AAA\n; retained\n\n  key  =  old value  \nother=1\n";
     assert_eq!(
-        astra::build::ini::build(src, &target, &[], &vars)?,
+        astra::build::config::ini::build(src, &target, &[], &vars)?
+            .text()
+            .into_owned(),
         "[section]\n; retained\n\n  key  =  new value  \nother=1\n"
     );
+
     for src in [
         ";#replace AAA",
         ";#replace AAA\n[section]\nkey=0",
         ";#replace AAA\nkey=",
         ";#replace AAA\n;#include \"missing.ini\"\nkey=0",
     ] {
-        assert!(astra::build::ini::build(src, &target, &[], &vars).is_err(), "{src}");
+        assert!(
+            astra::build::config::ini::build(src, &target, &[], &vars).is_err(),
+            "{src}"
+        );
     }
+
     let vars = IndexMap::from([("AAA".to_owned(), "1\nother=2".to_owned())]);
-    assert!(astra::build::ini::build(";#replace AAA\nkey=0", &target, &[], &vars).is_err());
+
+    assert!(astra::build::config::ini::build(";#replace AAA\nkey=0", &target, &[], &vars).is_err());
+
     Ok(())
 }
 
@@ -29,11 +38,13 @@ fn retain_definitions() -> anyhow::Result<()> {
     let vars = IndexMap::from([("VALUE".to_owned(), "original".to_owned())]);
     let src = ";#define VALUE changed\nfirst=${VALUE}\n;#undef VALUE\n;#ifndef VALUE\nsecond=1\n;#endif\n";
     assert_eq!(
-        astra::build::ini::build(src, &target, &[], &vars)?,
+        astra::build::config::ini::build(src, &target, &[], &vars)?
+            .text()
+            .into_owned(),
         "first=changed\nsecond=1\n"
     );
     assert_eq!(vars["VALUE"], "original");
-    assert!(astra::build::ini::build(";#define BUILD_DIR changed", &target, &[], &vars).is_err());
+    assert!(astra::build::config::ini::build(";#define BUILD_DIR changed", &target, &[], &vars).is_err());
     Ok(())
 }
 
@@ -48,7 +59,9 @@ fn retain_include_state() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
     let src = ";#include \"values.ini\"\n[main]\nkey=${VALUE}\n";
     assert_eq!(
-        astra::build::ini::build(src, &target, &[], &IndexMap::new())?,
+        astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+            .text()
+            .into_owned(),
         "[values]\nkey=1\n[main]\nkey=included\n"
     );
     Ok(())
@@ -62,7 +75,8 @@ fn reject_include_cycles() -> anyhow::Result<()> {
     std::fs::write(&file, ";#include \"included.ini\"\n")?;
     std::fs::write(&included, ";#include \"input.ini\"\n")?;
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
-    let err = astra::build::ini::build(";#include \"included.ini\"\n", &target, &[], &IndexMap::new()).unwrap_err();
+    let err =
+        astra::build::config::ini::build(";#include \"included.ini\"\n", &target, &[], &IndexMap::new()).unwrap_err();
     assert!(err.to_string().contains("included.ini:1:2: circular include"), "{err}");
     Ok(())
 }
@@ -74,13 +88,14 @@ fn locate_include_errors() -> anyhow::Result<()> {
     let included = dir.path().join("included.ini");
     std::fs::write(&included, "[values]\nkey=${MISSING}\n")?;
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": file.to_string_lossy() }))?;
-    let err = astra::build::ini::build(";#include \"included.ini\"\n", &target, &[], &IndexMap::new()).unwrap_err();
+    let err =
+        astra::build::config::ini::build(";#include \"included.ini\"\n", &target, &[], &IndexMap::new()).unwrap_err();
     assert!(
         err.to_string()
             .contains("included.ini:2:5: variable 'MISSING' not found"),
         "{err}"
     );
-    assert!(astra::build::ini::build(";#include \"missing.ini\"", &target, &[], &IndexMap::new()).is_err());
+    assert!(astra::build::config::ini::build(";#include \"missing.ini\"", &target, &[], &IndexMap::new()).is_err());
     Ok(())
 }
 
@@ -88,8 +103,14 @@ fn locate_include_errors() -> anyhow::Result<()> {
 fn preserve_line_endings() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "input.ini" }))?;
     for src in ["", "[section]\nkey=1", "; comment\n\nkey=1  \n"] {
-        assert_eq!(astra::build::ini::build(src, &target, &[], &IndexMap::new())?, src);
+        assert_eq!(
+            astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+                .text()
+                .into_owned(),
+            src
+        );
     }
+
     Ok(())
 }
 
@@ -97,7 +118,9 @@ fn preserve_line_endings() -> anyhow::Result<()> {
 fn omit_entries() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.ini" }))?;
     let src = "[section]\n;#omit\n; annotation\n\nremoved=1\nretained=2\n";
-    let output = astra::build::ini::build(src, &target, &[], &IndexMap::new())?;
+    let output = astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+        .text()
+        .into_owned();
     assert_eq!(output, "[section]\nretained=2\n");
 
     Ok(())
@@ -118,9 +141,12 @@ fn omit_sections() -> anyhow::Result<()> {
             "  [next]\nkey=3\n",
         ),
     ] {
-        let output = astra::build::ini::build(src, &target, &[], &IndexMap::new())?;
+        let output = astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+            .text()
+            .into_owned();
         assert_eq!(output, expected, "{src}");
     }
+
     Ok(())
 }
 
@@ -138,7 +164,9 @@ fn resolve_once() -> anyhow::Result<()> {
     let target: BuildTarget = serde_json::from_value(serde_json::json!({
         "path": main.to_string_lossy().into_owned(),
     }))?;
-    let result = astra::build::ini::build(src, &target, &[], &IndexMap::new())?;
+    let result = astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+        .text()
+        .into_owned();
     assert_eq!(result.matches("[common]").count(), 1, "{result}");
     assert!(result.contains("[a]"), "{result}");
     assert!(result.contains("[main]"), "{result}");
@@ -149,19 +177,25 @@ fn resolve_once() -> anyhow::Result<()> {
         ";#pragma once ; single inclusion\n[comment]\nval = 1\n",
     )?;
     let src = ";#include \"header_comment.ini\"\n;#include \"header_comment.ini\"\n";
-    let result = astra::build::ini::build(src, &target, &[], &IndexMap::new())?;
+    let result = astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+        .text()
+        .into_owned();
     assert_eq!(result.matches("[comment]").count(), 1, "{result}");
 
     let header_unknown = dir.path().join("header_unknown.ini");
     std::fs::write(&header_unknown, ";#pragma message(\"hello\")\n[unknown]\nval = 1\n")?;
     let src = ";#include \"header_unknown.ini\"\n";
-    let result = astra::build::ini::build(src, &target, &[], &IndexMap::new())?;
+    let result = astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+        .text()
+        .into_owned();
     assert!(result.contains(";#pragma message(\"hello\")"), "{result}");
 
     let header_if0 = dir.path().join("header_if0.ini");
     std::fs::write(&header_if0, ";#if 0\n;#pragma once\n;#endif\n[if0]\nval = 1\n")?;
     let src = ";#include \"header_if0.ini\"\n;#include \"header_if0.ini\"\n";
-    let result = astra::build::ini::build(src, &target, &[], &IndexMap::new())?;
+    let result = astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+        .text()
+        .into_owned();
     assert_eq!(result.matches("[if0]").count(), 2, "{result}");
 
     Ok(())
@@ -183,11 +217,27 @@ fn accept_directive_spaces() -> anyhow::Result<()> {
              {prefix}if true\nkept=1\n{prefix}endif\n"
         );
         assert_eq!(
-            astra::build::ini::build(&src, &target, &[], &IndexMap::new())?,
+            astra::build::config::ini::build(&src, &target, &[], &IndexMap::new())?
+                .text()
+                .into_owned(),
             "included=7\nkey=7\nkept=1\n",
             "{prefix}"
         );
     }
 
+    Ok(())
+}
+
+#[test]
+fn verbatim_preserves_content() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.ini" }))?;
+    let src = ";#define VALUE before\n;#verbatim\n;#undef VALUE\n;#include \"missing.ini\"\nvalue=${MISSING}\n;#endverbatim\nvalue=${VALUE}\n";
+    let expected = ";#undef VALUE\n;#include \"missing.ini\"\nvalue=${MISSING}\nvalue=before\n";
+    assert_eq!(
+        astra::build::config::ini::build(src, &target, &[], &IndexMap::new())?
+            .text()
+            .into_owned(),
+        expected
+    );
     Ok(())
 }

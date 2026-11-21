@@ -21,9 +21,15 @@ pub(crate) const RESERVED_VARIABLES: &[&str] = &[
     "PROJECT_AUTHOR",
     "PROJECT_AUTHORS",
     "AVIUTL2_VERSION",
+    "BUILD_ID",
+    "BUILD_NAME",
+    "BUILD_TARGET_NAME",
     "BUILD_TYPE",
     "BUILD_DIR",
     "BUILD_DIRECTORY",
+    "RELEASE_ID",
+    "RELEASE_DIR",
+    "RELEASE_DIRECTORY",
     "DEBUG",
     "NDEBUG",
     "SCRIPT_NAME",
@@ -202,7 +208,8 @@ impl Config {
         #[cfg(windows)]
         let dir = dir.replace('/', "\\");
 
-        let vars = IndexMap::from([
+        let mut vars = IndexMap::from([
+            ("BUILD_ID".to_owned(), call.id().to_owned()),
             ("BUILD_TYPE".to_owned(), build_type.as_lowercase().to_owned()),
             (
                 match build_type {
@@ -225,6 +232,8 @@ impl Config {
         if let Err(err) = build.validate() {
             bail!("configuration validation failed:\n{err}");
         }
+
+        vars.insert("BUILD_NAME".to_owned(), build.name().to_owned());
 
         for call in build.depends.iter_mut().chain(&mut build.finally) {
             call.append(&vars);
@@ -251,10 +260,27 @@ impl Config {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("release ID '{id}' not found"))?;
 
-        release.expanded(&self.scope)?;
+        let dir = Path::new(self.astra.dist_dir()).join(id).to_string_lossy().into_owned();
+
+        #[cfg(windows)]
+        let dir = dir.replace('/', "\\");
+
+        let vars = IndexMap::from([
+            ("RELEASE_ID".to_owned(), id.to_owned()),
+            ("RELEASE_DIR".to_owned(), dir.clone()),
+            ("RELEASE_DIRECTORY".to_owned(), dir),
+        ]);
+
+        let scope = self.scope.set(Arc::new(vars.clone()));
+
+        release.expanded(&scope)?;
 
         if let Err(err) = release.validate() {
             bail!("configuration validation failed:\n{err}");
+        }
+
+        for call in &mut release.finally {
+            call.append(&vars);
         }
 
         Ok(release)
@@ -308,7 +334,7 @@ impl Config {
     }
 
     fn normalize(&mut self) -> anyhow::Result<()> {
-        static RESERVED_ID_PREFIXES: [&str; 2] = [".astra", ".git"];
+        const RESERVED_ID_PREFIXES: &[&str] = &[".astra", ".git"];
 
         for (id, build) in &mut self.builds {
             if id.is_empty() {
@@ -597,8 +623,8 @@ impl AviUtl2Version {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
-    #[serde(default, alias = "hidden")]
-    hide: bool,
+    #[serde(default, alias = "hide")]
+    hidden: bool,
     #[validate(length(min = 1))]
     shell: Option<String>,
     #[serde_as(as = "ManyOrOne<_>")]
@@ -653,7 +679,7 @@ impl Task {
 
     #[must_use]
     pub fn is_hidden(&self) -> bool {
-        self.hide
+        self.hidden
     }
 
     #[must_use]
@@ -704,7 +730,7 @@ impl TaskCall {
         match self {
             Self::Simple(raw) => {
                 let s = vars::expand(raw, scope)?;
-                *raw = s.strip_prefix("task:").unwrap_or(&s).to_string();
+                *raw = s.trim_prefix("task:").to_string();
             }
             Self::Detailed { task, env, vars } => {
                 *task = vars::expand(task, scope)?;
@@ -741,7 +767,7 @@ impl TaskCall {
     }
 
     #[must_use]
-    pub(crate) fn env(&self) -> &IndexMap<String, String> {
+    pub fn env(&self) -> &IndexMap<String, String> {
         match self {
             Self::Detailed { env, .. } => env,
             Self::Simple(_) => &EMPTY_VARS,
@@ -749,7 +775,7 @@ impl TaskCall {
     }
 
     #[must_use]
-    pub(crate) fn vars(&self) -> &IndexMap<String, String> {
+    pub fn vars(&self) -> &IndexMap<String, String> {
         match self {
             Self::Detailed { vars, .. } => vars,
             Self::Simple(_) => &EMPTY_VARS,
@@ -761,6 +787,7 @@ impl Validate for TaskCall {
     fn validate(&self) -> Result<(), ValidationErrors> {
         let mut errors = ValidationErrors::new();
         let id = self.id();
+
         if id.is_empty() {
             errors.add("task", ValidationError::new("length"));
         }
@@ -782,7 +809,10 @@ impl Validate for TaskCall {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Build {
+    #[serde(alias = "enable")]
     enabled: Option<BuildEnabled>,
+    #[serde(alias = "bundle")]
+    bundled: Option<bool>,
     name: Option<String>,
     suffix: Option<String>,
     newline: Option<String>,
@@ -819,12 +849,17 @@ impl Build {
     pub(crate) fn expanded(&mut self, parent: &Scope) -> anyhow::Result<()> {
         let scope = expand_map(&mut self.vars, parent)?;
 
-        if let Some(enabled) = &mut self.enabled {
-            enabled.expanded(&scope)?;
-        }
-
         if let Some(name) = &mut self.name {
             *name = vars::expand(name, &scope)?;
+        }
+
+        let scope = scope.set(Arc::new(IndexMap::from([(
+            "BUILD_NAME".to_owned(),
+            self.name().to_owned(),
+        )])));
+
+        if let Some(enabled) = &mut self.enabled {
+            enabled.expanded(&scope)?;
         }
 
         if let Some(newline) = &mut self.newline {
@@ -918,6 +953,18 @@ impl Build {
     }
 
     #[must_use]
+    pub fn is_bundled(&self) -> bool {
+        self.is_script()
+            && (self.bundled == Some(true) || self.targets.as_deref().is_some_and(|targets| targets.len() > 1))
+    }
+
+    #[must_use]
+    pub fn is_script(&self) -> bool {
+        self.suffix()
+            .is_some_and(|suffix| !suffix.eq_ignore_ascii_case(".aul2"))
+    }
+
+    #[must_use]
     pub fn depends(&self) -> &[TaskCall] {
         &self.depends
     }
@@ -934,24 +981,9 @@ impl Build {
 
     pub fn targets(&self) -> impl ExactSizeIterator<Item = anyhow::Result<BuildTarget>> {
         let targets = self.targets.as_deref().unwrap_or_default();
-        let is_bundled = targets.len() > 1;
 
         targets.iter().cloned().map(move |mut target| {
-            target.expanded(&self.scope)?;
-
-            if !self
-                .suffix
-                .as_deref()
-                .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".aul2"))
-            {
-                let key = if is_bundled {
-                    format!("{}@{}", target.name(), self.name())
-                } else {
-                    self.name().to_owned()
-                };
-                target.vars.insert("SCRIPT_NAME".to_owned(), key.clone());
-                target.key = key;
-            }
+            target.expanded(self)?;
 
             if let Err(err) = target.validate() {
                 bail!("configuration validation failed:\n{err}");
@@ -969,10 +1001,10 @@ impl Build {
 
 impl Validate for Build {
     fn validate(&self) -> Result<(), ValidationErrors> {
-        static VALID_SUFFIXES: [&str; 11] = [
+        const VALID_SUFFIXES: &[&str] = &[
             ".anm2", ".tra2", ".obj2", ".scn2", ".cam2", ".aul2", ".anm", ".tra", ".obj", ".scn", ".cam",
         ];
-        static VALID_MODES: [&str; 3] = ["all", "debug", "release"];
+        const VALID_MODES: &[&str] = &["all", "debug", "release"];
 
         let mut errors = ValidationErrors::new();
 
@@ -1035,6 +1067,7 @@ impl Validate for Build {
 
         if let Some(BuildEnabled::Mode(mode)) = &self.enabled {
             let mode = mode.trim();
+
             if !VALID_MODES.iter().any(|&m| mode.eq_ignore_ascii_case(m)) {
                 errors.add(
                     "enabled",
@@ -1042,6 +1075,17 @@ impl Validate for Build {
                         .with_message(format!("enabled must be one of all, debug, or release, got '{mode}'").into()),
                 );
             }
+        }
+
+        if self.bundled == Some(false)
+            && self.is_script()
+            && self.targets.as_deref().is_some_and(|targets| targets.len() > 1)
+        {
+            errors.add(
+                "bundled",
+                ValidationError::new("invalid_bundled")
+                    .with_message("bundled must be true when more than one target is specified".into()),
+            );
         }
 
         for (field, calls) in [("depends", &self.depends), ("finally", &self.finally)] {
@@ -1162,14 +1206,30 @@ pub struct BuildTarget {
 }
 
 impl BuildTarget {
-    pub(crate) fn expanded(&mut self, parent: &Scope) -> anyhow::Result<()> {
-        let scope = expand_map(&mut self.vars, parent)?;
+    pub(crate) fn expanded(&mut self, build: &Build) -> anyhow::Result<()> {
+        let scope = expand_map(&mut self.vars, &build.scope)?;
 
         self.path = convert_path(vars::expand(&self.path, &scope)?);
 
         if let Some(name) = &mut self.name {
             *name = vars::expand(name, &scope)?;
         }
+
+        let name = self.name().to_owned();
+        let mut vars = IndexMap::from([("BUILD_TARGET_NAME".to_owned(), name.clone())]);
+
+        if build.is_script() {
+            let key = if build.is_bundled() {
+                format!("{name}@{}", build.name())
+            } else {
+                build.name().to_owned()
+            };
+
+            vars.insert("SCRIPT_NAME".to_owned(), key.clone());
+            self.key = key;
+        }
+
+        let scope = scope.set(Arc::new(vars));
 
         for dir in &mut self.include_dirs {
             *dir = convert_path(vars::expand(dir, &scope)?);
@@ -1483,40 +1543,21 @@ pub struct Package {
 
 impl Package {
     pub(crate) fn expanded(&mut self, scope: &Scope) -> anyhow::Result<()> {
-        if let Some(filename) = &mut self.filename {
-            *filename = vars::expand(filename, scope)?;
-        }
-
-        if let Some(id) = &mut self.id {
-            *id = vars::expand(id, scope)?;
-        }
-
-        if let Some(name) = &mut self.name {
-            *name = vars::expand(name, scope)?;
-        }
-
-        if let Some(information) = &mut self.information {
-            *information = vars::expand(information, scope)?;
-        }
-
-        if let Some(license) = &mut self.license {
-            *license = vars::expand(license, scope)?;
-        }
-
-        if let Some(summary) = &mut self.summary {
-            *summary = vars::expand(summary, scope)?;
-        }
-
-        if let Some(description) = &mut self.description {
-            *description = vars::expand(description, scope)?;
-        }
-
-        if let Some(website) = &mut self.website {
-            *website = vars::expand(website, scope)?;
-        }
-
-        if let Some(report_issue) = &mut self.report_issue {
-            *report_issue = vars::expand(report_issue, scope)?;
+        for val in [
+            &mut self.filename,
+            &mut self.id,
+            &mut self.name,
+            &mut self.information,
+            &mut self.license,
+            &mut self.summary,
+            &mut self.description,
+            &mut self.website,
+            &mut self.report_issue,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *val = vars::expand(val, scope)?;
         }
 
         for content in &mut self.contents {
@@ -1545,7 +1586,7 @@ impl Package {
             }
 
             if is_au2pkg {
-                static ALLOWED_TOP_DIRS: [&str; 8] = [
+                const ALLOWED_TOP_DIRS: &[&str] = &[
                     "Plugin",
                     "Script",
                     "Language",
@@ -1898,11 +1939,7 @@ impl PackageSourceFile {
 
     #[must_use]
     pub fn content(&self) -> Cow<'_, str> {
-        if self.content.contains('\r') {
-            Cow::Owned(self.content.replace("\r\n", "\n").replace('\r', "\n"))
-        } else {
-            Cow::Borrowed(&self.content)
-        }
+        crate::text::normalize_newlines(&self.content)
     }
 
     #[must_use]
@@ -2059,7 +2096,7 @@ fn validate_directory(dir: &str) -> Result<(), ValidationError> {
 
 fn validate_glob(pattern: &str) -> Result<(), ValidationError> {
     let bytes = pattern.as_bytes();
-    let expr = if bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1) == Some(&b':') {
+    let expr = if matches!(bytes, [b'a'..=b'z' | b'A'..=b'Z', b':', ..]) {
         if bytes.get(2) != Some(&b'/') {
             return Err(
                 ValidationError::new("invalid_glob").with_message("drive-relative paths are not allowed".into())
@@ -2146,11 +2183,12 @@ fn validate_newline(newline: &str) -> Result<(), ValidationError> {
 
 fn parse_newline(s: &str) -> Option<&'static str> {
     let s = s.trim_matches(|c: char| c.is_whitespace() && c != '\r' && c != '\n');
-    if s == "\n" || s.eq_ignore_ascii_case("lf") {
-        Some("\n")
-    } else if s == "\r\n" || s.eq_ignore_ascii_case("crlf") {
-        Some("\r\n")
-    } else {
-        None
+
+    match s {
+        "\n" => Some("\n"),
+        "\r\n" => Some("\r\n"),
+        _ if s.eq_ignore_ascii_case("lf") => Some("\n"),
+        _ if s.eq_ignore_ascii_case("crlf") => Some("\r\n"),
+        _ => None,
     }
 }

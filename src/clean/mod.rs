@@ -12,12 +12,9 @@ pub(super) fn command(config: &Config) -> anyhow::Result<()> {
     crate::fs::create_managed_dir(dist_dir)?;
     crate::fs::create_managed_dir(Path::new(".astra"))?;
 
-    let mut build_lock = crate::fs::Lock::new(build_dir, "build directory")?;
-    let _build_guard = build_lock.write()?;
-    let mut dist_lock = crate::fs::Lock::new(dist_dir, "dist directory")?;
-    let _dist_guard = dist_lock.write()?;
-    let mut astra_lock = crate::fs::Lock::new(Path::new(".astra"), ".astra directory")?;
-    let _astra_guard = astra_lock.write()?;
+    let _build_lock = crate::fs::lock(build_dir, "build directory")?;
+    let _dist_lock = crate::fs::lock(dist_dir, "dist directory")?;
+    let _astra_lock = crate::fs::lock(Path::new(".astra"), ".astra directory")?;
 
     for dir in config.build_dirs() {
         crate::fs::remove(&dir)?;

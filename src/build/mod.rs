@@ -1,12 +1,12 @@
-mod astra;
-pub mod hlsl;
-pub mod ini;
-pub mod lua;
+pub mod config;
+pub mod exedit;
+pub mod lang;
 pub mod script;
 pub mod shader;
 mod source;
 mod target;
-mod validate;
+
+pub use source::{Map, Pos};
 
 use crate::config::{Astra, Build, BuildCall, BuildType, Config};
 use anyhow::{Context, bail};
@@ -70,8 +70,7 @@ pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
     let build_dir = Path::new(astra.build_dir());
     crate::fs::create_managed_dir(build_dir)?;
 
-    let mut lock = crate::fs::Lock::new(build_dir, "build directory")?;
-    let _guard = lock.write()?;
+    let _lock = crate::fs::lock(build_dir, "build directory")?;
 
     if let Some(id) = &args.id {
         let build = config.build(&BuildCall::new(id), build_type)?;
@@ -131,6 +130,7 @@ pub(crate) fn run(build: &Build, config: &Config, astra: &Astra, build_type: Bui
 
     for pattern in build.artifacts() {
         let (prefix, glob) = crate::fs::resolve_glob(pattern)?;
+
         for entry in glob.walk(prefix) {
             artifacts.push(std::path::absolute(entry?.path())?);
         }
@@ -153,7 +153,7 @@ fn hash_artifacts(artifacts: &[PathBuf], build_type: BuildType) -> anyhow::Resul
         if path.is_file() {
             hash_file(path, &mut hash)?;
         } else if path.is_dir() {
-            hash_directory(path, &mut hash)?;
+            hash_dir(path, &mut hash)?;
         } else {
             bail!("artifact '{}' is not a regular file or directory", path.display());
         }
@@ -162,7 +162,7 @@ fn hash_artifacts(artifacts: &[PathBuf], build_type: BuildType) -> anyhow::Resul
     Ok(hash.digest128())
 }
 
-fn hash_directory(dir: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Result<()> {
+fn hash_dir(dir: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Result<()> {
     let path = dir.to_string_lossy();
     hash.update(&(path.len() as u64).to_le_bytes());
     hash.update(path.as_bytes());
@@ -181,7 +181,7 @@ fn hash_directory(dir: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Res
         let path = dir.join(name);
 
         if kind.is_dir() {
-            hash_directory(&path, hash)?;
+            hash_dir(&path, hash)?;
         } else if kind.is_file() {
             hash_file(&path, hash)?;
         } else {
@@ -193,9 +193,9 @@ fn hash_directory(dir: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Res
 }
 
 fn hash_file(path: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Result<()> {
-    let path_str = path.to_string_lossy();
-    hash.update(&(path_str.len() as u64).to_le_bytes());
-    hash.update(path_str.as_bytes());
+    let text = path.to_string_lossy();
+    hash.update(&(text.len() as u64).to_le_bytes());
+    hash.update(text.as_bytes());
     hash.update(&crate::fs::hash_file(path)?.to_le_bytes());
 
     Ok(())
@@ -203,7 +203,7 @@ fn hash_file(path: &Path, hash: &mut xxhash_rust::xxh3::Xxh3) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    use super::hash_directory;
+    use super::hash_dir;
     use std::fs;
 
     #[test]
@@ -213,7 +213,7 @@ mod tests {
         fs::write(&file, b"one")?;
 
         let first = crate::fs::hash_file(&file)?;
-        assert_eq!(first, xxhash_rust::const_xxh3::xxh3_128(b"one"));
+        assert_eq!(first, xxhash_rust::xxh3::xxh3_128(b"one"));
 
         fs::write(&file, b"two")?;
         assert_ne!(first, crate::fs::hash_file(&file)?);
@@ -224,12 +224,12 @@ mod tests {
         fs::write(tree.join("sub").join("file.lua"), b"return 1")?;
 
         let mut hash = xxhash_rust::xxh3::Xxh3::new();
-        hash_directory(&tree, &mut hash)?;
+        hash_dir(&tree, &mut hash)?;
         let first = hash.digest128();
 
         fs::write(tree.join("sub").join("file.lua"), b"return 2")?;
         let mut hash = xxhash_rust::xxh3::Xxh3::new();
-        hash_directory(&tree, &mut hash)?;
+        hash_dir(&tree, &mut hash)?;
         assert_ne!(first, hash.digest128());
 
         Ok(())

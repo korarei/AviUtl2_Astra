@@ -18,6 +18,12 @@ pub(crate) struct Args {
     id: Option<String>,
 }
 
+struct ZipInput<'a> {
+    path: &'a Path,
+    src: PathBuf,
+    size: u64,
+}
+
 pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
     tracing::info!("Running release");
 
@@ -35,12 +41,9 @@ pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
     crate::fs::create_managed_dir(dist_dir)?;
     crate::fs::create_managed_dir(Path::new(".astra"))?;
 
-    let mut build_lock = crate::fs::Lock::new(build_dir, "build directory")?;
-    let _build_guard = build_lock.write()?;
-    let mut dist_lock = crate::fs::Lock::new(dist_dir, "dist directory")?;
-    let _dist_guard = dist_lock.write()?;
-    let mut astra_lock = crate::fs::Lock::new(Path::new(".astra"), ".astra directory")?;
-    let _astra_guard = astra_lock.write()?;
+    let _build_lock = crate::fs::lock(build_dir, "build directory")?;
+    let _dist_lock = crate::fs::lock(dist_dir, "dist directory")?;
+    let _astra_lock = crate::fs::lock(Path::new(".astra"), ".astra directory")?;
 
     let mut outputs: BTreeMap<String, BuildOutput> = BTreeMap::new();
 
@@ -119,7 +122,7 @@ fn run(
 
             let archive_file = dist_dir.join(file);
             tracing::info!("Packaging '{}'", archive_file.display());
-            make_zip_archive(&archive_file, temp_dir)?;
+            create_zip(&archive_file, temp_dir)?;
         }
 
         if let Some(notes) = release.notes() {
@@ -232,112 +235,146 @@ fn extract_release_notes(text: &str) -> Option<String> {
     Some(format!("## What's Changed\n\n{}\n", changes.trim()))
 }
 
-fn make_zip_archive(dst_file: &Path, root_dir: &Path) -> anyhow::Result<()> {
-    let mut file = tempfile::NamedTempFile::new_in(
-        dst_file
-            .parent()
+fn create_zip(dst: &Path, root: &Path) -> anyhow::Result<()> {
+    let file = tempfile::NamedTempFile::new_in(
+        dst.parent()
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new(".")),
     )
-    .with_context(|| format!("failed to create temporary file for '{}'", dst_file.display()))?;
-    let mut zip = zip::ZipWriter::new(file.as_file_mut());
-    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    .with_context(|| format!("failed to create temporary file for '{}'", dst.display()))?;
 
-    add_dir_to_zip(&mut zip, options, root_dir, Path::new(""))
-        .with_context(|| format!("failed to write zip archive '{}'", dst_file.display()))?;
-
-    let _ = zip
-        .finish()
-        .with_context(|| format!("failed to finish zip archive '{}'", dst_file.display()))?;
-    let _ = file
-        .persist(dst_file)
-        .with_context(|| format!("failed to persist '{}'", dst_file.display()))?;
+    let workers = std::thread::available_parallelism()?.get().min(4);
+    write_zip(zip::ZipWriter::new(file.as_file()), root, workers)
+        .with_context(|| format!("failed to write zip archive '{}'", dst.display()))?;
+    file.persist(dst)
+        .with_context(|| format!("failed to persist '{}'", dst.display()))?;
 
     Ok(())
 }
 
-fn add_dir_to_zip(
-    zip: &mut zip::ZipWriter<&mut std::fs::File>,
-    options: zip::write::SimpleFileOptions,
-    root_dir: &Path,
-    curr_dir: &Path,
-) -> anyhow::Result<()> {
-    const MAX_PARALLEL_FILE_SIZE: u64 = 16 * 1024 * 1024;
+fn write_zip(mut zip: zip::ZipWriter<&std::fs::File>, root: &Path, workers: usize) -> anyhow::Result<()> {
+    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let entries = collect_zip_entries(root)?;
 
-    let mut entries = Vec::new();
-    collect_entries(root_dir, curr_dir, &mut entries)?;
-    let workers = std::thread::available_parallelism()?.get().min(4);
+    let mut remaining = entries.as_slice();
+    while !remaining.is_empty() {
+        let (len, files) = select_batch(remaining, root, workers)?;
+        let (batch, rest) = remaining.split_at(len);
+        remaining = rest;
 
-    for entries in entries.chunks(workers) {
-        let prepared = std::thread::scope(|scope| {
-            let tasks = entries
-                .iter()
-                .map(|(file, kind)| -> anyhow::Result<_> {
-                    if !kind.is_file() {
-                        return Ok(None);
-                    }
-
-                    let src = root_dir.join(file);
-                    if std::fs::metadata(&src)?.len() > MAX_PARALLEL_FILE_SIZE {
-                        return Ok(None);
-                    }
-
-                    Ok(Some(std::thread::Builder::new().spawn_scoped(scope, move || {
-                        compress_file(&src, file, options, MAX_PARALLEL_FILE_SIZE)
-                    })?))
-                })
-                .collect::<Vec<_>>();
-
-            tasks
-                .into_iter()
-                .map(|task| {
-                    let Some(task) = task? else { return Ok(None) };
-
-                    task.join()
-                        .map_err(|_| anyhow::anyhow!("zip compression worker panicked"))?
-                })
-                .collect::<Vec<_>>()
-        });
-
-        for ((file, kind), prepared) in entries.iter().zip(prepared) {
+        let mut results = compress_batch(&files, options).into_iter();
+        for (path, kind) in batch {
             if kind.is_dir() {
-                zip.add_directory_from_path(file, options)
-                    .with_context(|| format!("failed to add directory '{}' to zip archive", file.display()))?;
-            } else if let Some(prepared) = prepared? {
-                zip.add_prepared_file(prepared)
-                    .with_context(|| format!("failed to add file '{}' to zip archive", file.display()))?;
+                zip.add_directory_from_path(path, options)
+                    .with_context(|| format!("failed to add directory '{}' to zip archive", path.display()))?;
+            } else if let Some(data) = results.next().transpose()?.flatten() {
+                zip.add_prepared_file(data)
+                    .with_context(|| format!("failed to add file '{}' to zip archive", path.display()))?;
             } else {
-                zip.start_file_from_path(file, options)
-                    .with_context(|| format!("failed to start file '{}' in zip archive", file.display()))?;
-                let file = root_dir.join(file);
+                zip.start_file_from_path(path, options)
+                    .with_context(|| format!("failed to start file '{}' in zip archive", path.display()))?;
+                let path = root.join(path);
                 let mut src =
-                    std::fs::File::open(&file).with_context(|| format!("failed to read '{}'", file.display()))?;
-                std::io::copy(&mut src, zip)
-                    .with_context(|| format!("failed to copy '{}' into zip archive", file.display()))?;
+                    std::fs::File::open(&path).with_context(|| format!("failed to read '{}'", path.display()))?;
+                std::io::copy(&mut src, &mut zip)
+                    .with_context(|| format!("failed to copy '{}' into zip archive", path.display()))?;
             }
         }
     }
 
+    zip.finish().context("failed to finish zip archive")?;
     Ok(())
 }
 
-fn collect_entries(root: &Path, dir: &Path, result: &mut Vec<(PathBuf, std::fs::FileType)>) -> anyhow::Result<()> {
-    let mut entries = std::fs::read_dir(root.join(dir))?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(std::fs::DirEntry::file_name);
+fn collect_zip_entries(root: &Path) -> anyhow::Result<Vec<(PathBuf, std::fs::FileType)>> {
+    let children = |dir: &Path| -> anyhow::Result<_> {
+        let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.file_name()));
+        Ok(entries)
+    };
 
-    for entry in entries {
-        let file = dir.join(entry.file_name());
+    let mut entries = Vec::new();
+    let mut pending = children(root)?;
+    while let Some(entry) = pending.pop() {
         let kind = entry.file_type()?;
+        if !kind.is_dir() && !kind.is_file() {
+            continue;
+        }
 
+        let path = entry.path();
+        entries.push((path.strip_prefix(root)?.to_owned(), kind));
         if kind.is_dir() {
-            result.push((file.clone(), kind));
-            collect_entries(root, &file, result)?;
-        } else if kind.is_file() {
-            result.push((file, kind));
+            pending.extend(children(&path)?);
         }
     }
 
-    Ok(())
+    Ok(entries)
+}
+
+fn select_batch<'a>(
+    entries: &'a [(PathBuf, std::fs::FileType)],
+    root: &Path,
+    workers: usize,
+) -> anyhow::Result<(usize, Vec<ZipInput<'a>>)> {
+    const MAX_FILE_SIZE: u64 = 32 * 1024 * 1024;
+    const MAX_INPUT_SIZE: u64 = 64 * 1024 * 1024;
+
+    let mut files = Vec::with_capacity(workers);
+    let mut input_size = 0;
+
+    for (pos, (path, kind)) in entries.iter().enumerate() {
+        if kind.is_dir() {
+            continue;
+        }
+        if files.len() == workers {
+            return Ok((pos, files));
+        }
+
+        let src = root.join(path);
+        let size = std::fs::metadata(&src)
+            .with_context(|| format!("failed to get size of '{}'", src.display()))?
+            .len();
+
+        if size > MAX_FILE_SIZE {
+            return Ok((if files.is_empty() { pos + 1 } else { pos }, files));
+        }
+        if input_size + size > MAX_INPUT_SIZE {
+            return Ok((pos, files));
+        }
+
+        files.push(ZipInput { path, src, size });
+        input_size += size;
+    }
+
+    Ok((entries.len(), files))
+}
+
+fn compress_batch(
+    files: &[ZipInput<'_>],
+    options: zip::write::SimpleFileOptions,
+) -> Vec<anyhow::Result<Option<zip::write::PreparedZipFile>>> {
+    if files.len() < 2 {
+        return Vec::new();
+    }
+
+    std::thread::scope(|scope| {
+        let tasks = files
+            .iter()
+            .map(|file| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || compress_file(&file.src, file.path, options, file.size))
+            })
+            .collect::<Vec<_>>();
+
+        tasks
+            .into_iter()
+            .map(|task| {
+                task?
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("zip compression worker panicked"))?
+            })
+            .collect()
+    })
 }
 
 fn compress_file(
@@ -363,7 +400,7 @@ fn compress_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
+    use std::io::{Read as _, Seek as _};
 
     #[test]
     fn extracts_release_notes() {
@@ -402,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn creates_release_notes_and_archives() {
+    fn creates_release_notes() {
         let temp = tempfile::tempdir().unwrap();
         let changelog = temp.path().join("CHANGELOG.md");
         let text = "## Changelog\n### v1.0.0\n- Added\n";
@@ -422,7 +459,11 @@ mod tests {
                 .unwrap()
                 .contains("- Added")
         );
+    }
 
+    #[test]
+    fn writes_zip_in_order_across_batches() {
+        let temp = tempfile::tempdir().unwrap();
         let staging = temp.path().join("staging");
         std::fs::create_dir_all(staging.join("aaa")).unwrap();
         std::fs::create_dir_all(staging.join("bbb")).unwrap();
@@ -430,19 +471,15 @@ mod tests {
         std::fs::write(staging.join("bbb/2.txt"), "2").unwrap();
         std::fs::write(staging.join("root.txt"), "root").unwrap();
 
-        let zip_file = temp.path().join("test.zip");
-        make_zip_archive(&zip_file, &staging).unwrap();
-        let file = std::fs::File::open(&zip_file)
-            .with_context(|| format!("failed to read '{}'", zip_file.display()))
-            .unwrap();
-        let mut archive = zip::ZipArchive::new(file)
-            .with_context(|| format!("failed to read zip archive '{}'", zip_file.display()))
-            .unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        write_zip(zip::ZipWriter::new(&file), &staging, 2).unwrap();
+        file.rewind().unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
         let names: Vec<String> = (0..archive.len())
             .map(|i| {
                 archive
                     .by_index(i)
-                    .with_context(|| format!("failed to read entry {i} in zip archive '{}'", zip_file.display()))
+                    .with_context(|| format!("failed to read ZIP entry {i}"))
                     .unwrap()
                     .name()
                     .unwrap()
@@ -453,13 +490,57 @@ mod tests {
 
         for (name, expected) in [("aaa/1.txt", "1"), ("bbb/2.txt", "2"), ("root.txt", "root")] {
             let mut content = String::new();
-            archive.by_name(name).unwrap().read_to_string(&mut content).unwrap();
-            assert_eq!(content, expected);
+            let mut entry = archive.by_name(name).unwrap();
+            assert_eq!(entry.compression(), zip::CompressionMethod::Deflated, "{name}");
+            entry.read_to_string(&mut content).unwrap();
+            assert_eq!(content, expected, "{name}");
         }
+    }
 
+    #[test]
+    fn selects_zip_batches_within_limits() {
+        const MIB: u64 = 1024 * 1024;
+
+        for (sizes, batch_len, file_count) in [
+            (&[32 * MIB, 32 * MIB, 1][..], 3, 2),
+            (&[32 * MIB, 32 * MIB + 1, 1][..], 2, 1),
+            (&[32 * MIB + 1, 1][..], 1, 0),
+            (&[1, 1, 1, 1, 1][..], 5, 4),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir(root.join("b")).unwrap();
+
+            let paths = ["a.dll", "b/c.dll", "d.dll", "e.dll", "f.dll"];
+            for (path, size) in paths.iter().zip(sizes) {
+                std::fs::File::create(root.join(path)).unwrap().set_len(*size).unwrap();
+            }
+
+            let entries = collect_zip_entries(root).unwrap();
+            let (len, files) = select_batch(&entries, root, 4).unwrap();
+            assert_eq!(len, batch_len, "{sizes:?}");
+            assert_eq!(
+                files.iter().map(|file| file.path).collect::<Vec<_>>(),
+                paths[..file_count].iter().map(Path::new).collect::<Vec<_>>(),
+                "{sizes:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn skips_buffered_compression_over_read_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("root.txt");
+        std::fs::write(&src, "root").unwrap();
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
         assert!(
-            compress_file(&staging.join("root.txt"), Path::new("root.txt"), options, 3)
+            compress_file(&src, Path::new("root.txt"), options, 4)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            compress_file(&src, Path::new("root.txt"), options, 3)
                 .unwrap()
                 .is_none()
         );

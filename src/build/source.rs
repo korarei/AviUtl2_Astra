@@ -1,34 +1,40 @@
 use std::borrow::Cow;
 use std::fmt;
-use std::ops::Range;
-use std::path::Path;
+use std::ops::{Bound, Range, RangeBounds};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, Default, Clone)]
-pub(super) struct Map {
+pub struct Map {
     fragments: Vec<Fragment>,
 }
 
 impl Map {
-    pub(super) fn new(text: impl Into<Arc<str>>, pos: Position) -> Self {
+    pub fn new(text: impl Into<Arc<str>>, pos: Pos) -> Self {
         let text = text.into();
         let lines = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(st, _)| st + 1))
             .collect();
         let ed = text.len();
-        let original = Arc::new((pos, Arc::clone(&text), lines));
+        let original = Arc::new(Original {
+            pos,
+            text: Arc::clone(&text),
+            lines,
+        });
+
         Self {
             fragments: vec![Fragment {
                 text,
                 span: 0..ed,
                 original,
-                origin: 0..ed,
-                ed,
+                src_span: None,
+                dst_ed: ed,
             }],
         }
     }
 
-    pub(super) fn text(&self) -> Cow<'_, str> {
+    #[must_use]
+    pub fn text(&self) -> Cow<'_, str> {
         let mut fragments = self.fragments.iter().filter(|fragment| !fragment.span.is_empty());
         let Some(first) = fragments.next() else {
             return Cow::Borrowed("");
@@ -39,57 +45,53 @@ impl Map {
             return Cow::Borrowed(first);
         };
 
-        let mut result = String::with_capacity(self.len());
-        result.push_str(first);
+        let mut dst = String::with_capacity(self.len());
+        dst.push_str(first);
 
         for fragment in std::iter::once(second).chain(fragments) {
-            result.push_str(&fragment.text[fragment.span.clone()]);
+            dst.push_str(&fragment.text[fragment.span.clone()]);
         }
 
-        Cow::Owned(result)
+        Cow::Owned(dst)
     }
 
-    pub(super) fn locate(&self, at: usize) -> Position {
-        let (original, span) = self.resolve(at);
-        let at = span.start;
-        let (pos, text, lines) = original.as_ref();
-        let line = lines.partition_point(|&st| st <= at) - 1;
-        Position {
-            file: Arc::clone(&pos.file),
-            line: pos.line + line,
-            col: text[lines[line]..at].chars().count() + if line == 0 { pos.col } else { 1 },
+    #[must_use]
+    pub fn locate(&self, pos: usize) -> Pos {
+        let (fragment, span) = self.origin(pos);
+        let pos = span.start;
+        let Original { pos: base, text, lines } = fragment.original.as_ref();
+        let line = lines.partition_point(|&st| st <= pos) - 1;
+
+        Pos {
+            file: Arc::clone(&base.file),
+            line: base.line + line,
+            col: text[lines[line]..pos].chars().count() + if line == 0 { base.col } else { 1 },
         }
     }
 
-    pub(super) fn lines(&self) -> Cow<'_, [usize]> {
-        if let [fragment] = self.fragments.as_slice()
-            && Arc::ptr_eq(&fragment.text, &fragment.original.1)
-            && fragment.span == (0..fragment.text.len())
-        {
-            return Cow::Borrowed(&fragment.original.2);
-        }
-
-        let mut result = vec![0];
-
-        let mut st = 0;
-        for fragment in &self.fragments {
-            result.extend(
-                fragment.text[fragment.span.clone()]
-                    .match_indices('\n')
-                    .map(|(at, _)| st + at + 1),
-            );
-            st = fragment.ed;
-        }
-
-        Cow::Owned(result)
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.fragments.last().map_or(0, |fragment| fragment.dst_ed)
     }
 
-    pub(super) fn original(&self, at: usize) -> (&str, Range<usize>) {
-        let (original, span) = self.resolve(at);
-        (&original.1, span)
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
-    pub(super) fn append(&mut self, src: &Self, span: Range<usize>) {
+    pub(super) fn copy(&mut self, src: &Self, span: impl RangeBounds<usize>) {
+        let st = match span.start_bound() {
+            Bound::Included(&st) => st,
+            Bound::Excluded(&st) => st.checked_add(1).expect("source span start overflow"),
+            Bound::Unbounded => 0,
+        };
+        let ed = match span.end_bound() {
+            Bound::Included(&ed) => ed.checked_add(1).expect("source span end overflow"),
+            Bound::Excluded(&ed) => ed,
+            Bound::Unbounded => src.len(),
+        };
+        let span = st..ed;
+
         span.end
             .checked_sub(span.start)
             .filter(|_| span.end <= src.len())
@@ -97,13 +99,9 @@ impl Map {
 
         if span.is_empty() {
             if !src.fragments.is_empty() {
-                let (i, offset) = src.find(span.start);
-                let mut fragment = src.fragments[i].clone();
+                let (pos, offset) = src.find(span.start);
+                let mut fragment = src.fragments[pos].clone();
                 fragment.span = fragment.span.start + offset..fragment.span.start + offset;
-                if Arc::ptr_eq(&fragment.text, &fragment.original.1) {
-                    fragment.origin = fragment.origin.start + offset..fragment.origin.start + offset;
-                }
-
                 self.push(fragment);
             }
 
@@ -111,85 +109,125 @@ impl Map {
         }
 
         for (fragment, span) in src.parts(span) {
-            let offset = span.start - fragment.span.start;
             let mut fragment = fragment.clone();
             fragment.span = span;
-            if Arc::ptr_eq(&fragment.text, &fragment.original.1) {
-                fragment.origin = fragment.origin.start + offset..fragment.origin.start + offset + fragment.span.len();
-            }
-
             self.push(fragment);
         }
     }
 
-    pub(super) fn generate(&mut self, text: impl Into<Arc<str>>, src: &Self, span: Range<usize>) {
+    pub(super) fn emit(&mut self, text: impl Into<Arc<str>>, src: &Self, span: Range<usize>) {
         span.end
             .checked_sub(span.start)
             .filter(|_| span.end <= src.len())
             .expect("source span must be valid");
-        let (i, _) = src.find(span.start);
-        let fragment = &src.fragments[i];
-        let (original, mut origin) = (Arc::clone(&fragment.original), src.original(span.start).1);
+        let (fragment, mut src_span) = src.origin(span.start);
+        let original = Arc::clone(&fragment.original);
 
-        if Arc::ptr_eq(&fragment.text, &fragment.original.1) {
+        if fragment.src_span.is_none() {
             let last_at = if span.is_empty() { span.end } else { span.end - 1 };
-            let (ed, offset) = src.find(last_at);
-            let last = &src.fragments[ed];
-            origin.end = if Arc::ptr_eq(&original, &last.original) {
-                if Arc::ptr_eq(&last.text, &last.original.1) {
-                    last.origin.start + offset + usize::from(!span.is_empty())
-                } else {
-                    last.origin.end
+            let (pos, offset) = src.find(last_at);
+            let last = &src.fragments[pos];
+            src_span.end = if Arc::ptr_eq(&original, &last.original) {
+                match &last.src_span {
+                    Some(span) => span.end,
+                    None => last.span.start + offset + usize::from(!span.is_empty()),
                 }
             } else {
-                origin.start
+                src_span.start
             };
-            origin.end = origin.end.max(origin.start);
+            src_span.end = src_span.end.max(src_span.start);
         }
 
         let text: Arc<str> = text.into();
-        let text = if Arc::ptr_eq(&text, &original.1) {
-            Arc::from(text.as_ref())
-        } else {
-            text
-        };
         let ed = text.len();
         self.push(Fragment {
             text,
             span: 0..ed,
             original,
-            origin,
-            ed,
+            src_span: Some(src_span),
+            dst_ed: ed,
         });
     }
 
-    pub(super) fn slice(&self, span: Range<usize>) -> Self {
-        let mut result = Self::default();
-        result.append(self, span);
-        result
+    pub(super) fn emit_at_end(&mut self, text: impl Into<Arc<str>>) {
+        let (fragment, src_span) = self.origin(self.len());
+        let original = Arc::clone(&fragment.original);
+        let text: Arc<str> = text.into();
+        let ed = text.len();
+        self.push(Fragment {
+            text,
+            span: 0..ed,
+            original,
+            src_span: Some(src_span),
+            dst_ed: ed,
+        });
+    }
+
+    pub(super) fn slice(&self, span: impl RangeBounds<usize>) -> Self {
+        let mut dst = Self::default();
+        dst.copy(self, span);
+        dst
+    }
+
+    pub(super) fn apply(&mut self, src: &Self, span: Range<usize>, edits: impl IntoIterator<Item = Edit>) {
+        let mut curr = span.start;
+
+        for Edit { span: edit, text } in edits {
+            self.copy(src, curr..edit.start);
+            curr = edit.end;
+
+            if let Some(text) = text {
+                self.emit(text, src, edit);
+            }
+        }
+
+        self.copy(src, curr..span.end);
     }
 
     pub(super) fn indent(&self, padding: usize, indent: &str) -> Self {
-        let mut result = Self::default();
+        let mut dst = Self::default();
         let indent: Arc<str> = indent.into();
         let lines = self.lines();
 
-        for (i, &st) in lines.iter().enumerate().take_while(|(_, st)| **st < self.len()) {
-            let ed = lines.get(i + 1).copied().unwrap_or(self.len());
+        for (line, &st) in lines.iter().enumerate().take_while(|(_, st)| **st < self.len()) {
+            let ed = lines.get(line + 1).copied().unwrap_or(self.len());
 
             if self.is_blank(st..ed) {
-                result.append(self, st..ed);
+                dst.copy(self, st..ed);
             } else {
-                result.generate(Arc::clone(&indent), self, st..st + padding);
-                result.append(self, st + padding..ed);
+                dst.emit(Arc::clone(&indent), self, st..st + padding);
+                dst.copy(self, st + padding..ed);
             }
         }
 
         if self.is_empty() {
-            result.append(self, 0..0);
+            dst.copy(self, 0..0);
         }
 
-        result
+        dst
+    }
+
+    pub(super) fn lines(&self) -> Cow<'_, [usize]> {
+        if let [fragment] = self.fragments.as_slice()
+            && fragment.src_span.is_none()
+            && fragment.span == (0..fragment.text.len())
+        {
+            return Cow::Borrowed(&fragment.original.lines);
+        }
+
+        let mut lines = vec![0];
+
+        let mut st = 0;
+        for fragment in &self.fragments {
+            lines.extend(
+                fragment.text[fragment.span.clone()]
+                    .match_indices('\n')
+                    .map(|(at, _)| st + at + 1),
+            );
+            st = fragment.dst_ed;
+        }
+
+        Cow::Owned(lines)
     }
 
     pub(super) fn is_blank(&self, span: Range<usize>) -> bool {
@@ -207,49 +245,62 @@ impl Map {
             .is_some_and(|fragment| fragment.text[fragment.span.clone()].ends_with(ch))
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.fragments.last().map_or(0, |fragment| fragment.ed)
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    fn find(&self, at: usize) -> (usize, usize) {
-        self.len().checked_sub(at).expect("source offset must be valid");
-        let i = self.fragments.partition_point(|fragment| fragment.ed <= at);
-        let i = i.min(
+    fn find(&self, pos: usize) -> (usize, usize) {
+        self.len().checked_sub(pos).expect("source offset must be valid");
+        let index = self.fragments.partition_point(|fragment| fragment.dst_ed <= pos);
+        let index = index.min(
             self.fragments
                 .len()
                 .checked_sub(1)
                 .expect("source has no original position"),
         );
-        (i, at - i.checked_sub(1).map_or(0, |i| self.fragments[i].ed))
+        (
+            index,
+            pos - index.checked_sub(1).map_or(0, |index| self.fragments[index].dst_ed),
+        )
     }
 
-    fn resolve(&self, at: usize) -> (&Original, Range<usize>) {
-        let (i, offset) = self.find(at);
-        let fragment = &self.fragments[i];
-        let span = if Arc::ptr_eq(&fragment.text, &fragment.original.1) {
-            let st = fragment.origin.start + offset;
-            st..st
-        } else {
-            fragment.origin.clone()
-        };
+    fn origin(&self, pos: usize) -> (&Fragment, Range<usize>) {
+        let (index, offset) = self.find(pos);
+        let fragment = &self.fragments[index];
+        let span = fragment.src_span.clone().unwrap_or_else(|| {
+            let pos = fragment.span.start + offset;
+            pos..pos
+        });
 
-        (&fragment.original, span)
+        (fragment, span)
+    }
+
+    fn parts(&self, span: Range<usize>) -> impl Iterator<Item = (&Fragment, Range<usize>)> {
+        let (pos, _) = self.find(span.start);
+        let st = pos.checked_sub(1).map_or(0, |pos| self.fragments[pos].dst_ed);
+        self.fragments[pos..].iter().scan(st, move |st, fragment| {
+            let curr = *st;
+            *st = fragment.dst_ed;
+
+            if curr >= span.end {
+                return None;
+            }
+
+            let offset = span.start.saturating_sub(curr);
+            let len = fragment.dst_ed.min(span.end) - (curr + offset);
+            Some((
+                fragment,
+                fragment.span.start + offset..fragment.span.start + offset + len,
+            ))
+        })
     }
 
     fn push(&mut self, mut fragment: Fragment) {
         let len = fragment.span.len();
 
         if len == 0 {
-            fragment.ed = self.len();
+            fragment.dst_ed = self.len();
 
-            if let Some(last) = self.fragments.last_mut()
-                && last.span.is_empty()
+            if let Some(prev) = self.fragments.last_mut()
+                && prev.span.is_empty()
             {
-                *last = fragment;
+                *prev = fragment;
             } else {
                 self.fragments.push(fragment);
             }
@@ -257,7 +308,7 @@ impl Map {
             return;
         }
 
-        fragment.ed = self.len() + len;
+        fragment.dst_ed = self.len() + len;
 
         if self.fragments.last().is_some_and(|fragment| fragment.span.is_empty()) {
             let _ = self.fragments.pop();
@@ -267,79 +318,68 @@ impl Map {
             && Arc::ptr_eq(&prev.text, &fragment.text)
             && prev.span.end == fragment.span.start
             && Arc::ptr_eq(&prev.original, &fragment.original)
-            && if Arc::ptr_eq(&prev.text, &prev.original.1) {
-                prev.origin.end == fragment.origin.start
-            } else {
-                prev.origin == fragment.origin
-            }
+            && prev.src_span == fragment.src_span
         {
             prev.span.end = fragment.span.end;
-            if Arc::ptr_eq(&prev.text, &prev.original.1) {
-                prev.origin.end = fragment.origin.end;
-            }
-            prev.ed = fragment.ed;
+            prev.dst_ed = fragment.dst_ed;
         } else {
-            if self.is_empty() {
-                self.fragments.clear();
-            }
-
             self.fragments.push(fragment);
         }
-    }
-
-    fn parts(&self, span: Range<usize>) -> impl Iterator<Item = (&Fragment, Range<usize>)> {
-        let (i, _) = self.find(span.start);
-        let st = i.checked_sub(1).map_or(0, |i| self.fragments[i].ed);
-        self.fragments[i..].iter().scan(st, move |st, fragment| {
-            let curr = *st;
-            *st = fragment.ed;
-
-            if curr >= span.end {
-                return None;
-            }
-
-            let offset = span.start.saturating_sub(curr);
-            let len = fragment.ed.min(span.end) - (curr + offset);
-            Some((
-                fragment,
-                fragment.span.start + offset..fragment.span.start + offset + len,
-            ))
-        })
     }
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct Position {
-    pub(super) file: Arc<Path>,
-    pub(super) line: usize,
-    pub(super) col: usize,
+pub struct Pos {
+    pub file: Arc<Path>,
+    pub line: usize,
+    pub col: usize,
 }
 
-impl fmt::Display for Position {
+impl fmt::Display for Pos {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}:{}", self.file.display(), self.line, self.col)
     }
+}
+
+pub(super) struct Edit {
+    pub(super) span: Range<usize>,
+    pub(super) text: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone)]
 struct Fragment {
     text: Arc<str>,
     span: Range<usize>,
-    original: Original,
-    origin: Range<usize>,
-    ed: usize,
+    original: Arc<Original>,
+    src_span: Option<Range<usize>>,
+    dst_ed: usize,
 }
 
-type Original = Arc<(Position, Arc<str>, Vec<usize>)>;
+#[derive(Debug)]
+struct Original {
+    pos: Pos,
+    text: Arc<str>,
+    lines: Vec<usize>,
+}
+
+pub(super) fn resolve_include(path: &str, is_quoted: bool, pos: &Pos, dirs: &[PathBuf]) -> anyhow::Result<PathBuf> {
+    let dir = pos.file.parent().unwrap_or(Path::new("."));
+    is_quoted
+        .then(|| dir.join(path))
+        .filter(|file| file.is_file())
+        .or_else(|| dirs.iter().map(|dir| dir.join(path)).find(|file| file.is_file()))
+        .ok_or_else(|| anyhow::anyhow!("{pos}: include file '{path}' not found from '{}'", dir.display()))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build::lang::astra;
 
     fn make_map(text: &str, file: &str) -> Map {
         Map::new(
             text,
-            Position {
+            Pos {
                 file: Path::new(file).into(),
                 line: 1,
                 col: 1,
@@ -348,10 +388,127 @@ mod tests {
     }
 
     #[test]
+    fn ordered_edits() {
+        let src = make_map("abcd", "input.txt");
+        let mut dst = Map::default();
+        dst.apply(
+            &src,
+            0..src.len(),
+            [
+                Edit { span: 1..2, text: None },
+                Edit {
+                    span: 2..3,
+                    text: Some("XY".into()),
+                },
+            ],
+        );
+        assert_eq!(dst.text(), "aXYd");
+        let (fragment, span) = dst.origin(1);
+        assert_eq!((fragment.original.text.as_ref(), span), ("abcd", 2..3));
+        assert_eq!(dst.locate(dst.len()).to_string(), "input.txt:1:5");
+    }
+
+    #[test]
+    fn preserve_origins() {
+        let text = "あ${X}";
+        let src = Map::new(
+            text,
+            Pos {
+                file: Path::new("test.lua").into(),
+                line: 1,
+                col: 1,
+            },
+        );
+        let vars = indexmap::IndexMap::from([("X".to_owned(), String::new())]);
+        let mut map = Map::default();
+        map.apply(
+            &src,
+            0..src.len(),
+            super::super::lang::astra::expand(text, &vars, astra::Escape::None)
+                .unwrap()
+                .to_edits(0),
+        );
+        assert_eq!(map.text(), "あ");
+        assert_eq!(map.locate(map.len()).to_string(), "test.lua:1:6");
+
+        let vars = indexmap::IndexMap::from([("X".to_owned(), "日本語\nsecond".to_owned())]);
+        let mut map = Map::default();
+        map.apply(
+            &src,
+            0..src.len(),
+            super::super::lang::astra::expand(text, &vars, astra::Escape::None)
+                .unwrap()
+                .to_edits(0),
+        );
+        assert_eq!(map.locate(13).to_string(), "test.lua:1:2");
+        let (fragment, span) = map.origin(13);
+        assert_eq!((fragment.original.text.as_ref(), span), (text, 3..7));
+        assert_eq!(map.locate(map.len()).to_string(), "test.lua:1:6");
+    }
+
+    #[test]
+    fn slice_ranges() {
+        let src = make_map("あb\nc", "input.lua");
+
+        for (map, expected, pos) in [
+            (src.slice(..), "あb\nc", "input.lua:1:1"),
+            (src.slice(..=3), "あb", "input.lua:1:1"),
+            (src.slice(3..), "b\nc", "input.lua:1:2"),
+            (src.slice(3..=3), "b", "input.lua:1:2"),
+            (src.slice(src.len()..), "", "input.lua:2:2"),
+        ] {
+            assert_eq!(map.text(), expected);
+            assert_eq!(map.locate(0).to_string(), pos);
+        }
+
+        let mut dst = Map::default();
+        dst.copy(&src, (Bound::Excluded(2), Bound::Included(3)));
+        assert_eq!(dst.text(), "b");
+        assert_eq!(dst.locate(0).to_string(), "input.lua:1:2");
+        assert!(Map::default().slice(..).is_empty());
+    }
+
+    #[test]
+    fn preserve_expansion_edits_in_slices() {
+        let text = "headあ$${X}:${X}tail";
+        let src = make_map(text, "input.lua");
+        let vars = indexmap::IndexMap::from([("X".to_owned(), "値\n次".to_owned())]);
+        let span = 4..text.len() - 4;
+        let mut map = src.slice(0..span.start);
+        map.apply(
+            &src,
+            span.clone(),
+            super::super::lang::astra::expand(&text[span.clone()], &vars, astra::Escape::None)
+                .unwrap()
+                .to_edits(span.start),
+        );
+        map.copy(&src, span.end..src.len());
+
+        let text = map.text();
+        assert_eq!(text, "headあ${X}:値\n次tail");
+        assert_eq!(map.locate(text.find('$').unwrap()).to_string(), "input.lua:1:7");
+        assert_eq!(map.locate(text.find('値').unwrap()).to_string(), "input.lua:1:12");
+        assert_eq!(map.locate(text.find('次').unwrap()).to_string(), "input.lua:1:12");
+        assert_eq!(map.locate(text.find("tail").unwrap()).to_string(), "input.lua:1:16");
+    }
+
+    #[test]
+    fn concatenate_origins() {
+        let first = make_map("first\n", "first.lua");
+        let second = make_map("second\n", "second.lua");
+        let mut map = first.clone();
+        map.copy(&second, ..);
+        assert_eq!(map.text(), "first\nsecond\n");
+        assert_eq!(map.locate(0).to_string(), "first.lua:1:1");
+        assert_eq!(map.locate(first.len()).to_string(), "second.lua:1:1");
+        assert_eq!(map.locate(map.len()).to_string(), "second.lua:2:1");
+    }
+
+    #[test]
     fn share_fragments() {
         let src = make_map("あb\nう", "original.lua");
         let mut map = src.slice(0..3);
-        map.append(&src, 3..src.len());
+        map.copy(&src, 3..src.len());
         assert_eq!(map.text(), "あb\nう");
         assert_eq!(map.fragments.len(), 1);
         assert!(Arc::ptr_eq(&src.fragments[0].text, &map.fragments[0].text));
@@ -363,14 +520,16 @@ mod tests {
     fn preserve_replacements() {
         let src = make_map("あ${X}後", "original.lua");
         let mut map = src.slice(0..3);
-        map.generate("first\nsecond", &src, 3..7);
-        map.append(&src, 7..src.len());
+        map.emit("first\nsecond", &src, 3..7);
+        map.copy(&src, 7..src.len());
         let map = map.slice(5..map.len());
         assert_eq!(map.text(), "rst\nsecond後");
         assert_eq!(map.locate(4).to_string(), "original.lua:1:2");
-        assert_eq!(map.original(4), ("あ${X}後", 3..7));
+        let (fragment, span) = map.origin(4);
+        assert_eq!((fragment.original.text.as_ref(), span), ("あ${X}後", 3..7));
         assert_eq!(map.locate(10).to_string(), "original.lua:1:6");
-        assert_eq!(map.original(10), ("あ${X}後", 7..7));
+        let (fragment, span) = map.origin(10);
+        assert_eq!((fragment.original.text.as_ref(), span), ("あ${X}後", 7..7));
     }
 
     #[test]
@@ -379,10 +538,10 @@ mod tests {
         let body = src.indent(2, "    ");
         let caller = make_map("require('included')", "main.lua");
         let mut map = Map::default();
-        map.generate("(function()\n", &caller, 0..caller.len());
+        map.emit("(function()\n", &caller, 0..caller.len());
         let body_st = map.len();
-        map.append(&body, 0..body.len());
-        map.generate("end)()", &caller, 0..caller.len());
+        map.copy(&body, 0..body.len());
+        map.emit("end)()", &caller, 0..caller.len());
         assert_eq!(map.locate(0).to_string(), "main.lua:1:1");
         assert_eq!(map.locate(body_st).to_string(), "included.lua:1:1");
         assert_eq!(map.locate(body_st + 4).to_string(), "included.lua:1:3");
@@ -398,7 +557,7 @@ mod tests {
         let empty = src.slice(src.len()..src.len());
         assert_eq!(empty.locate(0).to_string(), "original.lua:2:1");
         let mut map = Map::default();
-        map.generate("wrapper", &empty, 0..0);
+        map.emit("wrapper", &empty, 0..0);
         assert_eq!(map.locate(map.len()).to_string(), "original.lua:2:1");
     }
 
@@ -406,16 +565,18 @@ mod tests {
     fn preserve_generated_origins() {
         let src = make_map("ab\ncd", "original.txt");
         let mut map = Map::default();
-        map.generate(Arc::clone(&src.fragments[0].text), &src, 0..2);
+        map.emit(Arc::clone(&src.fragments[0].text), &src, 0..2);
+        assert!(Arc::ptr_eq(&src.fragments[0].text, &map.fragments[0].text));
         assert_eq!(map.locate(4).to_string(), "original.txt:1:1");
-        assert_eq!(map.original(4), ("ab\ncd", 0..2));
+        let (fragment, span) = map.origin(4);
+        assert_eq!((fragment.original.text.as_ref(), span), ("ab\ncd", 0..2));
     }
 
     #[test]
     fn locate_boundaries() {
         let src = Map::new(
             "あ\nb\n",
-            Position {
+            Pos {
                 file: Path::new("input.lua").into(),
                 line: 7,
                 col: 4,
@@ -441,8 +602,8 @@ mod tests {
         let first = make_map("first\n", "first.lua");
         let second = make_map("second", "second.lua");
         let mut map = Map::default();
-        map.append(&first, 0..first.len());
-        map.append(&second, 0..second.len());
+        map.copy(&first, 0..first.len());
+        map.copy(&second, 0..second.len());
         assert_eq!(map.text(), "first\nsecond");
         assert_eq!(map.lines().as_ref(), [0, 6]);
         assert_eq!(map.locate(5).to_string(), "first.lua:1:6");
@@ -457,14 +618,15 @@ mod tests {
     fn preserve_nested_replacements() {
         let src = make_map("aVALUEz", "input.lua");
         let mut map = src.slice(0..1);
-        map.generate("first\nsecond", &src, 1..6);
-        map.append(&src, 6..7);
-        let mut nested = map.slice(0..3);
-        nested.generate("replacement", &map, 3..9);
-        nested.append(&map, 9..map.len());
-        assert_eq!(nested.locate(3).to_string(), "input.lua:1:2");
-        assert_eq!(nested.original(3), ("aVALUEz", 1..6));
-        assert_eq!(nested.locate(nested.len()).to_string(), "input.lua:1:8");
+        map.emit("first\nsecond", &src, 1..6);
+        map.copy(&src, 6..7);
+        let mut dst = map.slice(0..3);
+        dst.emit("replacement", &map, 3..9);
+        dst.copy(&map, 9..map.len());
+        assert_eq!(dst.locate(3).to_string(), "input.lua:1:2");
+        let (fragment, span) = dst.origin(3);
+        assert_eq!((fragment.original.text.as_ref(), span), ("aVALUEz", 1..6));
+        assert_eq!(dst.locate(dst.len()).to_string(), "input.lua:1:8");
     }
 
     #[test]

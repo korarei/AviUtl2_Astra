@@ -43,7 +43,7 @@ pub(crate) struct Args {
     #[arg(id = "debug", long = "debug", conflicts_with = "release", conflicts_with = "task")]
     is_debug: bool,
 
-    /// パッケージのURLキャッシュを再ダウンロードする。
+    /// Re-download package URL cache.
     #[arg(long = "refresh", conflicts_with = "task")]
     is_refresh: bool,
 }
@@ -163,65 +163,9 @@ use crate::config::{Package, Release, ReleaseDependency};
 #[allow(clippy::too_many_lines)]
 fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
     use process::MonitorExit;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::Ordering;
 
-    #[allow(non_camel_case_types)]
-    #[allow(clippy::upper_case_acronyms)]
-    type BOOL = i32;
-    #[allow(non_camel_case_types)]
-    #[allow(clippy::upper_case_acronyms)]
-    type DWORD = u32;
-    #[allow(non_camel_case_types)]
-    type PHANDLER_ROUTINE = Option<unsafe extern "system" fn(DWORD) -> BOOL>;
-
-    const TRUE: BOOL = 1;
-    const FALSE: BOOL = 0;
-    const CTRL_C_EVENT: DWORD = 0;
-    const CTRL_BREAK_EVENT: DWORD = 1;
-
-    static IS_RUNNING: AtomicBool = AtomicBool::new(true);
-
-    unsafe extern "system" fn handle_console_ctrl(ctrl_type: DWORD) -> BOOL {
-        match ctrl_type {
-            CTRL_C_EVENT | CTRL_BREAK_EVENT => {
-                IS_RUNNING.store(false, Ordering::SeqCst);
-                TRUE
-            }
-            _ => FALSE,
-        }
-    }
-
-    unsafe extern "system" {
-        fn SetConsoleCtrlHandler(HandlerRoutine: PHANDLER_ROUTINE, Add: BOOL) -> BOOL;
-    }
-
-    struct CtrlHandler;
-    impl CtrlHandler {
-        fn install() -> std::io::Result<Self> {
-            let result = unsafe { SetConsoleCtrlHandler(PHANDLER_ROUTINE::Some(handle_console_ctrl), TRUE) };
-            if result == FALSE {
-                return Err(std::io::Error::last_os_error());
-            }
-
-            Ok(Self)
-        }
-    }
-
-    impl Drop for CtrlHandler {
-        fn drop(&mut self) {
-            let result = unsafe { SetConsoleCtrlHandler(PHANDLER_ROUTINE::Some(handle_console_ctrl), FALSE) };
-            if result == FALSE {
-                tracing::warn!(
-                    "failed to unregister console control handler: {}",
-                    std::io::Error::last_os_error()
-                );
-            }
-        }
-    }
-
-    IS_RUNNING.store(true, Ordering::SeqCst);
-
-    let _ctrl_guard = CtrlHandler::install()?;
+    let (is_running, _ctrl_guard) = process::install_ctrl_handler()?;
 
     let astra = config.astra();
     let build_dir = Path::new(astra.build_dir());
@@ -235,12 +179,9 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
     crate::fs::create_managed_dir(dist_dir)?;
     crate::fs::create_managed_dir(Path::new(".astra"))?;
 
-    let mut build_lock = crate::fs::Lock::new(build_dir, "build directory")?;
-    let _build_guard = build_lock.write()?;
-    let mut dist_lock = crate::fs::Lock::new(dist_dir, "dist directory")?;
-    let _dist_guard = dist_lock.write()?;
-    let mut astra_lock = crate::fs::Lock::new(Path::new(".astra"), ".astra directory")?;
-    let _astra_guard = astra_lock.write()?;
+    let _build_lock = crate::fs::lock(build_dir, "build directory")?;
+    let _dist_lock = crate::fs::lock(dist_dir, "dist directory")?;
+    let _astra_lock = crate::fs::lock(Path::new(".astra"), ".astra directory")?;
 
     std::fs::create_dir_all(runtime_dir)
         .with_context(|| format!("failed to create directory '{}'", runtime_dir.display()))?;
@@ -277,16 +218,16 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
     sync_package(&config, build_type, &release, &data_dir, &mut manifest, args.is_refresh)?;
 
     loop {
-        if !IS_RUNNING.load(Ordering::SeqCst) {
+        if !is_running.load(Ordering::SeqCst) {
             break;
         }
 
         tracing::info!("Running AviUtl ExEdit2 ({})", aviutl2_exe.display());
 
-        match process::run_process(&aviutl2_exe, &IS_RUNNING)? {
+        match process::run_process(&aviutl2_exe, is_running)? {
             MonitorExit::ProcessExited(code) => {
                 if let Some(code) = code.filter(|&code| code != 0) {
-                    tracing::warn!("aviutl exedit2 exited with code: {code:#010x}");
+                    tracing::warn!("AviUtl ExEdit2 exited with code: {code:#010x}");
                 } else if code.is_none() {
                     tracing::warn!("AviUtl ExEdit2 exited; exit code is unknown");
                 }
@@ -298,7 +239,7 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                 break;
             }
             MonitorExit::ReloadRequested => loop {
-                if !IS_RUNNING.load(Ordering::SeqCst) {
+                if !is_running.load(Ordering::SeqCst) {
                     return Ok(());
                 }
 
@@ -311,7 +252,7 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                         tracing::error!("failed to reload configuration: {e:#}");
                         tracing::info!("Fix the configuration and press 'Ctrl+R' or 'r' to retry reload");
 
-                        if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
+                        if process::wait_for_reload(is_running) == MonitorExit::ReloadRequested {
                             continue;
                         }
 
@@ -325,7 +266,7 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                         tracing::error!("{e:#}");
                         tracing::info!("Fix the configuration and press 'Ctrl+R' or 'r' to retry reload");
 
-                        if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
+                        if process::wait_for_reload(is_running) == MonitorExit::ReloadRequested {
                             continue;
                         }
 
@@ -339,7 +280,7 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
                         tracing::error!("{e:#}");
                         tracing::info!("Fix the build error and press 'Ctrl+R' or 'r' to retry reload");
 
-                        if process::wait_for_reload(&IS_RUNNING) == MonitorExit::ReloadRequested {
+                        if process::wait_for_reload(is_running) == MonitorExit::ReloadRequested {
                             continue;
                         }
 
@@ -381,7 +322,7 @@ fn sync_package(
     let package = release
         .package()
         .ok_or_else(|| anyhow::anyhow!("release '{}' has no package", release.id()))?;
-    let config_hash = xxhash_rust::const_xxh3::xxh3_128(&serde_json::to_vec(&(config, release, kind.as_lowercase()))?);
+    let config_hash = xxhash_rust::xxh3::xxh3_128(&serde_json::to_vec(&(config, release, kind.as_lowercase()))?);
 
     let mut outputs = BTreeMap::new();
 
