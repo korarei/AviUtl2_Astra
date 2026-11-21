@@ -70,8 +70,7 @@ pub(super) fn command(config: &Config, args: &Args) -> anyhow::Result<()> {
     let build_dir = Path::new(astra.build_dir());
     crate::fs::create_managed_dir(build_dir)?;
 
-    let mut lock = crate::fs::Lock::new(build_dir, "build directory")?;
-    let _guard = lock.write()?;
+    let _lock = crate::fs::lock(build_dir, "build directory")?;
 
     if let Some(id) = &args.id {
         let build = config.build(&BuildCall::new(id), build_type)?;

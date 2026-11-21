@@ -676,14 +676,17 @@ impl<'a, 'tokens> Parser<'a, 'tokens> {
                     TokenKind::Assign
                     | TokenKind::Other('+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '<' | '>' | '!'),
                 ) => {
-                    let token_st = tokens[self.curr].span.st;
-                    let op = [
+                    static OPERATORS: [&str; 29] = [
                         "<<=", ">>=", "&&", "||", "==", "!=", "<=", ">=", "<<", ">>", "+=", "-=", "*=", "/=", "%=",
                         "&=", "|=", "^=", "=", "+", "-", "*", "/", "%", "&", "|", "^", "<", ">",
-                    ]
-                    .into_iter()
-                    .find(|op| src[token_st..].starts_with(op))
-                    .ok_or_else(|| error(self.curr, "invalid expression operator"))?;
+                    ];
+
+                    let token_st = tokens[self.curr].span.st;
+                    let op = OPERATORS
+                        .iter()
+                        .copied()
+                        .find(|op| src[token_st..].starts_with(op))
+                        .ok_or_else(|| error(self.curr, "invalid expression operator"))?;
                     let prec = match op {
                         "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => 1,
                         "||" => 3,

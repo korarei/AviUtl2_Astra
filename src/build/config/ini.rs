@@ -167,22 +167,38 @@ impl Builder<'_> {
             let val_ed = key.len() + 1 + rest.trim_end().len();
             let prefix = astra::expand(&text[..val_st], self.vars.as_ref(), astra::Escape::None)
                 .map_err(|err| anyhow::anyhow!("{}: {err}", locate(err.offset)))?;
+            if let Some(at) = prefix.text.find('\n') {
+                bail!("{}: INI key cannot contain a newline", locate(prefix.to_src_offset(at)));
+            }
 
             self.map.apply(map, st..st + val_st, prefix.to_edits(st));
             self.map.emit(val, map, st + val_st..st + val_ed);
             self.map.copy(map, st + val_ed..ed);
         } else if content.starts_with(';') {
             self.map.copy(map, st..ed);
-        } else if let Some(comment_st) = section_comment_st
-            && comment_st < text.len()
-        {
+        } else if let Some(comment_st) = section_comment_st {
             let expansion = astra::expand(&text[..comment_st], self.vars.as_ref(), astra::Escape::None)
                 .map_err(|err| anyhow::anyhow!("{}: {err}", locate(err.offset)))?;
+            if let Some(at) = expansion.text.find('\n') {
+                bail!(
+                    "{}: INI section name cannot contain a newline",
+                    locate(expansion.to_src_offset(at))
+                );
+            }
             self.map.apply(map, st..st + comment_st, expansion.to_edits(st));
-            self.map.copy(map, st + comment_st..ed);
+            if comment_st < text.len() {
+                self.map.copy(map, st + comment_st..ed);
+            }
         } else {
+            let is_entry = text.split_once('=').is_some_and(|(key, _)| !key.trim().is_empty());
             let expansion = astra::expand(text, self.vars.as_ref(), astra::Escape::None)
                 .map_err(|err| anyhow::anyhow!("{}: {err}", locate(err.offset)))?;
+            if is_entry && let Some(at) = expansion.text.find('\n') {
+                bail!(
+                    "{}: INI entry cannot contain a newline",
+                    locate(expansion.to_src_offset(at))
+                );
+            }
             self.map.apply(map, st..ed, expansion.to_edits(st));
         }
 
@@ -443,11 +459,20 @@ mod tests {
             ("SEC".to_owned(), "main".to_owned()),
             ("VAL".to_owned(), "a\r\nb\rc".to_owned()),
         ]);
-        let src = "; ${MISSING}\n[${SEC}] ; ${MISSING}\nkey=x;${VAL}\n";
+        let src = "; ${MISSING}\n[${SEC}] ; ${MISSING}\n${VAL}\n";
         assert_eq!(
             preprocess(src, &vars).unwrap().text(),
-            "; ${MISSING}\n[main] ; ${MISSING}\nkey=x;a\nb\nc\n"
+            "; ${MISSING}\n[main] ; ${MISSING}\na\nb\nc\n"
         );
-        assert!(preprocess(";#replace VAL\nkey=0\n", &vars).is_err());
+        for err_src in [
+            "[${VAL}]\n",
+            "${VAL}=1\n",
+            "key=${VAL}\n",
+            "key=x;${VAL}\n",
+            ";#replace VAL\nkey=0\n",
+            ";#replace SEC\n${VAL}=0\n",
+        ] {
+            assert!(preprocess(err_src, &vars).is_err(), "{err_src}");
+        }
     }
 }

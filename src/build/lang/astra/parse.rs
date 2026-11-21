@@ -2,7 +2,7 @@ use super::lex::Lexer;
 use super::{Action, Directive, DirectiveKind, Error, Escape, TokenKind, expand};
 use crate::text::normalize_newlines;
 use crate::vars::is_ident;
-use cel_interpreter::{Context, Program, Value};
+use cel::{Context, Program, Value};
 use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::ops::Range;
@@ -462,16 +462,6 @@ fn is_condition_met(expr: &str, vars: &IndexMap<String, String>) -> Result<bool,
         });
     }
 
-    let expr = normalize_negation(expr)?;
-    let mut ctx = Context::default();
-    ctx.add_function("__astra_neg", |val: Value| -> cel_interpreter::ResolveResult {
-        match val {
-            Value::Int(val) => Value::Int(0) - Value::Int(val),
-            Value::Float(val) => Ok(Value::Float(-val)),
-            val => Err(cel_interpreter::ExecutionError::UnsupportedUnaryOperator("minus", val)),
-        }
-    });
-
     let normalize = |mut message: String| {
         if let Some(first) = message.get_mut(..1) {
             first.make_ascii_lowercase();
@@ -481,12 +471,12 @@ fn is_condition_met(expr: &str, vars: &IndexMap<String, String>) -> Result<bool,
     };
 
     let val = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        Program::compile(&expr)
+        Program::compile(expr)
             .map_err(|err| Error {
                 offset: 0,
                 message: normalize(err.to_string()).into(),
             })?
-            .execute(&ctx)
+            .execute(&Context::default())
             .map_err(|err| Error {
                 offset: 0,
                 message: format!("evaluation error: {}", normalize(err.to_string())).into(),
@@ -505,99 +495,6 @@ fn is_condition_met(expr: &str, vars: &IndexMap<String, String>) -> Result<bool,
         Value::String(val) => !val.is_empty(),
         _ => false,
     })
-}
-
-fn normalize_negation(expr: &str) -> Result<Cow<'_, str>, Error> {
-    if !expr.contains('-') {
-        return Ok(Cow::Borrowed(expr));
-    }
-
-    let tokens = Lexer::new(expr)
-        .filter(|token| token.as_ref().map_or(true, |token| token.kind != TokenKind::Whitespace))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut groups = vec![tokens.len(); tokens.len()];
-    let mut stack = Vec::new();
-
-    for (i, token) in tokens.iter().enumerate() {
-        match token.kind {
-            TokenKind::Other('(' | '[' | '{') => stack.push(i),
-            TokenKind::Other(')' | ']' | '}') => {
-                if let Some(st) = stack.pop() {
-                    groups[st] = i + 1;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut edits = Vec::new();
-
-    for (index, token) in tokens.iter().enumerate() {
-        if token.kind != TokenKind::Other('-')
-            || tokens
-                .get(index + 1)
-                .is_some_and(|token| matches!(token.kind, TokenKind::Number(_)))
-            || index.checked_sub(1).is_some_and(|index| {
-                matches!(
-                    tokens[index].kind,
-                    TokenKind::Ident(_) | TokenKind::Number(_) | TokenKind::String | TokenKind::Other(')' | ']' | '}')
-                )
-            })
-        {
-            continue;
-        }
-
-        let mut ed = index + 1;
-
-        while tokens
-            .get(ed)
-            .is_some_and(|token| matches!(token.kind, TokenKind::Other('-' | '!')))
-        {
-            ed += 1;
-        }
-
-        let Some(operand) = tokens.get(ed) else { continue };
-        ed = if matches!(operand.kind, TokenKind::Other('(' | '[' | '{')) {
-            groups[ed]
-        } else {
-            ed + 1
-        };
-
-        while let Some(token) = tokens.get(ed) {
-            match token.kind {
-                TokenKind::Other('(' | '[') => ed = groups[ed],
-                TokenKind::Other('.')
-                    if tokens
-                        .get(ed + 1)
-                        .is_some_and(|token| matches!(token.kind, TokenKind::Ident(_))) =>
-                {
-                    ed += 2;
-                }
-                _ => break,
-            }
-        }
-
-        edits.push((token.span.st, token.span.ed, "__astra_neg("));
-        edits.push((tokens[ed - 1].span.ed, tokens[ed - 1].span.ed, ")"));
-    }
-
-    edits.sort_unstable_by_key(|&(st, ed, _)| (st, ed));
-
-    if edits.is_empty() {
-        return Ok(Cow::Borrowed(expr));
-    }
-
-    let mut dst = String::with_capacity(expr.len());
-    let mut curr = 0;
-
-    for (st, ed, text) in edits {
-        dst.push_str(&expr[curr..st]);
-        dst.push_str(text);
-        curr = ed;
-    }
-
-    dst.push_str(&expr[curr..]);
-    Ok(Cow::Owned(dst))
 }
 
 fn translate<'a>(src: &'a str, vars: &IndexMap<String, String>) -> Result<Cow<'a, str>, Error> {
@@ -1039,6 +936,9 @@ mod tests {
             ("-([1, 2][int('0')]) == -1", true),
             ("-[1, 2][0] == -1", true),
             ("-int('2') == -2", true),
+            ("--1 == 1", true),
+            ("---1 == -1", true),
+            ("-9223372036854775808 == -9223372036854775807 - 1", true),
             ("'a-b' == 'a-b'", true),
         ] {
             assert_eq!(is_condition_met(expr, &vars).unwrap(), is_expected, "{expr}");
@@ -1052,6 +952,7 @@ mod tests {
             "[1",
             "-(1 + 2",
             "${MISSING}",
+            "-(-9223372036854775808)",
             "-(-9223372036854775807 - 1)",
             "-int('-9223372036854775808')",
         ] {

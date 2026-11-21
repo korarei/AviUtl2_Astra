@@ -52,6 +52,7 @@ mod tests {
                 "check custom:Enable,0",
                 "color@col:Color,0xffffff",
                 "color:0xffffff",
+                "colorlist@list:基準色|中間色,0xffffff|0x888888,4,undefined|position",
                 "file@path:File",
                 "file:",
                 "folder@dir:Folder",

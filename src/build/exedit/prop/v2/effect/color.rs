@@ -74,7 +74,7 @@ impl<'a> Prop<'a> {
             None
         } else {
             let Some(val) = parse_color(arg) else {
-                bail!("{pos}: default value of property 'color' must be 'nil' or an integer, got '{arg}'");
+                bail!("{pos}: default value of property 'color' must be 'nil' or a hexadecimal integer, got '{arg}'");
             };
 
             Some(val)
@@ -110,7 +110,7 @@ impl<'a> Prop<'a> {
         }
 
         if let Some(val) = val {
-            let Some(color) = parse_color(val) else {
+            let Some(color) = parse_lua_color(val) else {
                 bail!("{pos}: initializer of variable '{var}' must be 'nil' or an integer, got '{val}'");
             };
 
@@ -166,7 +166,7 @@ impl<'a> Prop<'a> {
         }
 
         match self.default {
-            None => bail!("{pos}: default value of property 'color' must be 'nil' or an integer, got '_'"),
+            None => bail!("{pos}: default value of property 'color' must be 'nil' or a hexadecimal integer, got '_'"),
             Some(Color::Int(val)) if !(0..=0xff_ffff).contains(&val) => {
                 bail!("{pos}: default value of property 'color' must be between 0x000000 and 0xffffff, got {val}");
             }
@@ -196,6 +196,28 @@ impl fmt::Display for Prop<'_> {
 }
 
 fn parse_color(src: &str) -> Option<Color> {
+    if src == "nil" {
+        return Some(Color::Nil);
+    }
+
+    let invalid = match src.as_bytes() {
+        [b'0', b'x', ..] => b'A'..=b'F',
+        [b'0', b'X', ..] => b'a'..=b'f',
+        _ => return None,
+    };
+    let digits = &src[2..];
+
+    if digits
+        .bytes()
+        .any(|byte| !byte.is_ascii_hexdigit() || invalid.contains(&byte))
+    {
+        return None;
+    }
+
+    i64::from_str_radix(digits, 16).ok().map(Color::Int)
+}
+
+fn parse_lua_color(src: &str) -> Option<Color> {
     match src {
         "nil" => Some(Color::Nil),
         _ => lua::parse_integer(src).map(Color::Int),
@@ -241,7 +263,12 @@ mod tests {
         let legacy_nil = Prop::parse(pos(), "color", None, "nil").unwrap().unwrap();
         assert_eq!(legacy_nil.to_string(), "--color:nil");
 
-        let extra = Prop::parse(pos(), "color", Some("col"), "Color,0,extra , more")
+        let upper = Prop::parse(pos(), "color", Some("col"), "Color,0XFF00AA")
+            .unwrap()
+            .unwrap();
+        assert_eq!(upper.to_string(), "--color@col:Color,0xff00aa");
+
+        let extra = Prop::parse(pos(), "color", Some("col"), "Color,0x0,extra , more")
             .unwrap()
             .unwrap();
         assert_eq!(extra.to_string(), "--color@col:Color,0x000000,extra , more");
@@ -254,8 +281,18 @@ mod tests {
             (Some("col"), "Color"),
             (Some("col"), "Color,"),
             (Some("col"), "Color,abc"),
+            (Some("col"), "Color,0"),
+            (Some("col"), "Color,255"),
+            (Some("col"), "Color,+0xffffff"),
+            (Some("col"), "Color,0xFF0000"),
+            (Some("col"), "Color,0Xff0000"),
+            (Some("col"), "Color,0xff_00_00"),
             (None, ""),
             (None, "abc"),
+            (None, "0"),
+            (None, "16777215"),
+            (None, "0xFF0000"),
+            (None, "0Xff0000"),
         ] {
             let err = Prop::parse(pos(), "color", var, body).unwrap_err();
             assert!(err.to_string().starts_with("input.anm2:2:3:"), "{var:?}: {body}: {err}");
@@ -268,12 +305,20 @@ mod tests {
         prop.bind("col", Some("0xff00ff")).unwrap();
         assert_eq!(prop.to_string(), "--color@col:Color,0xff00ff");
 
+        let mut dec_bind = Prop::parse(pos(), "color", Some("_"), "Color,_").unwrap().unwrap();
+        dec_bind.bind("col", Some("255")).unwrap();
+        assert_eq!(dec_bind.to_string(), "--color@col:Color,0x0000ff");
+
+        let mut upper_bind = Prop::parse(pos(), "color", Some("_"), "Color,_").unwrap().unwrap();
+        upper_bind.bind("col", Some("0xFF_00_AA")).unwrap();
+        assert_eq!(upper_bind.to_string(), "--color@col:Color,0xff00aa");
+
         let mut nil_bind = Prop::parse(pos(), "color", Some("_"), "Color,_").unwrap().unwrap();
         nil_bind.bind("col", Some("nil")).unwrap();
         assert_eq!(nil_bind.to_string(), "--color@col:Color,nil");
 
-        let mut matching = Prop::parse(pos(), "color", Some("col"), "Color,255").unwrap().unwrap();
-        assert!(matching.bind("col", Some("0xff")).is_ok());
+        let mut matching = Prop::parse(pos(), "color", Some("col"), "Color,0xff").unwrap().unwrap();
+        assert!(matching.bind("col", Some("255")).is_ok());
 
         let mut compat_bind = Prop::parse(pos(), "color", None, "_").unwrap().unwrap();
         compat_bind.bind("color", Some("0xff00ff")).unwrap();
@@ -284,12 +329,12 @@ mod tests {
         assert_eq!(no_init.to_string(), "--color@col:Color,nil");
 
         for (target, body, var, val) in [
-            (None, "0", "col", Some("0")),
-            (None, "0", "color", Some("1")),
+            (None, "0x0", "col", Some("0")),
+            (None, "0x0", "color", Some("1")),
             (Some("other"), "Color,_", "col", Some("0")),
             (Some("col"), "Color,_", "col", None),
             (Some("col"), "Color,_", "col", Some("abc")),
-            (Some("col"), "Color,0", "col", Some("1")),
+            (Some("col"), "Color,0x0", "col", Some("1")),
             (Some("col"), "Color,nil", "col", Some("0")),
         ] {
             let mut invalid = Prop::parse(pos(), "color", target, body).unwrap().unwrap();
@@ -300,11 +345,13 @@ mod tests {
     #[test]
     fn validates_color_prop() {
         for (var, body) in [
-            (Some("col"), "Color,0"),
-            (Some("col"), "1color,0"),
+            (Some("col"), "Color,0x0"),
+            (Some("col"), "1color,0x0"),
             (Some("col"), "Color,0xffffff"),
+            (Some("col"), "Color,0XFFFFFF"),
             (Some("col"), "Color,nil"),
-            (None, "0"),
+            (None, "0x0"),
+            (None, "0XFFFFFF"),
             (None, "nil"),
         ] {
             let prop = Prop::parse(pos(), "color", var, body).unwrap().unwrap();
@@ -314,15 +361,13 @@ mod tests {
         }
 
         for (var, body) in [
-            (Some("1invalid"), "Color,0"),
-            (Some("col"), "effect.foo,0"),
-            (Some("col"), "123,0"),
+            (Some("1invalid"), "Color,0x0"),
+            (Some("col"), "effect.foo,0x0"),
+            (Some("col"), "123,0x0"),
             (Some("col"), "Color,_"),
-            (Some("col"), "Color,-1"),
-            (Some("col"), "Color,16777216"),
+            (Some("col"), "Color,0x1000000"),
             (None, "_"),
-            (None, "-1"),
-            (None, "16777216"),
+            (None, "0x1000000"),
         ] {
             let mut vars = HashSet::new();
             let mut names = HashSet::new();
@@ -334,7 +379,7 @@ mod tests {
             assert!(err.to_string().starts_with("input.anm2:2:3:"), "{var:?}: {body}: {err}");
         }
 
-        let prop = Prop::parse(pos(), "color", Some("col"), "Color,0").unwrap().unwrap();
+        let prop = Prop::parse(pos(), "color", Some("col"), "Color,0x0").unwrap().unwrap();
         let mut vars = HashSet::from(["col"]);
         let mut names = HashSet::new();
         assert!(prop.validate(&mut vars, &mut names).is_err());
@@ -342,5 +387,13 @@ mod tests {
         let mut vars = HashSet::new();
         let mut names = HashSet::from([Cow::Borrowed("Color")]);
         assert!(prop.validate(&mut vars, &mut names).is_err());
+
+        let mut neg = Prop::parse(pos(), "color", Some("_"), "Color,_").unwrap().unwrap();
+        neg.bind("col", Some("-1")).unwrap();
+        assert!(neg.validate(&mut HashSet::new(), &mut HashSet::new()).is_err());
+
+        let mut over = Prop::parse(pos(), "color", Some("_"), "Color,_").unwrap().unwrap();
+        over.bind("col", Some("16777216")).unwrap();
+        assert!(over.validate(&mut HashSet::new(), &mut HashSet::new()).is_err());
     }
 }

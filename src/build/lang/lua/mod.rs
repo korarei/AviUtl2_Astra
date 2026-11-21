@@ -2,7 +2,7 @@ mod lex;
 mod parse;
 
 pub use lex::Lexer;
-pub use parse::{Parser, is_ident, parse_byte_string, parse_integer, parse_number, parse_string};
+pub use parse::{Parser, is_ident, parse_byte_string, parse_integer, parse_number, parse_string, parse_table};
 
 use std::borrow::Cow;
 use std::fmt;
@@ -53,6 +53,12 @@ impl<'a> TokenKind<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key<'a> {
+    Name(&'a str),
+    Expr(&'a str),
+}
+
 #[derive(Default)]
 pub struct Analysis<'a> {
     pub assigns: Vec<Assign>,
@@ -70,6 +76,12 @@ pub struct Call<'a> {
     pub span: Span,
     pub reference: Reference<'a>,
     pub args: Vec<Span>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field<'a> {
+    pub key: Option<Key<'a>>,
+    pub val: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

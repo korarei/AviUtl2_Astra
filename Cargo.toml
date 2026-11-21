@@ -15,13 +15,12 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "~1.0.0"
-cel-interpreter = "~0.10.0"
+cel = { version = "~0.16.0", default-features = false, features = ["regex"] }
 chardetng = "~1.0.0"
 clap = { version = "~4.6.0", features = ["derive"] }
 clean-path = "~0.2.0"
 dotenvy = "~0.15.0"
 encoding_rs = "~0.8.0"
-fd-lock = "~4.0.0"
 indexmap = { version = "~2.14.0", features = ["serde"] }
 regex = "~1.13.0"
 reqwest = {
@@ -36,7 +35,7 @@ schemars = "~1.2.0"
 semver = "~1.0.0"
 serde = { version = "~1.0.0", features = ["derive"] }
 serde_json = "~1.0.0"
-serde_with = { version = "~3.24.0", features = ["indexmap_2", "schemars_1"] }
+serde_with = { version = "~3.25.0", features = ["indexmap_2", "schemars_1"] }
 tempfile = "~3.27.0"
 textwrap = "~0.16.0"
 toml = { version = "~1.2.0", features = ["preserve_order"] }
@@ -47,7 +46,7 @@ validator = { version = "~0.21.0", features = ["derive"] }
 wax = "~0.7.0"
 which = "~8.0.0"
 xxhash-rust = { version = "~0.8.0", features = ["xxh3"] }
-zip = { version = "~9.4.0", default-features = false, features = ["deflate"] }
+zip = { version = "~9.8.0", default-features = false, features = ["deflate"] }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

@@ -86,7 +86,14 @@ impl Expanded<'_> {
         })
     }
 
-    pub(super) fn to_src_offset(&self, at: usize) -> usize {
+    pub(in crate::build) fn first_expansion_offset(&self) -> Option<usize> {
+        self.edits
+            .iter()
+            .find(|(_, _, is_escaped)| !is_escaped)
+            .map(|(src, _, _)| src.start)
+    }
+
+    pub(in crate::build) fn to_src_offset(&self, at: usize) -> usize {
         let Some(i) = self.edits.partition_point(|(_, dst, _)| dst.start <= at).checked_sub(1) else {
             return at;
         };

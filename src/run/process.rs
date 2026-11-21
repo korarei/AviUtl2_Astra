@@ -57,6 +57,8 @@ const STATUS_BREAKPOINT: DWORD = 0x8000_0003;
 const DBG_CONTINUE: DWORD = 0x0001_0002;
 const DBG_EXCEPTION_NOT_HANDLED: DWORD = 0x8001_0001;
 const WM_CLOSE: UINT = 0x0010;
+const BM_CLICK: UINT = 0x00f5;
+const IDNO: i32 = 7;
 const GW_OWNER: UINT = 4;
 const SW_SHOWNOACTIVATE: WORD = 4;
 const STARTF_USESHOWWINDOW: DWORD = 0x0000_0001;
@@ -201,7 +203,10 @@ impl AviUtl2Process {
                         let mut code = 0;
 
                         if unsafe { GetExitCodeProcess(handle, &raw mut code) } == 0 {
-                            tracing::debug!("failed to read AviUtl2 exit code: {}", std::io::Error::last_os_error());
+                            tracing::debug!(
+                                "failed to read AviUtl ExEdit2 exit code: {}",
+                                std::io::Error::last_os_error()
+                            );
                             return Ok(MonitorExit::ProcessExited(None));
                         }
 
@@ -247,15 +252,14 @@ impl AviUtl2Process {
             _ => {}
         }
 
-        if let Err(err) = request_close(pid) {
-            if unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0 {
-                return Ok(());
-            }
-
-            return Err(err);
-        }
+        let mut close = match request_close(pid) {
+            Ok(close) => close,
+            Err(_) if unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0 => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
 
         while Instant::now() < deadline {
+            close.click_no();
             if let Some(bar) = bar.as_mut() {
                 let sec = deadline.saturating_duration_since(Instant::now()).as_secs() + 1;
 
@@ -326,7 +330,7 @@ impl AviUtl2Process {
 
         match unsafe { WaitForSingleObject(handle, 3000) } {
             WAIT_OBJECT_0 => {}
-            WAIT_TIMEOUT => anyhow::bail!("AviUtl2 did not exit after termination (PID: {pid})"),
+            WAIT_TIMEOUT => anyhow::bail!("AviUtl ExEdit2 did not exit after termination (PID: {pid})"),
             _ => return Err(std::io::Error::last_os_error().into()),
         }
 
@@ -378,16 +382,17 @@ impl StatusBar {
 
         let mut stderr = std::io::stderr().lock();
 
-        if write!(
-            stderr,
-            "\x1b[1;{}r\x1b[{height};1H Ctrl+C: Stop | Ctrl+R / r+Enter: Reload\x1b[K\x1b[{};1H",
-            height - 1,
-            height - 1,
-        )
-        .and_then(|()| stderr.flush())
-        .is_err()
+        let row = height - 1;
+        let frame = format!(
+            "\x1b[?2026h\x1b[?25l\x1b[1;{row}r\x1b[{height};1H Ctrl+C: Stop | Ctrl+R / r+Enter: Reload\
+             \x1b[K\x1b[{row};1H\x1b[?2026l"
+        );
+        if stderr
+            .write_all(frame.as_bytes())
+            .and_then(|()| stderr.flush())
+            .is_err()
         {
-            let _ = write!(stderr, "\x1b[r");
+            let _ = write!(stderr, "\x1b[?2026l\x1b[r\x1b[?25h");
             let _ = stderr.flush();
             return None;
         }
@@ -397,12 +402,8 @@ impl StatusBar {
 
     fn update(&mut self, args: std::fmt::Arguments<'_>) {
         let mut stderr = std::io::stderr().lock();
-        let _ = write!(
-            stderr,
-            "\x1b[{};1H {args}\x1b[K\x1b[{};1H",
-            self.height,
-            self.height.saturating_sub(1),
-        );
+        let frame = format!("\x1b[?2026h\x1b7\x1b[{};1H {args}\x1b[K\x1b8\x1b[?2026l", self.height);
+        let _ = stderr.write_all(frame.as_bytes());
         let _ = stderr.flush();
     }
 }
@@ -410,7 +411,11 @@ impl StatusBar {
 impl Drop for StatusBar {
     fn drop(&mut self) {
         let mut stderr = std::io::stderr().lock();
-        let _ = write!(stderr, "\x1b[r\x1b[{};1H\x1b[2K", self.height);
+        let _ = write!(
+            stderr,
+            "\x1b[?2026h\x1b[r\x1b[{};1H\x1b[2K\x1b[?25h\x1b[?2026l",
+            self.height
+        );
         let _ = stderr.flush();
     }
 }
@@ -646,18 +651,23 @@ pub(super) fn run_process(exe: &Path, is_running: &AtomicBool) -> anyhow::Result
         None
     };
 
-    let child = AviUtl2Process::spawn(exe).with_context(|| format!("failed to launch AviUtl2 '{}'", exe.display()))?;
-    let exit = child.monitor(is_running).context("failed to monitor AviUtl2")?;
+    let child =
+        AviUtl2Process::spawn(exe).with_context(|| format!("failed to launch AviUtl ExEdit2 '{}'", exe.display()))?;
+    let exit = child.monitor(is_running).context("failed to monitor AviUtl ExEdit2")?;
 
     match exit {
         MonitorExit::ProcessExited(_) => {}
         MonitorExit::Interrupted => {
             tracing::info!("Stopping AviUtl ExEdit2");
-            child.stop(status_bar.as_mut()).context("failed to stop AviUtl2")?;
+            child
+                .stop(status_bar.as_mut())
+                .context("failed to stop AviUtl ExEdit2")?;
         }
         MonitorExit::ReloadRequested => {
             tracing::info!("Reloading AviUtl ExEdit2");
-            child.stop(status_bar.as_mut()).context("failed to stop AviUtl2")?;
+            child
+                .stop(status_bar.as_mut())
+                .context("failed to stop AviUtl ExEdit2")?;
         }
     }
 
@@ -682,7 +692,8 @@ pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
         Ok(exe) => exe,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(err) => {
-            return Err(err).with_context(|| format!("failed to inspect AviUtl2 executable '{}'", exe.display()));
+            return Err(err)
+                .with_context(|| format!("failed to inspect AviUtl ExEdit2 executable '{}'", exe.display()));
         }
     };
 
@@ -742,7 +753,7 @@ pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
 
                 shutdown_process(&process, entry.th32ProcessID).with_context(|| {
                     format!(
-                        "failed to stop AviUtl2 '{}' (PID: {})",
+                        "failed to stop AviUtl ExEdit2 '{}' (PID: {})",
                         proc_path.display(),
                         entry.th32ProcessID
                     )
@@ -765,13 +776,11 @@ pub(super) fn shutdown_aviutl2(exe: &Path) -> anyhow::Result<usize> {
 fn shutdown_process(process: &UniqueHandle, pid: u32) -> anyhow::Result<()> {
     use std::io::IsTerminal;
 
-    request_close(pid).or_else(|err| {
-        if unsafe { WaitForSingleObject(process.raw(), 0) } == WAIT_OBJECT_0 {
-            Ok(())
-        } else {
-            Err(err)
-        }
-    })?;
+    let mut close = match request_close(pid) {
+        Ok(close) => close,
+        Err(_) if unsafe { WaitForSingleObject(process.raw(), 0) } == WAIT_OBJECT_0 => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
 
     let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
     let is_terminal = std::io::stderr().is_terminal();
@@ -779,6 +788,7 @@ fn shutdown_process(process: &UniqueHandle, pid: u32) -> anyhow::Result<()> {
     let mut is_exited = false;
 
     while Instant::now() < deadline {
+        close.click_no();
         match unsafe { WaitForSingleObject(process.raw(), 100) } {
             WAIT_OBJECT_0 => {
                 is_exited = true;
@@ -830,7 +840,7 @@ fn shutdown_process(process: &UniqueHandle, pid: u32) -> anyhow::Result<()> {
 
         match unsafe { WaitForSingleObject(handle.raw(), 3000) } {
             WAIT_OBJECT_0 => {}
-            WAIT_TIMEOUT => anyhow::bail!("AviUtl2 did not exit after termination (PID: {pid})"),
+            WAIT_TIMEOUT => anyhow::bail!("AviUtl ExEdit2 did not exit after termination (PID: {pid})"),
             _ => return Err(std::io::Error::last_os_error().into()),
         }
     }
@@ -838,25 +848,92 @@ fn shutdown_process(process: &UniqueHandle, pid: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn request_close(pid: u32) -> anyhow::Result<()> {
-    let pid = LPARAM::try_from(pid)?;
-    if unsafe { EnumWindows(Some(close_window), pid) } == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    Ok(())
+struct CloseRequest {
+    pid: u32,
+    owners: Vec<HWND>,
+    prev: Vec<HWND>,
 }
 
-unsafe extern "system" fn close_window(hwnd: HWND, lParam: LPARAM) -> BOOL {
-    let mut pid = 0;
-    if unsafe { GetWindowThreadProcessId(hwnd, &raw mut pid) } != 0
-        && LPARAM::try_from(pid).ok() == Some(lParam)
-        && unsafe { IsWindowVisible(hwnd) } != 0
-        && unsafe { GetWindow(hwnd, GW_OWNER).is_null() }
-    {
-        return unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+impl CloseRequest {
+    fn click_no(&mut self) {
+        if self.owners.is_empty() {
+            return;
+        }
+
+        let mut dialogs = match process_windows(self.pid) {
+            Ok(windows) => windows,
+            Err(err) => {
+                self.owners.clear();
+                tracing::warn!("failed to look for AviUtl ExEdit2 shutdown confirmation: {err}");
+                return;
+            }
+        };
+        dialogs.retain(|&hwnd| {
+            !self.prev.contains(&hwnd)
+                && self.owners.contains(&unsafe { GetWindow(hwnd, GW_OWNER) })
+                && unsafe { IsWindowVisible(hwnd) } != 0
+                && is_dialog(hwnd)
+        });
+        let dialog = match dialogs.as_slice() {
+            &[dialog] => dialog,
+            [] => return,
+            _ => {
+                self.owners.clear();
+                return;
+            }
+        };
+
+        let button = unsafe { GetDlgItem(dialog, IDNO) };
+        if button.is_null() || unsafe { IsWindowEnabled(button) } == 0 || unsafe { IsWindowVisible(button) } == 0 {
+            return;
+        }
+
+        self.owners.clear();
+        if unsafe { PostMessageW(button, BM_CLICK, 0, 0) } == 0 {
+            let err = std::io::Error::last_os_error();
+            tracing::warn!("failed to click No in AviUtl ExEdit2 shutdown confirmation: {err}");
+        }
     }
-    1
+}
+
+fn is_dialog(hwnd: HWND) -> bool {
+    let mut class = [0; 8];
+    let len = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), 8) };
+    len == 6 && class[..6].iter().copied().eq("#32770".encode_utf16())
+}
+
+fn request_close(pid: u32) -> std::io::Result<CloseRequest> {
+    let prev = process_windows(pid)?;
+    let mut owners = Vec::new();
+    for &hwnd in &prev {
+        if unsafe { IsWindowVisible(hwnd) } != 0 && unsafe { GetWindow(hwnd, GW_OWNER).is_null() } {
+            if unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            owners.push(hwnd);
+        }
+    }
+
+    Ok(CloseRequest { pid, owners, prev })
+}
+
+fn process_windows(pid: u32) -> std::io::Result<Vec<HWND>> {
+    unsafe extern "system" fn collect(hwnd: HWND, state: LPARAM) -> BOOL {
+        let state = std::ptr::with_exposed_provenance_mut::<(u32, Vec<HWND>)>(state.cast_unsigned());
+        let (pid, windows) = unsafe { &mut *state };
+        let mut owner_pid = 0;
+        if unsafe { GetWindowThreadProcessId(hwnd, &raw mut owner_pid) } != 0 && owner_pid == *pid {
+            windows.push(hwnd);
+        }
+        1
+    }
+
+    let mut state = (pid, Vec::new());
+    if unsafe { EnumWindows(Some(collect), (&raw mut state).expose_provenance().cast_signed()) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(state.1)
 }
 
 fn has_reload_key(line: &mut u8) -> bool {
@@ -1195,11 +1272,6 @@ unsafe extern "system" {
     fn GetExitCodeProcess(hProcess: HANDLE, lpExitCode: LPDWORD) -> BOOL;
     fn CloseHandle(hObject: HANDLE) -> BOOL;
     fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) -> DWORD;
-    fn EnumWindows(lpEnumFunc: WNDENUMPROC, lParam: LPARAM) -> BOOL;
-    fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: LPDWORD) -> DWORD;
-    fn GetWindow(hWnd: HWND, uCmd: UINT) -> HWND;
-    fn IsWindowVisible(hWnd: HWND) -> BOOL;
-    fn PostMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) -> BOOL;
     fn GetStdHandle(nStdHandle: DWORD) -> HANDLE;
     fn PeekConsoleInputW(
         hConsoleInput: HANDLE,
@@ -1253,4 +1325,16 @@ unsafe extern "system" {
         hConsoleOutput: HANDLE,
         lpConsoleScreenBufferInfo: PCONSOLE_SCREEN_BUFFER_INFO,
     ) -> BOOL;
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn EnumWindows(lpEnumFunc: WNDENUMPROC, lParam: LPARAM) -> BOOL;
+    fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: LPDWORD) -> DWORD;
+    fn GetWindow(hWnd: HWND, uCmd: UINT) -> HWND;
+    fn IsWindowVisible(hWnd: HWND) -> BOOL;
+    fn IsWindowEnabled(hWnd: HWND) -> BOOL;
+    fn GetClassNameW(hWnd: HWND, lpClassName: LPWSTR, nMaxCount: i32) -> i32;
+    fn GetDlgItem(hDlg: HWND, nIDDlgItem: i32) -> HWND;
+    fn PostMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) -> BOOL;
 }

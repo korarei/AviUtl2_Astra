@@ -15,7 +15,7 @@ run = "cargo build --locked"
 
 [tasks.check]
 usage = 'flag "-h --help" help="Print help"'
-tools."cargo:cargo-deny" = "0.20"
+tools."cargo:cargo-deny" = "0.22"
 run = ["cargo clippy --locked", "cargo deny --locked check"]
 
 [tasks.fmt]
@@ -39,3 +39,7 @@ run = "cargo test --locked"
 [tasks.update]
 usage = 'flag "-h --help" help="Print help"'
 run = "cargo update"
+
+[tasks.clean]
+usage = 'flag "-h --help" help="Print help"'
+run = "cargo clean"

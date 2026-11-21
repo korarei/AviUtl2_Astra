@@ -1,8 +1,13 @@
-use super::{Analysis, Assign, Call, Error, Lexer, Literal, Reference, Span, Token, TokenKind};
+use super::{Analysis, Assign, Call, Error, Field, Key, Lexer, Literal, Reference, Span, Token, TokenKind};
 use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet};
 
 const MAX_DEPTH: usize = 200;
+
+enum TableKey<'a> {
+    Name(&'a str),
+    Expr(Span),
+}
 
 pub struct Parser<'a, 'tokens, T = Token<'a>> {
     src_ed: usize,
@@ -623,36 +628,7 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
                         return None;
                     }
                 }
-                TokenKind::LBrace => {
-                    self.bump();
-                    while self.kind().is_some() && self.kind() != Some(&TokenKind::RBrace) {
-                        if self.eat(&TokenKind::LBracket) {
-                            self.parse_expr(0, false)?;
-                            if !self.expect(&TokenKind::RBracket) || !self.expect(&TokenKind::Assign) {
-                                return None;
-                            }
-                        } else if self.kind().and_then(TokenKind::name).is_some()
-                            && self.peek(1).is_some_and(|token| token.kind == TokenKind::Assign)
-                        {
-                            self.bump();
-                            self.bump();
-                        }
-
-                        self.parse_expr(0, false)?;
-                        if self.kind() == Some(&TokenKind::RBrace) {
-                            break;
-                        }
-
-                        if !self.eat(&TokenKind::Comma) && !self.eat(&TokenKind::Semicolon) {
-                            self.expect(&TokenKind::Comma);
-                            return None;
-                        }
-                    }
-
-                    if !self.expect(&TokenKind::RBrace) {
-                        return None;
-                    }
-                }
+                TokenKind::LBrace => self.parse_table(None)?,
                 TokenKind::Keyword("function") => {
                     self.bump();
                     self.parse_func(false);
@@ -1084,6 +1060,57 @@ impl<'a, 'tokens, T: Borrow<Token<'a>>> Parser<'a, 'tokens, T> {
             message,
         });
     }
+
+    fn parse_table(&mut self, mut fields: Option<&mut Vec<TableField<'a>>>) -> Option<()> {
+        self.bump();
+
+        while self.kind().is_some() && self.kind() != Some(&TokenKind::RBrace) {
+            let key = if self.eat(&TokenKind::LBracket) {
+                let Some(expr) = self.parse_expr(0, false) else {
+                    self.fail("missing expression");
+                    return None;
+                };
+
+                if !self.expect(&TokenKind::RBracket) || !self.expect(&TokenKind::Assign) {
+                    return None;
+                }
+
+                Some(TableKey::Expr(expr.span))
+            } else if let Some(name) = self.kind().and_then(TokenKind::name)
+                && self.peek(1).is_some_and(|token| token.kind == TokenKind::Assign)
+            {
+                self.bump();
+                self.bump();
+                Some(TableKey::Name(name))
+            } else {
+                None
+            };
+
+            let Some(val) = self.parse_expr(0, false) else {
+                self.fail("missing expression");
+                return None;
+            };
+
+            if let Some(fields) = &mut fields {
+                fields.push(TableField { key, val: val.span });
+            }
+
+            if self.kind() == Some(&TokenKind::RBrace) {
+                break;
+            }
+
+            if !self.eat(&TokenKind::Comma) && !self.eat(&TokenKind::Semicolon) {
+                self.expect(&TokenKind::Comma);
+                return None;
+            }
+        }
+
+        if !self.expect(&TokenKind::RBrace) {
+            return None;
+        }
+
+        Some(())
+    }
 }
 
 #[derive(Default)]
@@ -1107,6 +1134,11 @@ struct Expr<'a> {
     captures: Vec<usize>,
     is_target: bool,
     is_call: bool,
+}
+
+struct TableField<'a> {
+    key: Option<TableKey<'a>>,
+    val: Span,
 }
 
 #[must_use]
@@ -1209,6 +1241,40 @@ pub fn parse_string(src: &str) -> Result<Option<Cow<'_, str>>, Error> {
     };
 
     Ok(Some(val))
+}
+
+pub fn parse_table(src: &str) -> Result<Option<Vec<Field<'_>>>, Error> {
+    let tokens: Vec<_> = Lexer::new(src).collect::<Result<_, _>>()?;
+    let mut parser = Parser::new(src, &tokens);
+    parser.skip_trivia();
+
+    if parser.kind() != Some(&TokenKind::LBrace) {
+        return Ok(None);
+    }
+
+    let mut fields = Vec::new();
+    parser.parse_table(Some(&mut fields));
+
+    if let Some(error) = parser.error {
+        return Err(error);
+    }
+
+    if parser.kind().is_some() {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        fields
+            .into_iter()
+            .map(|field| Field {
+                key: field.key.map(|key| match key {
+                    TableKey::Name(name) => Key::Name(name),
+                    TableKey::Expr(span) => Key::Expr(&src[span.st..span.ed]),
+                }),
+                val: &src[field.val.st..field.val.ed],
+            })
+            .collect(),
+    ))
 }
 
 fn parse_hex(src: &str) -> Option<f64> {
@@ -1659,6 +1725,55 @@ mod tests {
             assert_eq!(error.offset, src.find('"').unwrap(), "{src}");
             assert_eq!(error.message, "string is not valid UTF-8", "{src}");
             assert!(parse_byte_string(src).unwrap().is_some(), "{src}");
+        }
+    }
+
+    #[test]
+    fn parses_tables() {
+        assert_eq!(parse_table("{}").unwrap(), Some(Vec::new()));
+        assert_eq!(
+            parse_table(" { 1, 2; { col = 0xffffff }, } ").unwrap(),
+            Some(vec![
+                Field { key: None, val: "1" },
+                Field { key: None, val: "2" },
+                Field {
+                    key: None,
+                    val: "{ col = 0xffffff }",
+                },
+            ])
+        );
+        assert_eq!(
+            parse_table("{ pos = 0, [\"col\"] = 0xffffff; [1] = a, tail }").unwrap(),
+            Some(vec![
+                Field {
+                    key: Some(Key::Name("pos")),
+                    val: "0",
+                },
+                Field {
+                    key: Some(Key::Expr("\"col\"")),
+                    val: "0xffffff",
+                },
+                Field {
+                    key: Some(Key::Expr("1")),
+                    val: "a",
+                },
+                Field { key: None, val: "tail" },
+            ])
+        );
+
+        for src in ["", "   ", "123", "nil", "{} + {}", "{}.x", "{} extra"] {
+            assert_eq!(parse_table(src).unwrap(), None, "{src}");
+        }
+
+        for src in [
+            "{",
+            "{ , }",
+            "{ a = }",
+            "{ [1] = }",
+            "{ 1 2 }",
+            "{ \"unterminated\"\" }",
+        ] {
+            assert!(parse_table(src).is_err(), "{src}");
         }
     }
 

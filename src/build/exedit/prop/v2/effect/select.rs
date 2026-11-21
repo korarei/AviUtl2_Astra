@@ -108,17 +108,14 @@ impl<'a> Prop<'a> {
             };
 
             match self.default {
-                Default::Omitted => {
-                    let min = self.items.iter().map(|item| item.val).min().unwrap_or(0);
-                    if min != num {
-                        bail!("{pos}: default value '{min}' conflicts with '{val}'");
-                    }
+                Default::Omitted if !self.items.iter().any(|item| item.val == num) => {
+                    bail!("{pos}: initializer of variable '{var}' must match a select item value, got '{val}'");
                 }
                 Default::Unset => self.default = Default::Int(num),
                 Default::Int(default) if default != num => {
                     bail!("{pos}: default value '{default}' conflicts with '{val}'");
                 }
-                Default::Int(_) => {}
+                Default::Omitted | Default::Int(_) => {}
             }
         } else if self.default == Default::Unset {
             bail!("{pos}: variable '{var}' requires an initializer");
@@ -310,7 +307,7 @@ mod tests {
         let mut matching_omitted = Prop::parse(pos(), "select", "_", "Choice,second=2,first=1")
             .unwrap()
             .unwrap();
-        matching_omitted.bind("mode", Some("1")).unwrap();
+        matching_omitted.bind("mode", Some("2")).unwrap();
         assert_eq!(matching_omitted.to_string(), "--select@mode:Choice,second=2,first=1");
 
         let mut matching = Prop::parse(pos(), "select", "mode", "Choice=2,first=2")
@@ -324,7 +321,8 @@ mod tests {
             ("mode", "Choice=_,first=0", "mode", Some("1.5")),
             ("mode", "Choice=_,first=0", "mode", Some("true")),
             ("mode", "Choice=0,first=0", "mode", Some("1")),
-            ("mode", "Choice,second=2,first=1", "mode", Some("2")),
+            ("mode", "Choice,second=3,first=1", "mode", Some("2")),
+            ("mode", "Choice,second=3,first=1", "mode", Some("4")),
         ] {
             let mut invalid = Prop::parse(pos(), "select", target, body).unwrap().unwrap();
             assert!(invalid.bind(var, val).is_err(), "{body}: {var}={val:?}");

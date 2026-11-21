@@ -8,7 +8,7 @@ pub(in crate::build::exedit) enum Desc<'a> {
     Timecontrol(tra::timecontrol::Desc<'a>),
 }
 
-impl<'a> Desc<'a> {
+impl Desc<'_> {
     pub(in crate::build::exedit) fn process(self) -> anyhow::Result<String> {
         match self {
             Self::General(desc) => desc.process(),

@@ -30,6 +30,18 @@ struct BlockState {
     kind: ExpandKind,
 }
 
+struct PendingLiteral {
+    dst_st: usize,
+    src_ed: usize,
+    edit_offset: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct LineBounds {
+    ed: usize,
+    block_ed: usize,
+}
+
 struct LineScan<'a> {
     first: Option<hlsl::Token<'a>>,
     has_code: bool,
@@ -43,6 +55,7 @@ struct Marker<'a> {
 }
 
 impl Builder<'_> {
+    #[allow(clippy::too_many_lines)]
     fn preprocess(&mut self, map: &source::Map) -> anyhow::Result<()> {
         let src = map.text();
         let lines = map.lines();
@@ -58,6 +71,7 @@ impl Builder<'_> {
             kind: ExpandKind::Raw,
         };
         let mut pending = None;
+        let mut pending_literal = None;
         let mut preprocessor = Preprocessor::new();
         let mut markers = Vec::new();
         let mut segments = Vec::new();
@@ -184,30 +198,21 @@ impl Builder<'_> {
 
             match action {
                 Action::Keep => {
-                    self.emit_line(map, &src, ed, &segments, &mut line_replacements)?;
+                    self.emit_line(
+                        map,
+                        &src,
+                        LineBounds { ed, block_ed: block.ed },
+                        &segments,
+                        &mut line_replacements,
+                        &mut pending_literal,
+                    )?;
                 }
                 Action::Omit => {
                     let tokens = omit_tokens
                         .get_or_init(|| hlsl::Lexer::new(&src).collect::<Result<Vec<_>, _>>())
                         .as_ref()
                         .map_err(|err| anyhow::anyhow!("{}: {err}", locate(err.offset)))?;
-                    let stmt = omit_parser
-                        .get_or_insert_with(|| hlsl::Parser::new(&src, tokens))
-                        .parse_stmt_at(ed + usize::from(ed < src.len()))
-                        .map_err(|err| anyhow::anyhow!("{}: {err}", locate(err.offset)))?;
-
-                    for token in tokens[tokens.partition_point(|token| token.span.st <= ed)..]
-                        .iter()
-                        .take_while(|token| token.span.st < stmt.st)
-                    {
-                        if let hlsl::TokenKind::Comment(comment) = &token.kind
-                            && astra::split_sigil(comment.content).is_some()
-                        {
-                            bail!("{pos}: directive between #omit and its statement");
-                        }
-                    }
-
-                    omit_ed = stmt.ed;
+                    omit_ed = resolve_omit_ed(&src, tokens, &mut omit_parser, ed, &pos, map)?;
                 }
                 action => self.apply_action(map, &src, &pos, action)?,
             }
@@ -228,11 +233,12 @@ impl Builder<'_> {
         &mut self,
         map: &source::Map,
         src: &str,
-        ed: usize,
+        bounds: LineBounds,
         segments: &[(std::ops::Range<usize>, ExpandKind)],
         replacements: &mut [(usize, String)],
+        pending_literal: &mut Option<PendingLiteral>,
     ) -> anyhow::Result<()> {
-        for (span, kind) in segments {
+        for (index, (span, kind)) in segments.iter().enumerate() {
             let output_st = self.map.len();
             match kind {
                 ExpandKind::Skip => {
@@ -254,15 +260,50 @@ impl Builder<'_> {
                     };
                     let expansion = astra::expand(&src[span.clone()], self.vars.as_ref(), escape)
                         .map_err(|err| anyhow::anyhow!("{}: {err}", map.locate(span.start + err.offset)))?;
-                    self.map.apply(map, span.clone(), expansion.to_edits(span.start));
+                    let edit_offset = expansion.first_expansion_offset().map(|at| span.start + at);
+
+                    if index == 0
+                        && let Some(mut pending) = pending_literal.take()
+                    {
+                        if pending.edit_offset.is_none() {
+                            pending.edit_offset = edit_offset;
+                        }
+                        self.map.apply(map, span.clone(), expansion.to_edits(span.start));
+
+                        if pending.src_ed <= bounds.ed {
+                            if let Some(offset) = pending.edit_offset {
+                                let literal = self.map.slice(pending.dst_st..self.map.len());
+                                validate_expanded_string(&literal.text(), &map.locate(offset))?;
+                            }
+                        } else {
+                            *pending_literal = Some(pending);
+                        }
+                    } else if *kind == ExpandKind::ShortString
+                        && index + 1 == segments.len()
+                        && bounds.block_ed > bounds.ed
+                    {
+                        self.map.apply(map, span.clone(), expansion.to_edits(span.start));
+                        *pending_literal = Some(PendingLiteral {
+                            dst_st: output_st,
+                            src_ed: bounds.block_ed,
+                            edit_offset,
+                        });
+                    } else {
+                        if *kind == ExpandKind::ShortString
+                            && let Some(offset) = edit_offset
+                        {
+                            validate_expanded_string(&expansion.text, &map.locate(offset))?;
+                        }
+                        self.map.apply(map, span.clone(), expansion.to_edits(span.start));
+                    }
                 }
             }
         }
 
-        if ed < src.len() {
-            self.map.copy(map, ed..=ed);
+        if bounds.ed < src.len() {
+            self.map.copy(map, bounds.ed..=bounds.ed);
         } else {
-            self.map.emit("\n", map, ed..ed);
+            self.map.emit("\n", map, bounds.ed..bounds.ed);
         }
 
         Ok(())
@@ -465,6 +506,33 @@ pub fn build(
     Ok(builder.map)
 }
 
+fn resolve_omit_ed<'a>(
+    src: &'a str,
+    tokens: &'a [hlsl::Token<'a>],
+    parser: &mut Option<hlsl::Parser<'a, 'a>>,
+    ed: usize,
+    pos: &Pos,
+    map: &source::Map,
+) -> anyhow::Result<usize> {
+    let stmt = parser
+        .get_or_insert_with(|| hlsl::Parser::new(src, tokens))
+        .parse_stmt_at(ed + usize::from(ed < src.len()))
+        .map_err(|err| anyhow::anyhow!("{}: {err}", map.locate(err.offset)))?;
+
+    for token in tokens[tokens.partition_point(|token| token.span.st <= ed)..]
+        .iter()
+        .take_while(|token| token.span.st < stmt.st)
+    {
+        if let hlsl::TokenKind::Comment(comment) = &token.kind
+            && astra::split_sigil(comment.content).is_some()
+        {
+            bail!("{pos}: directive between #omit and its statement");
+        }
+    }
+
+    Ok(stmt.ed)
+}
+
 fn scan_line<'a>(
     src: &'a str,
     line: std::ops::Range<usize>,
@@ -650,6 +718,23 @@ fn validate_replace_val(pos: &Pos, val: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_expanded_string(text: &str, pos: &Pos) -> anyhow::Result<()> {
+    let mut lexer = hlsl::Lexer::new(text);
+    let Some(Ok(token)) = lexer.next() else {
+        bail!("{pos}: expanded placeholder breaks string literal");
+    };
+
+    if token.kind != hlsl::TokenKind::String
+        || token.span.st != 0
+        || token.span.ed != text.len()
+        || lexer.next().is_some()
+    {
+        bail!("{pos}: expanded placeholder breaks string literal");
+    }
+
+    Ok(())
+}
+
 fn push_segment(
     segments: &mut Vec<(std::ops::Range<usize>, ExpandKind)>,
     span: std::ops::Range<usize>,
@@ -659,10 +744,9 @@ fn push_segment(
         return;
     }
 
-    if let Some((prev, prev_kind)) = segments.last_mut()
-        && *prev_kind == kind
+    if kind == ExpandKind::Raw
+        && let Some((prev, ExpandKind::Raw)) = segments.last_mut()
         && prev.end == span.start
-        && kind != ExpandKind::Skip
     {
         prev.end = span.end;
     } else {
@@ -806,5 +890,30 @@ mod tests {
             preprocess(src, &vars).unwrap().text(),
             "// ${MISSING}\n/*\n${MISSING}\n*/ float x = 2; /* ${MISSING} */\nconst char* s = \"a\\tb\\nc\";\n"
         );
+    }
+
+    #[test]
+    fn rejects_broken_string_boundaries() {
+        let vars = IndexMap::from([
+            ("ESCAPED".to_owned(), r#"a\nb\"c"#.to_owned()),
+            ("QUOTE".to_owned(), r#"a"b"#.to_owned()),
+            ("INJECT".to_owned(), r#"a" "b"#.to_owned()),
+            ("SLASH".to_owned(), r"a\".to_owned()),
+        ]);
+
+        assert_eq!(
+            preprocess("const char* s = \"${ESCAPED}\";\n", &vars).unwrap().text(),
+            "const char* s = \"a\\nb\\\"c\";\n"
+        );
+
+        for src in [
+            "const char* s = \"${QUOTE}\";\n",
+            "const char* s = \"${INJECT}\";\n",
+            "const char* s = \"${SLASH}\";\n",
+            "const char* s = \"first\\\n${QUOTE}\";\n",
+        ] {
+            let err = preprocess(src, &vars).unwrap_err();
+            assert!(err.to_string().contains("breaks string literal"), "{src}: {err}");
+        }
     }
 }

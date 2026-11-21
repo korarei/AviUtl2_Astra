@@ -98,7 +98,7 @@ mod tests {
         for (kind, body, expected, names) in [
             ("track0", "Value,0,10,5", "--track0:Value,0,10,5", &["Value"][..]),
             ("check0", "Enabled,1", "--check0:Enabled,1", &["Enabled"][..]),
-            ("color", "255", "--color:0x0000ff", &[][..]),
+            ("color", "0xff", "--color:0x0000ff", &[][..]),
             ("file", "", "--file:", &[][..]),
             ("param", "a=1", "--param:a=1;", &[][..]),
             ("dialog", "A,a=1", "--dialog:A,a=1;", &[][..]),

@@ -179,12 +179,9 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
     crate::fs::create_managed_dir(dist_dir)?;
     crate::fs::create_managed_dir(Path::new(".astra"))?;
 
-    let mut build_lock = crate::fs::Lock::new(build_dir, "build directory")?;
-    let _build_guard = build_lock.write()?;
-    let mut dist_lock = crate::fs::Lock::new(dist_dir, "dist directory")?;
-    let _dist_guard = dist_lock.write()?;
-    let mut astra_lock = crate::fs::Lock::new(Path::new(".astra"), ".astra directory")?;
-    let _astra_guard = astra_lock.write()?;
+    let _build_lock = crate::fs::lock(build_dir, "build directory")?;
+    let _dist_lock = crate::fs::lock(dist_dir, "dist directory")?;
+    let _astra_lock = crate::fs::lock(Path::new(".astra"), ".astra directory")?;
 
     std::fs::create_dir_all(runtime_dir)
         .with_context(|| format!("failed to create directory '{}'", runtime_dir.display()))?;
@@ -230,7 +227,7 @@ fn run_aviutl2(config: &Config, args: &Args) -> anyhow::Result<()> {
         match process::run_process(&aviutl2_exe, is_running)? {
             MonitorExit::ProcessExited(code) => {
                 if let Some(code) = code.filter(|&code| code != 0) {
-                    tracing::warn!("aviutl exedit2 exited with code: {code:#010x}");
+                    tracing::warn!("AviUtl ExEdit2 exited with code: {code:#010x}");
                 } else if code.is_none() {
                     tracing::warn!("AviUtl ExEdit2 exited; exit code is unknown");
                 }

@@ -51,7 +51,7 @@ pub fn build(
     let (header, input) = header::extract(&input, vars, is_bundled)?;
     format::dispatch!(suffix, |F| build_for::<F>(
         suffix,
-        header,
+        header.as_ref(),
         &input,
         target,
         include_dirs,
@@ -62,7 +62,7 @@ pub fn build(
 
 fn build_for<F: format::Spec>(
     suffix: &str,
-    header: Option<source::Map>,
+    header: Option<&source::Map>,
     input: &source::Map,
     target: &BuildTarget,
     include_dirs: &[PathBuf],

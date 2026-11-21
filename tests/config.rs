@@ -300,6 +300,38 @@ newline = "\n"
 [build.literal_crlf]
 suffix = ".anm2"
 newline = "\r\n"
+
+[build.enable_alias]
+suffix = ".anm2"
+enable = false
+
+[build.bundled_single]
+name = "bundled_single"
+suffix = ".anm2"
+bundled = true
+target = { name = "only", path = "scripts/only.lua" }
+
+[build.bundle_alias_single]
+name = "bundle_alias_single"
+suffix = ".anm2"
+bundle = true
+target = { name = "only", path = "scripts/only.lua" }
+
+[build.unbundled_single]
+name = "unbundled_single"
+suffix = ".anm2"
+bundled = false
+target = { name = "only", path = "scripts/only.lua" }
+
+[build.aul2_bundled_true]
+suffix = ".aul2"
+bundled = true
+targets = [{ path = "lang/a.ini" }, { path = "lang/b.ini" }]
+
+[build.aul2_bundled_false]
+suffix = ".aul2"
+bundled = false
+targets = [{ path = "lang/a.ini" }, { path = "lang/b.ini" }]
 "#,
     );
 
@@ -454,6 +486,7 @@ newline = "\r\n"
     assert_eq!(default.targets().count(), 0);
 
     let single = config.build(&BuildCall::new("single"), BuildType::Debug)?;
+    assert!(!single.is_bundled());
     assert!(matches!(&single.depends()[0], TaskCall::Detailed { task, .. } if task == "prepare"));
     assert_eq!(single.depends()[0].id(), "prepare");
     assert_eq!(single.finally()[0].id(), "finish");
@@ -461,6 +494,39 @@ newline = "\r\n"
     assert_eq!(single.artifacts(), &["single.bin".to_owned()]);
     let target = single.targets().next().unwrap()?;
     assert_eq!(target.vars().get("SCRIPT_NAME").map(String::as_str), Some("single"));
+
+    assert!(
+        !config
+            .build(&BuildCall::new("enable_alias"), BuildType::Debug)?
+            .is_enabled(BuildType::Debug)
+    );
+
+    for (id, expected_script_name) in [
+        ("bundled_single", "only@bundled_single"),
+        ("bundle_alias_single", "only@bundle_alias_single"),
+    ] {
+        let bundled = config.build(&BuildCall::new(id), BuildType::Debug)?;
+        assert!(bundled.is_bundled(), "{id}");
+        let target = bundled.targets().next().unwrap()?;
+        assert_eq!(
+            target.vars().get("SCRIPT_NAME").map(String::as_str),
+            Some(expected_script_name),
+            "{id}"
+        );
+    }
+
+    let unbundled = config.build(&BuildCall::new("unbundled_single"), BuildType::Debug)?;
+    assert!(!unbundled.is_bundled());
+    let target = unbundled.targets().next().unwrap()?;
+    assert_eq!(
+        target.vars().get("SCRIPT_NAME").map(String::as_str),
+        Some("unbundled_single")
+    );
+
+    for id in ["aul2_bundled_true", "aul2_bundled_false"] {
+        let aul2 = config.build(&BuildCall::new(id), BuildType::Debug)?;
+        assert!(!aul2.is_bundled(), "{id}");
+    }
 
     let task = config.task(&TaskCall::Simple("single".to_owned()))?;
     assert!(matches!(&task.depends()[0], TaskCall::Simple(id) if id == "prepare"));
@@ -506,6 +572,10 @@ run = "echo explicit"
 
 [tasks."build:main"]
 run = "echo build"
+
+[tasks.hidden_alias]
+hide = true
+run = "echo hidden"
 "#,
     )?;
 
@@ -525,6 +595,7 @@ run = "echo build"
     let task = config.task(&call)?;
     assert_eq!(task.id(), "hello");
     assert!(task.is_hidden());
+    assert!(config.task(&TaskCall::Simple("hidden_alias".to_owned()))?.is_hidden());
     assert_eq!(task.shell(), Some("default-shell"));
     assert_eq!(
         task.run(),
@@ -1135,6 +1206,11 @@ newline = "lf"
 suffix = ".anm2"
 enabled = "other"
 
+[build.bad_bundled]
+suffix = ".anm2"
+bundled = false
+targets = [{ path = "a.lua" }, { path = "b.lua" }]
+
 [build.bad_include]
 suffix = ".anm2"
 include-dirs = [""]
@@ -1186,6 +1262,7 @@ variables = { BUILD_DIR = "other" }
         "bad_newline",
         "bad_legacy_newline",
         "bad_mode",
+        "bad_bundled",
         "bad_include",
         "bad_artifact",
         "bad_vars",

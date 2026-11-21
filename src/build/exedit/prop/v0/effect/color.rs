@@ -1,4 +1,3 @@
-use crate::build::lang::lua;
 use crate::build::source::Pos;
 use anyhow::bail;
 use std::fmt;
@@ -29,8 +28,8 @@ impl Prop {
             bail!("{pos}: property 'color' accepts at most 1 argument, got {count}");
         }
 
-        let Some(default) = lua::parse_integer(arg) else {
-            bail!("{pos}: default value of property 'color' must be an integer, got '{arg}'");
+        let Some(default) = parse_color(arg) else {
+            bail!("{pos}: default value of property 'color' must be a hexadecimal integer, got '{arg}'");
         };
 
         Ok(Some(Self { pos, default }))
@@ -54,6 +53,24 @@ impl fmt::Display for Prop {
     }
 }
 
+fn parse_color(src: &str) -> Option<i64> {
+    let invalid = match src.as_bytes() {
+        [b'0', b'x', ..] => b'A'..=b'F',
+        [b'0', b'X', ..] => b'a'..=b'f',
+        _ => return None,
+    };
+    let digits = &src[2..];
+
+    if digits
+        .bytes()
+        .any(|byte| !byte.is_ascii_hexdigit() || invalid.contains(&byte))
+    {
+        return None;
+    }
+
+    i64::from_str_radix(digits, 16).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,17 +89,36 @@ mod tests {
         let prop = Prop::parse(pos(), "color", " 0xffffff ").unwrap().unwrap();
         assert_eq!(prop.to_string(), "--color:0xffffff");
 
-        let zero = Prop::parse(pos(), "color", "0").unwrap().unwrap();
+        let upper = Prop::parse(pos(), "color", "0XFFFFFF").unwrap().unwrap();
+        assert_eq!(upper.to_string(), "--color:0xffffff");
+
+        let short = Prop::parse(pos(), "color", "0xff").unwrap().unwrap();
+        assert_eq!(short.to_string(), "--color:0x0000ff");
+
+        let zero = Prop::parse(pos(), "color", "0x0").unwrap().unwrap();
         assert_eq!(zero.to_string(), "--color:0x000000");
 
-        let bin = Prop::parse(pos(), "color", "+0b1010").unwrap().unwrap();
-        assert_eq!(bin.to_string(), "--color:0x00000a");
-
-        for (kind, body) in [("color0", "0"), ("file", ""), ("track0", "Label,0,100,0")] {
+        for (kind, body) in [("color0", "0x0"), ("file", ""), ("track0", "Label,0,100,0")] {
             assert!(Prop::parse(pos(), kind, body).unwrap().is_none(), "{kind}: {body}");
         }
 
-        for body in ["", "nil", "abc", "0x1.0", "0,extra"] {
+        for body in [
+            "",
+            "nil",
+            "abc",
+            "0",
+            "16777215",
+            "+0xffffff",
+            "-0xffffff",
+            "0b1010",
+            "0x",
+            "0X",
+            "0xFF0000",
+            "0Xff0000",
+            "0xff_00_00",
+            "0x1.0",
+            "0x0,extra",
+        ] {
             let err = Prop::parse(pos(), "color", body).unwrap_err();
             assert!(err.to_string().starts_with("input.anm:2:3:"), "{body}: {err}");
         }
@@ -90,12 +126,12 @@ mod tests {
 
     #[test]
     fn validates_color_prop() {
-        for body in ["0", "0xffffff", "16777215"] {
+        for body in ["0x0", "0xff", "0XFF", "0xffffff", "0XFFFFFF"] {
             let prop = Prop::parse(pos(), "color", body).unwrap().unwrap();
             assert!(prop.validate().is_ok(), "{body}");
         }
 
-        for body in ["-1", "16777216"] {
+        for body in ["0x1000000", "0X1000000"] {
             let err = Prop::parse(pos(), "color", body)
                 .unwrap()
                 .unwrap()

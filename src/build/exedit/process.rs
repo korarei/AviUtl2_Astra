@@ -354,11 +354,7 @@ mod tests {
                 "--[[track@x:Scale,0,10,0]]\n",
                 &["property 'track' must use '--...'"],
             ),
-            (
-                ".anm2",
-                "--[[filter]]\n",
-                &["property 'filter' must use '--...'"],
-            ),
+            (".anm2", "--[[filter]]\n", &["property 'filter' must use '--...'"]),
             (".anm2", "--[[speed:1,0]]\n", &[]),
             (".anm2", "-- pixelshader memo\n", &[]),
             (".anm2", "local x = 1 -- foo@bar: baz\n", &[]),

@@ -29,7 +29,7 @@ pub(in crate::build::exedit) trait Spec {
         reject_v2_desc(suffix, annotation)
     }
 
-    fn parse_known<'a>(pos: Pos, annotation: Annotation<'a>) -> anyhow::Result<Option<Element<'a>>>;
+    fn parse_known(pos: Pos, annotation: Annotation<'_>) -> anyhow::Result<Option<Element<'_>>>;
 }
 
 pub(in crate::build::exedit) mod v2 {
@@ -76,7 +76,7 @@ impl Spec for v2::Anm {
         Ok(())
     }
 
-    fn parse_known<'a>(pos: Pos, annotation: Annotation<'a>) -> anyhow::Result<Option<Element<'a>>> {
+    fn parse_known(pos: Pos, annotation: Annotation<'_>) -> anyhow::Result<Option<Element<'_>>> {
         if let Some(element) = v2::Effect::parse_known(pos.clone(), annotation)? {
             return Ok(Some(element));
         }
@@ -125,7 +125,7 @@ impl Spec for v2::Effect {
         Ok(())
     }
 
-    fn parse_known<'a>(pos: Pos, annotation: Annotation<'a>) -> anyhow::Result<Option<Element<'a>>> {
+    fn parse_known(pos: Pos, annotation: Annotation<'_>) -> anyhow::Result<Option<Element<'_>>> {
         if let Some(prop) =
             prop::v2::effect::Prop::parse(pos.clone(), annotation.kind, annotation.var, annotation.body)?
         {
@@ -171,7 +171,7 @@ impl Spec for v2::Tra {
         Ok(())
     }
 
-    fn parse_known<'a>(pos: Pos, annotation: Annotation<'a>) -> anyhow::Result<Option<Element<'a>>> {
+    fn parse_known(pos: Pos, annotation: Annotation<'_>) -> anyhow::Result<Option<Element<'_>>> {
         if annotation.var.is_some() {
             return Ok(None);
         }
@@ -197,7 +197,7 @@ impl Spec for v0::Effect {
         annotation.var.is_none() && prop::v0::effect::is_kind(annotation.kind, annotation.body.is_some())
     }
 
-    fn parse_known<'a>(pos: Pos, annotation: Annotation<'a>) -> anyhow::Result<Option<Element<'a>>> {
+    fn parse_known(pos: Pos, annotation: Annotation<'_>) -> anyhow::Result<Option<Element<'_>>> {
         if annotation.var.is_some() {
             return Ok(None);
         }
@@ -214,7 +214,7 @@ impl Spec for v0::Scn {
             && !matches!(annotation.kind, "track2" | "track3")
     }
 
-    fn parse_known<'a>(pos: Pos, annotation: Annotation<'a>) -> anyhow::Result<Option<Element<'a>>> {
+    fn parse_known(pos: Pos, annotation: Annotation<'_>) -> anyhow::Result<Option<Element<'_>>> {
         if matches!(annotation.kind, "track2" | "track3") {
             return Ok(None);
         }
@@ -228,7 +228,7 @@ impl Spec for v0::Tra {
         annotation.var.is_none() && prop::v0::tra::is_kind(annotation.kind, annotation.body.is_some())
     }
 
-    fn parse_known<'a>(pos: Pos, annotation: Annotation<'a>) -> anyhow::Result<Option<Element<'a>>> {
+    fn parse_known(pos: Pos, annotation: Annotation<'_>) -> anyhow::Result<Option<Element<'_>>> {
         if annotation.var.is_some() {
             return Ok(None);
         }
@@ -243,7 +243,7 @@ impl Spec for Unsupported {
         false
     }
 
-    fn parse_known<'a>(_pos: Pos, _annotation: Annotation<'a>) -> anyhow::Result<Option<Element<'a>>> {
+    fn parse_known(_pos: Pos, _annotation: Annotation<'_>) -> anyhow::Result<Option<Element<'_>>> {
         Ok(None)
     }
 }

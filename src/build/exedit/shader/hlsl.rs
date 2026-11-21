@@ -298,7 +298,7 @@ fn validate_decl(src: &str, tokens: &[hlsl::Token<'_>], buffer: &str, packing: &
         issues.push((
             tracing::Level::WARN,
             span,
-            format!("cbuffer '{buffer}' uses non-float type '{ty}'; AviUtl2 expects float values"),
+            format!("cbuffer '{buffer}' uses non-float type '{ty}'; AviUtl ExEdit2 expects float values"),
         ));
     };
 
@@ -588,7 +588,7 @@ mod tests {
             assert!(
                 messages
                     .iter()
-                    .any(|(_, _, message)| message.contains("AviUtl2 expects float values"))
+                    .any(|(_, _, message)| message.contains("AviUtl ExEdit2 expects float values"))
             );
         }
 

@@ -784,7 +784,9 @@ local strict_str = "plain" --string@ _ : strict_prop,"_"
 local newline_str = "aaa\nbbb" --text@ _ : nl_prop, _
 local newline_matched = "first\nsecond" --text@ _ : nl_match_prop,first\nsecond
 local sample_color = 0xff0000 --color@ _ : col_prop, _
+local dec_color = 255 --color@ _ : dec_prop, _
 local hex_color = 0xFF0000 --color@ _ : hex_prop, 0xff0000
+local upper_color = 0X00FF00 --color@ _ : upper_prop, 0X00FF00
 local nil_color = nil --color@_:nil_prop,nil
 local sample_nil_color = nil --color@ _ : sample_nil_prop, _
 --color@default_nil_color:default_nil_prop,nil
@@ -842,7 +844,9 @@ local at_space = 3 --track @at_space:at_space_prop,0,100,3,1
         "--text@newline_str:nl_prop,aaa\\nbbb",
         "--text@newline_matched:nl_match_prop,first\\nsecond",
         "--color@sample_color:col_prop,0xff0000",
+        "--color@dec_color:dec_prop,0x0000ff",
         "--color@hex_color:hex_prop,0xff0000",
+        "--color@upper_color:upper_prop,0x00ff00",
         "--color@nil_color:nil_prop,nil",
         "--color@sample_nil_color:sample_nil_prop,nil",
         "--color@default_nil_color:default_nil_prop,nil",
@@ -970,10 +974,22 @@ fn reject_properties() -> anyhow::Result<()> {
             "local value = 0xffffff --color@_:A,nil",
             "default value 'nil' conflicts with '0xffffff'",
         ),
-        ("local value = nil --color@_:A,invalid", "must be 'nil' or an integer"),
+        (
+            "local value = nil --color@_:A,invalid",
+            "must be 'nil' or a hexadecimal integer",
+        ),
+        (
+            "local value = nil --color@_:A,255",
+            "must be 'nil' or a hexadecimal integer",
+        ),
+        (
+            "local value = nil --color@_:A,0xFF0000",
+            "must be 'nil' or a hexadecimal integer",
+        ),
         ("--color@_:A,0x1000000\n", "must be between 0x000000 and 0xffffff"),
         ("--color:0x1000000\n", "must be between 0x000000 and 0xffffff"),
-        ("--color:invalid\n", "must be 'nil' or an integer"),
+        ("--color:invalid\n", "must be 'nil' or a hexadecimal integer"),
+        ("--color:255\n", "must be 'nil' or a hexadecimal integer"),
         (
             "local value = 1 --select@_:C=2,item1=1,item2=2",
             "default value '2' conflicts with '1'",
@@ -3286,6 +3302,7 @@ fn validates_unbound_placeholders_before_display() -> anyhow::Result<()> {
         "check@_:Flag,_",
         "checksection@_:Section,_",
         "color@_:Color,_",
+        "colorlist@_:Color,_,1",
         "select@_:Mode=_,A=0",
     ] {
         let err = exedit::build(
@@ -3342,5 +3359,55 @@ fn collects_metadata_from_validated_definitions() -> anyhow::Result<()> {
             "{src}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn builds_colorlist_properties() -> anyhow::Result<()> {
+    let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "effect.anm2" }))?;
+    let src = concat!(
+        "local list = {\n",
+        "    { pos = 0, col = 0xffffff },\n",
+        "    { pos = 1, col = 0x888888 },\n",
+        "} --colorlist@list:Group::基準色|中間色,_,4,undefined|position\n",
+        "local list2 --colorlist@list2:図形色,0xffffffff,1,alpha|fixed\n",
+        "local list3 = {} --colorlist@list3:補助色|補助色,0x123456,2\n",
+        "local num = #list\n",
+    );
+    let output = exedit::build(src, &target, &[], &IndexMap::new(), false, ".anm2")?;
+    assert_eq!(
+        output.script,
+        concat!(
+            "--colorlist@list:Group::基準色|中間色,0xffffff|0x888888,4,undefined|position\n",
+            "--colorlist@list2:図形色,0xffffffff,1,alpha|fixed\n",
+            "--colorlist@list3:補助色|補助色,0x123456,2\n",
+            "local num = #list\n",
+        )
+    );
+    let (labels, tips) = output.l10n.split_once("[Tips.").unwrap();
+    for key in ["\n基準色=\n", "\n中間色=\n", "\n図形色=\n", "\n補助色=\n"] {
+        assert!(labels.contains(key), "{labels}");
+    }
+    assert!(tips.contains("\nGroup::基準色=\n"), "{tips}");
+    assert!(!tips.contains("\n中間色=\n"), "{tips}");
+
+    for (suffix, src) in [
+        (".tra2", "--colorlist@list:色,0xffffff,1\n"),
+        (".anm", "--colorlist@list:色,0xffffff,1\n"),
+        (".anm2", "--colorlist:色,0xffffff,1\n"),
+        (".anm2", "local list = { a = 1 } --colorlist@list:色,0xffffff,1\n"),
+        (".anm2", "local list = {} --colorlist@list:色,_,1\n"),
+        (".anm2", "local list = { { col = nil } } --colorlist@list:色,_,1\n"),
+        (
+            ".anm2",
+            "local list = { { col = 0xffffffff } } --colorlist@list:色,_,1\n",
+        ),
+    ] {
+        assert!(
+            exedit::build(src, &target, &[], &IndexMap::new(), false, suffix).is_err(),
+            "{suffix}: {src}"
+        );
+    }
+
     Ok(())
 }

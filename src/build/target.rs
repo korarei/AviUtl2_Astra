@@ -185,12 +185,36 @@ mod tests {
         let mut spec: Build = serde_json::from_value(serde_json::json!({
             "name": "legacy",
             "suffix": "anm",
-            "target": { "path": one }
+            "target": { "path": one.clone() }
         }))?;
         spec.expanded(&Scope::default())?;
         let files = build(dir.path(), &spec, BuildType::Release)?;
         assert_eq!(files.len(), 1);
         assert!(!files[0].parent().unwrap().join("Default.legacy.aul2").exists());
+
+        let mut spec: Build = serde_json::from_value(serde_json::json!({
+            "name": "forced",
+            "suffix": "anm2",
+            "bundle": true,
+            "target": { "name": "one", "path": one }
+        }))?;
+        spec.expanded(&Scope::default())?;
+        let files = build(dir.path(), &spec, BuildType::Debug)?;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name().unwrap(), "@forced.anm2");
+        assert_eq!(
+            fs::read_to_string(&files[0]).with_context(|| format!("failed to read '{}'", files[0].display()))?,
+            "@one\r\nreturn 1\r\n\r\n"
+        );
+        assert_eq!(
+            fs::read_to_string(files[0].parent().unwrap().join("Default.forced.aul2")).with_context(|| {
+                format!(
+                    "failed to read '{}'",
+                    files[0].parent().unwrap().join("Default.forced.aul2").display()
+                )
+            })?,
+            "[one@forced]\r\none@forced=\r\n\r\n[Tips.one@forced]\r\neffect.name=\r\n\r\n"
+        );
 
         Ok(())
     }

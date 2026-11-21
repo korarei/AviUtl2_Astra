@@ -19,7 +19,9 @@ enum ExpandKind {
     Raw,
     Skip,
     LineComment,
+    BlockComment,
     ShortString,
+    LongString,
 }
 
 struct Builder<'a> {
@@ -38,6 +40,13 @@ struct Builder<'a> {
 struct BlockState {
     ed: usize,
     kind: ExpandKind,
+}
+
+struct PendingLiteral {
+    kind: ExpandKind,
+    dst_st: usize,
+    src_ed: usize,
+    edit_offset: Option<usize>,
 }
 
 struct ScanState<'a> {
@@ -62,6 +71,7 @@ struct Marker<'a> {
 }
 
 impl Builder<'_> {
+    #[allow(clippy::too_many_lines)]
     fn preprocess(&mut self, map: &source::Map) -> anyhow::Result<()> {
         let src = map.text();
         let lines = map.lines();
@@ -76,6 +86,7 @@ impl Builder<'_> {
         let mut omit_parser = None;
         let mut omit_ed = 0;
         let mut pending = None;
+        let mut pending_literal = None;
         let mut preprocessor = Preprocessor::new();
         let mut state = ScanState {
             block: BlockState {
@@ -226,7 +237,7 @@ impl Builder<'_> {
                     if has_emitted {
                         self.map.copy(map, lines[i] - 1..lines[i]);
                     }
-                    self.emit_line(map, &src, &state.segments)?;
+                    self.emit_line(map, &src, ed, state.block.ed, &state.segments, &mut pending_literal)?;
                     has_emitted = true;
                 }
                 Action::Omit => {
@@ -245,7 +256,7 @@ impl Builder<'_> {
                     self.include_line(map, lines[i], &file, &pos, indent, &mut includes)?;
                     has_emitted = true;
                 }
-                action => self.apply_action(map, &src, &pos, action)?,
+                action => self.apply_action(map, &src, &pos, &action)?,
             }
 
             i = next_line;
@@ -276,21 +287,60 @@ impl Builder<'_> {
         &mut self,
         map: &source::Map,
         src: &str,
+        ed: usize,
+        block_ed: usize,
         segments: &[(std::ops::Range<usize>, ExpandKind)],
+        pending_literal: &mut Option<PendingLiteral>,
     ) -> anyhow::Result<()> {
-        for (span, kind) in segments {
+        for (index, (span, kind)) in segments.iter().enumerate() {
             match kind {
                 ExpandKind::Skip => self.map.copy(map, span.clone()),
                 kind => {
                     let escape = match kind {
-                        ExpandKind::Raw => astra::Escape::None,
+                        ExpandKind::Raw | ExpandKind::LongString | ExpandKind::BlockComment => astra::Escape::None,
                         ExpandKind::ShortString => astra::Escape::Lua,
                         ExpandKind::LineComment => astra::Escape::Comment,
                         ExpandKind::Skip => unreachable!(),
                     };
                     let expansion = astra::expand(&src[span.clone()], self.vars.as_ref(), escape)
                         .map_err(|err| anyhow::anyhow!("{}: {err}", map.locate(span.start + err.offset)))?;
-                    self.map.apply(map, span.clone(), expansion.to_edits(span.start));
+                    let edit_offset = expansion.first_expansion_offset().map(|at| span.start + at);
+                    let is_tracked = matches!(
+                        kind,
+                        ExpandKind::ShortString | ExpandKind::LongString | ExpandKind::BlockComment
+                    );
+
+                    if index == 0
+                        && let Some(mut pending) = pending_literal.take()
+                    {
+                        if pending.edit_offset.is_none() {
+                            pending.edit_offset = edit_offset;
+                        }
+                        self.map.apply(map, span.clone(), expansion.to_edits(span.start));
+
+                        if pending.src_ed <= ed {
+                            if let Some(offset) = pending.edit_offset {
+                                let literal = self.map.slice(pending.dst_st..self.map.len());
+                                validate_expanded_literal(pending.kind, &literal.text(), &map.locate(offset))?;
+                            }
+                        } else {
+                            *pending_literal = Some(pending);
+                        }
+                    } else if is_tracked && index + 1 == segments.len() && block_ed > ed {
+                        let dst_st = self.map.len();
+                        self.map.apply(map, span.clone(), expansion.to_edits(span.start));
+                        *pending_literal = Some(PendingLiteral {
+                            kind: *kind,
+                            dst_st,
+                            src_ed: block_ed,
+                            edit_offset,
+                        });
+                    } else {
+                        if is_tracked && let Some(offset) = edit_offset {
+                            validate_expanded_literal(*kind, &expansion.text, &map.locate(offset))?;
+                        }
+                        self.map.apply(map, span.clone(), expansion.to_edits(span.start));
+                    }
                 }
             }
         }
@@ -339,7 +389,7 @@ impl Builder<'_> {
         Ok(())
     }
 
-    fn apply_action(&mut self, map: &source::Map, src: &str, pos: &Pos, action: Action<'_>) -> anyhow::Result<()> {
+    fn apply_action(&mut self, map: &source::Map, src: &str, pos: &Pos, action: &Action<'_>) -> anyhow::Result<()> {
         match action {
             Action::Keep | Action::Omit | Action::Include { .. } => unreachable!(),
             Action::Drop => {}
@@ -350,13 +400,13 @@ impl Builder<'_> {
             }
             Action::Replace(_) => bail!("{pos}: invalid #replace placement"),
             Action::Define { key, val } => {
-                if RESERVED_VARIABLES.contains(&key) {
+                if RESERVED_VARIABLES.contains(key) {
                     bail!("{pos}: cannot define reserved variable '{key}'");
                 }
 
                 let vars = self.vars.to_mut();
                 vars.insert(
-                    key.to_owned(),
+                    (*key).to_owned(),
                     astra::expand(val, vars, astra::Escape::None)
                         .map_err(|err| {
                             anyhow::anyhow!(
@@ -369,7 +419,7 @@ impl Builder<'_> {
                 );
             }
             Action::Undef(key) => {
-                self.vars.to_mut().shift_remove(key);
+                self.vars.to_mut().shift_remove(*key);
             }
         }
 
@@ -886,28 +936,7 @@ fn scan_line<'a>(
         let token = token.map_err(|err| anyhow::anyhow!("{}: {}", map.locate(err.offset), err.message))?;
         has_code |= !token.kind.is_trivia();
 
-        let kind = match &token.kind {
-            TokenKind::Comment(comment) => {
-                let ctx = CommentContext {
-                    prefix: &src[st..token.span.st.max(st)],
-                    tokens: &state.stmt_tokens,
-                };
-
-                if should_expand_comment(comment, &ctx)
-                    .with_context(|| format!("{}: failed to classify comment", map.locate(token.span.st)))?
-                {
-                    if comment.bracket.is_none() {
-                        ExpandKind::LineComment
-                    } else {
-                        ExpandKind::Raw
-                    }
-                } else {
-                    ExpandKind::Skip
-                }
-            }
-            TokenKind::String(literal) if literal.bracket.is_none() => ExpandKind::ShortString,
-            _ => ExpandKind::Raw,
-        };
+        let kind = classify_expansion(src, st, &token, &state.stmt_tokens, should_expand_comment, map)?;
 
         if !token.kind.is_trivia() && state.block.ed <= token.span.st {
             match token.kind {
@@ -972,6 +1001,44 @@ fn scan_line<'a>(
         first,
         comment_col,
         has_code,
+    })
+}
+
+fn classify_expansion(
+    src: &str,
+    st: usize,
+    token: &lua::Token<'_>,
+    stmt_tokens: &[lua::Token<'_>],
+    should_expand_comment: &dyn Fn(&lua::Comment<'_>, &CommentContext<'_, '_>) -> anyhow::Result<bool>,
+    map: &source::Map,
+) -> anyhow::Result<ExpandKind> {
+    Ok(match &token.kind {
+        TokenKind::Comment(comment) => {
+            let ctx = CommentContext {
+                prefix: &src[st..token.span.st.max(st)],
+                tokens: stmt_tokens,
+            };
+
+            if should_expand_comment(comment, &ctx)
+                .with_context(|| format!("{}: failed to classify comment", map.locate(token.span.st)))?
+            {
+                if comment.bracket.is_none() {
+                    ExpandKind::LineComment
+                } else {
+                    ExpandKind::BlockComment
+                }
+            } else {
+                ExpandKind::Skip
+            }
+        }
+        TokenKind::String(literal) => {
+            if literal.bracket.is_none() {
+                ExpandKind::ShortString
+            } else {
+                ExpandKind::LongString
+            }
+        }
+        _ => ExpandKind::Raw,
     })
 }
 
@@ -1219,6 +1286,30 @@ fn validate_require_target(pos: &Pos, file: &Path, name: &[u8]) -> anyhow::Resul
     Ok(())
 }
 
+fn validate_expanded_literal(kind: ExpandKind, text: &str, pos: &Pos) -> anyhow::Result<()> {
+    let label = if matches!(kind, ExpandKind::BlockComment) {
+        "block comment"
+    } else {
+        "string literal"
+    };
+    let mut lexer = lua::Lexer::new(text);
+    let Some(Ok(token)) = lexer.next() else {
+        bail!("{pos}: expanded placeholder breaks {label}");
+    };
+    let is_valid = match kind {
+        ExpandKind::ShortString => matches!(&token.kind, TokenKind::String(literal) if literal.bracket.is_none()),
+        ExpandKind::LongString => matches!(&token.kind, TokenKind::String(literal) if literal.bracket.is_some()),
+        ExpandKind::BlockComment => matches!(&token.kind, TokenKind::Comment(comment) if comment.bracket.is_some()),
+        ExpandKind::Raw | ExpandKind::Skip | ExpandKind::LineComment => unreachable!(),
+    };
+
+    if !is_valid || token.span.st != 0 || token.span.ed != text.len() || lexer.next().is_some() {
+        bail!("{pos}: expanded placeholder breaks {label}");
+    }
+
+    Ok(())
+}
+
 fn push_segment(
     segments: &mut Vec<(std::ops::Range<usize>, ExpandKind)>,
     span: std::ops::Range<usize>,
@@ -1228,8 +1319,8 @@ fn push_segment(
         return;
     }
 
-    if let Some((prev, prev_kind)) = segments.last_mut()
-        && *prev_kind == kind
+    if kind == ExpandKind::Raw
+        && let Some((prev, ExpandKind::Raw)) = segments.last_mut()
         && prev.end == span.start
     {
         prev.end = span.end;
@@ -1374,6 +1465,52 @@ mod tests {
                 "local long = [[a\tb\nc\x1b]]",
             )
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_broken_literal_boundaries() -> anyhow::Result<()> {
+        let target: BuildTarget = serde_json::from_value(serde_json::json!({ "path": "test.lua" }))?;
+        let make_map = |src| {
+            source::Map::new(
+                src,
+                Pos {
+                    file: Path::new("test.lua").into(),
+                    line: 1,
+                    col: 1,
+                },
+            )
+        };
+
+        let ok_vars = IndexMap::from([
+            ("ESCAPED".to_owned(), r#"a\nb\"c"#.to_owned()),
+            ("BRACKET".to_owned(), "a]]b".to_owned()),
+        ]);
+        let ok_src = "local a = \"${ESCAPED}\"\nlocal b = [=[${BRACKET}]=]\n";
+        let output = build(&make_map(ok_src), &target, &[], &ok_vars, |_, _| Ok(false))?;
+        assert_eq!(output.text(), "local a = \"a\\nb\\\"c\"\nlocal b = [=[a]]b]=]");
+
+        let bad_vars = IndexMap::from([
+            ("QUOTE".to_owned(), r#"a"b"#.to_owned()),
+            ("INJECT_SHORT".to_owned(), r#"a" .. "b"#.to_owned()),
+            ("SLASH".to_owned(), r"a\".to_owned()),
+            ("CLOSE".to_owned(), "a]]b".to_owned()),
+            ("INJECT_LONG".to_owned(), "a]] .. [[b".to_owned()),
+        ]);
+
+        for (src, should_expand) in [
+            ("local s = \"${QUOTE}\"", false),
+            ("local s = \"${INJECT_SHORT}\"", false),
+            ("local s = \"${SLASH}\"", false),
+            ("local s = \"first\\\n${QUOTE}\"", false),
+            ("local s = [[${CLOSE}]]", false),
+            ("local s = [[first\n${INJECT_LONG}\nlast]]", false),
+            ("--[[first\n${CLOSE}\nlast]]", true),
+        ] {
+            let err = build(&make_map(src), &target, &[], &bad_vars, |_, _| Ok(should_expand)).unwrap_err();
+            assert!(err.to_string().contains("breaks"), "{src}: {err}");
+        }
+
         Ok(())
     }
 }

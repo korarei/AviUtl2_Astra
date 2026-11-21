@@ -65,7 +65,7 @@ pub(super) fn extract(
 }
 
 pub(super) fn normalize(
-    header: Option<source::Map>,
+    header: Option<&source::Map>,
     body: &source::Map,
     target: &BuildTarget,
     is_bundled: bool,
@@ -81,7 +81,7 @@ pub(super) fn normalize(
     let mut dst = source::Map::default();
     let tail = body.slice(st..st + text.len());
 
-    if let Some(header) = &header {
+    if let Some(header) = header {
         dst.copy(header, ..);
     } else if is_bundled {
         let name = target.name();
@@ -104,7 +104,7 @@ pub(super) fn normalize(
 
         dst.copy(&tail, ..);
         dst.emit("\n", &tail, tail.len()..tail.len());
-    } else if let Some(header) = &header {
+    } else if let Some(header) = header {
         dst.emit("\n", header, header.len()..header.len());
     }
 

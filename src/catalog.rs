@@ -5,7 +5,7 @@ pub(crate) fn get(id: &str) -> anyhow::Result<Value> {
     const CATALOG_URL: &str = "https://raw.githubusercontent.com/Neosku/aviutl2-catalog-data/main/index.json";
     const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 
-    tracing::info!("Requesting AviUtl2 Catalog");
+    tracing::info!("Requesting AviUtl ExEdit2 Catalog");
 
     let bytes = http::read(
         http::client()?.get(CATALOG_URL).send()?.error_for_status()?,

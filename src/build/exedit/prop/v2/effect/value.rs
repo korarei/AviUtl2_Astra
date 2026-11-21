@@ -96,7 +96,7 @@ impl<'a> Prop<'a> {
         }
 
         if let Some(val) = val {
-            let expr = normalize_expr(pos, var, val)?;
+            let expr = normalize_expr(var, val).map_err(|err| anyhow::anyhow!("{pos}: {err}"))?;
 
             match &self.default {
                 None => self.default = Some(Cow::Owned(expr)),
@@ -181,20 +181,16 @@ impl fmt::Display for Prop<'_> {
     }
 }
 
-fn normalize_expr(pos: &Pos, var: &str, val: &str) -> anyhow::Result<String> {
-    let tokens: Vec<_> = lua::Lexer::new(val)
-        .collect::<Result<_, _>>()
-        .map_err(|err| anyhow::anyhow!("{pos}: {err}"))?;
-    let span = lua::Parser::new(val, &tokens)
-        .parse_expr_at(0)
-        .map_err(|err| anyhow::anyhow!("{pos}: {err}"))?;
+fn normalize_expr(var: &str, val: &str) -> anyhow::Result<String> {
+    let tokens: Vec<_> = lua::Lexer::new(val).collect::<Result<_, _>>()?;
+    let span = lua::Parser::new(val, &tokens).parse_expr_at(0)?;
 
     if let Some(next) = tokens
         .iter()
         .find(|token| token.span.st >= span.ed && !token.kind.is_trivia())
     {
         bail!(
-            "{pos}: unexpected token '{}' in initializer of variable '{var}'",
+            "unexpected token '{}' in initializer of variable '{var}'",
             &val[next.span.st..next.span.ed]
         );
     }
@@ -224,7 +220,7 @@ fn normalize_expr(pos: &Pos, var: &str, val: &str) -> anyhow::Result<String> {
         }
 
         let TokenKind::String(literal) = token.kind else {
-            bail!("{pos}: initializer of variable '{var}' cannot contain control characters");
+            bail!("initializer of variable '{var}' cannot contain control characters");
         };
 
         write_string(&mut dst, &literal.val);
@@ -411,11 +407,11 @@ mod tests {
             ),
             ("\"\\xc3\\xa9\\xff\t\"", "\"\u{e9}\\255\\t\""),
         ] {
-            assert_eq!(normalize_expr(&pos(), "val", src).unwrap(), expected, "{src:?}");
+            assert_eq!(normalize_expr("val", src).unwrap(), expected, "{src:?}");
         }
 
         for src in ["", "-- comment", "1,2", "true false", "1 +", "'unterminated"] {
-            assert!(normalize_expr(&pos(), "val", src).is_err(), "{src:?}");
+            assert!(normalize_expr("val", src).is_err(), "{src:?}");
         }
     }
 

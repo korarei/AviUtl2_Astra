@@ -1,6 +1,7 @@
 pub(in crate::build::exedit) mod check;
 pub(in crate::build::exedit) mod checksection;
 pub(in crate::build::exedit) mod color;
+pub(in crate::build::exedit) mod colorlist;
 pub(in crate::build::exedit) mod data;
 pub(in crate::build::exedit) mod dialog;
 pub(in crate::build::exedit) mod figure;
@@ -35,6 +36,7 @@ pub(in crate::build::exedit) enum Prop<'a> {
     Value(value::Prop<'a>),
     Select(select::Prop<'a>),
     Color(color::Prop<'a>),
+    Colorlist(colorlist::Prop<'a>),
     File(file::Prop<'a>),
     Group(group::Prop<'a>),
     Separator(separator::Prop<'a>),
@@ -72,6 +74,9 @@ impl<'a> Prop<'a> {
             ("value", Some(var), Some(body)) => Self::Value(value::Prop::parse(pos, kind, var, body)?.unwrap()),
             ("select", Some(var), Some(body)) => Self::Select(select::Prop::parse(pos, kind, var, body)?.unwrap()),
             ("color", var, Some(body)) => Self::Color(color::Prop::parse(pos, kind, var, body)?.unwrap()),
+            ("colorlist", Some(var), Some(body)) => {
+                Self::Colorlist(colorlist::Prop::parse(pos, kind, var, body)?.unwrap())
+            }
             ("file", var, Some(body)) => Self::File(file::Prop::parse(pos, kind, var, body)?.unwrap()),
             ("group", var, body) if body.is_some() || var.is_none() => {
                 Self::Group(group::Prop::parse(pos, kind, var, body)?.unwrap())
@@ -100,7 +105,8 @@ impl<'a> Prop<'a> {
             | Self::String(_)
             | Self::Text(_)
             | Self::Value(_)
-            | Self::Select(_) => true,
+            | Self::Select(_)
+            | Self::Colorlist(_) => true,
             Self::Color(prop) => prop.can_bind(),
             Self::File(prop) => prop.can_bind(),
             Self::Group(_)
@@ -130,6 +136,7 @@ impl<'a> Prop<'a> {
             Self::Value(prop) => prop.bind(var, val),
             Self::Select(prop) => prop.bind(var, val),
             Self::Color(prop) => prop.bind(var, val),
+            Self::Colorlist(prop) => prop.bind(var, val),
             Self::File(prop) => prop.bind(var, val),
             Self::Group(_)
             | Self::Separator(_)
@@ -184,6 +191,11 @@ impl<'a> Prop<'a> {
                 l10n.push(&[prop.name()], &prop.labels());
                 Ok(prop.to_string())
             }
+            Self::Colorlist(prop) => {
+                prop.validate(&mut state.vars, &mut state.names)?;
+                l10n.push(&[prop.name()], &prop.labels());
+                Ok(prop.to_string())
+            }
             Self::Group(prop) => {
                 prop.validate(&mut state.vars, &mut state.names)?;
                 l10n.push(prop.name().as_slice(), prop.label().as_slice());
@@ -226,6 +238,7 @@ fn allows_body(kind: &str) -> bool {
         || matches!(
             kind,
             "color"
+                | "colorlist"
                 | "file"
                 | "folder"
                 | "font"
@@ -267,6 +280,7 @@ pub(in crate::build::exedit) fn is_bindable(kind: &str, has_var: bool, has_body:
                 | "value"
                 | "select"
                 | "color"
+                | "colorlist"
                 | "file"
         )
 }
@@ -327,12 +341,20 @@ mod tests {
         (
             "color",
             Some("val"),
-            Some("Color,255"),
+            Some("Color,0xff"),
             "--color@val:Color,0x0000ff",
             &["Color"],
             &["Color"],
         ),
-        ("color", None, Some("255"), "--color:0x0000ff", &["色"], &["色"]),
+        ("color", None, Some("0xff"), "--color:0x0000ff", &["色"], &["色"]),
+        (
+            "colorlist",
+            Some("val"),
+            Some("Group::基準色|中間色,0xffffff|0x888888,4,undefined|position"),
+            "--colorlist@val:Group::基準色|中間色,0xffffff|0x888888,4,undefined|position",
+            &["Group::基準色"],
+            &["基準色", "中間色"],
+        ),
         (
             "file",
             Some("val"),
@@ -580,7 +602,8 @@ mod tests {
             ("track", "Value,0,10,5", "--track@_:Value,0,10,5"),
             ("check", "Value,true", "--check@_:Value,true"),
             ("checksection", "Value,true", "--checksection@_:Value,true"),
-            ("color", "Value,0", "--color@_:Value,0x000000"),
+            ("color", "Value,0x0", "--color@_:Value,0x000000"),
+            ("colorlist", "Value,0x0,1", "--colorlist@_:Value,0x000000,1"),
             ("select", "Value=0,A=0", "--select@_:Value=0,A=0"),
             ("value", "Value,_", "--value@_:Value,_"),
             ("font", "Value,_", "--font@_:Value,_"),
@@ -606,7 +629,8 @@ mod tests {
             ("track", "Value,0,10,_", "must be a number"),
             ("check", "Value,_", "must be 'true', 'false', '0', or '1'"),
             ("checksection", "Value,_", "must be 'true' or 'false'"),
-            ("color", "Value,_", "must be 'nil' or an integer"),
+            ("color", "Value,_", "must be 'nil' or a hexadecimal integer"),
+            ("colorlist", "Value,_,1", "must be 'nil' or a hexadecimal integer"),
             ("select", "Value=_,A=0", "must be an integer"),
         ] {
             let mut state = State::default();
@@ -653,6 +677,7 @@ mod tests {
                     let _ = check::Prop::parse(pos(), "check", Some("value"), body);
                     let _ = checksection::Prop::parse(pos(), "checksection", "value", body);
                     let _ = color::Prop::parse(pos(), "color", Some("value"), body);
+                    let _ = colorlist::Prop::parse(pos(), "colorlist", "value", body);
                     let _ = data::Prop::parse(pos(), "data", "value", body);
                     let _ = dialog::Prop::parse(pos(), "dialog", None, body);
                     let _ = figure::Prop::parse(pos(), "figure", "value", body);

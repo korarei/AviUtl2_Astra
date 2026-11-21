@@ -334,7 +334,7 @@ impl Config {
     }
 
     fn normalize(&mut self) -> anyhow::Result<()> {
-        static RESERVED_ID_PREFIXES: [&str; 2] = [".astra", ".git"];
+        const RESERVED_ID_PREFIXES: &[&str] = &[".astra", ".git"];
 
         for (id, build) in &mut self.builds {
             if id.is_empty() {
@@ -623,8 +623,8 @@ impl AviUtl2Version {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
-    #[serde(default, alias = "hidden")]
-    hide: bool,
+    #[serde(default, alias = "hide")]
+    hidden: bool,
     #[validate(length(min = 1))]
     shell: Option<String>,
     #[serde_as(as = "ManyOrOne<_>")]
@@ -679,7 +679,7 @@ impl Task {
 
     #[must_use]
     pub fn is_hidden(&self) -> bool {
-        self.hide
+        self.hidden
     }
 
     #[must_use]
@@ -809,7 +809,10 @@ impl Validate for TaskCall {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Build {
+    #[serde(alias = "enable")]
     enabled: Option<BuildEnabled>,
+    #[serde(alias = "bundle")]
+    bundled: Option<bool>,
     name: Option<String>,
     suffix: Option<String>,
     newline: Option<String>,
@@ -951,7 +954,8 @@ impl Build {
 
     #[must_use]
     pub fn is_bundled(&self) -> bool {
-        self.targets.as_deref().is_some_and(|targets| targets.len() > 1)
+        self.is_script()
+            && (self.bundled == Some(true) || self.targets.as_deref().is_some_and(|targets| targets.len() > 1))
     }
 
     #[must_use]
@@ -997,10 +1001,10 @@ impl Build {
 
 impl Validate for Build {
     fn validate(&self) -> Result<(), ValidationErrors> {
-        static VALID_SUFFIXES: [&str; 11] = [
+        const VALID_SUFFIXES: &[&str] = &[
             ".anm2", ".tra2", ".obj2", ".scn2", ".cam2", ".aul2", ".anm", ".tra", ".obj", ".scn", ".cam",
         ];
-        static VALID_MODES: [&str; 3] = ["all", "debug", "release"];
+        const VALID_MODES: &[&str] = &["all", "debug", "release"];
 
         let mut errors = ValidationErrors::new();
 
@@ -1071,6 +1075,17 @@ impl Validate for Build {
                         .with_message(format!("enabled must be one of all, debug, or release, got '{mode}'").into()),
                 );
             }
+        }
+
+        if self.bundled == Some(false)
+            && self.is_script()
+            && self.targets.as_deref().is_some_and(|targets| targets.len() > 1)
+        {
+            errors.add(
+                "bundled",
+                ValidationError::new("invalid_bundled")
+                    .with_message("bundled must be true when more than one target is specified".into()),
+            );
         }
 
         for (field, calls) in [("depends", &self.depends), ("finally", &self.finally)] {
@@ -1571,7 +1586,7 @@ impl Package {
             }
 
             if is_au2pkg {
-                static ALLOWED_TOP_DIRS: [&str; 8] = [
+                const ALLOWED_TOP_DIRS: &[&str] = &[
                     "Plugin",
                     "Script",
                     "Language",
